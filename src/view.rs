@@ -4,10 +4,15 @@ use crate::{
     SplitDirection, WorkspaceChanged, WorkspaceId, WorkspaceSet,
 };
 use gpui::{
-    actions, div, prelude::*, px, relative, AnyElement, App, Context, EventEmitter, FocusHandle,
-    Hsla, MouseButton, SharedString, Window,
+    actions, div, prelude::*, px, relative, AnyElement, App, Bounds, Context, Element, ElementId,
+    EventEmitter, FocusHandle, GlobalElementId, Hsla, InspectorElementId, LayoutId, MouseButton,
+    Pixels, Point, SharedString, Window,
 };
-use std::collections::{HashMap, HashSet};
+use std::{
+    cell::{Cell, RefCell},
+    collections::{HashMap, HashSet},
+    rc::Rc,
+};
 
 actions!(
     mullion,
@@ -20,9 +25,91 @@ actions!(
         FocusPrevious,
         ClosePane,
         ToggleZoom,
-        BalancePanes
+        BalancePanes,
+        ResizeSplitDecrease,
+        ResizeSplitIncrease,
+        CancelSplitResize
     ]
 );
+
+const SPLIT_HIT_TARGET: f32 = 8.0;
+const SPLIT_BAR_WIDTH: f32 = 1.0;
+const KEYBOARD_RESIZE_STEP: f64 = 0.05;
+
+type SplitBounds = Rc<RefCell<HashMap<PaneId, Bounds<Pixels>>>>;
+type ActiveSplit = Rc<RefCell<Option<(PaneId, f64)>>>;
+
+struct SplitBoundsRecorder {
+    key: PaneId,
+    bounds: SplitBounds,
+    child: AnyElement,
+}
+
+impl IntoElement for SplitBoundsRecorder {
+    type Element = Self;
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for SplitBoundsRecorder {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.child.request_layout(window, cx), ())
+    }
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.bounds.borrow_mut().insert(self.key.clone(), bounds);
+        self.child.prepaint(window, cx);
+    }
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.paint(window, cx);
+    }
+}
+
+struct SplitDrag {
+    split_key: PaneId,
+    direction: SplitDirection,
+    start_ratio: f64,
+    start_cursor: Rc<Cell<Option<Point<Pixels>>>>,
+    parent_bounds: Cell<Option<Bounds<Pixels>>>,
+}
+
+struct SplitDragPreview;
+impl Render for SplitDragPreview {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
 
 #[derive(Clone)]
 struct PaneDrag {
@@ -51,6 +138,10 @@ pub struct MullionView<D: PaneData> {
     workspaces: Option<WorkspaceSet<D>>,
     activity_factories: ActivityFactoryRegistry<D>,
     activity_cache: ActivityCache<D>,
+    split_bounds: SplitBounds,
+    split_starts: Rc<RefCell<HashMap<PaneId, Point<Pixels>>>>,
+    active_split: ActiveSplit,
+    keyboard_split: Option<PaneId>,
 }
 
 impl<D: PaneData> EventEmitter<PaneEvent<D>> for MullionView<D> {}
@@ -74,6 +165,10 @@ impl<D: PaneData> MullionView<D> {
             workspaces: None,
             activity_factories: ActivityFactoryRegistry::new(),
             activity_cache: ActivityCache::default(),
+            split_bounds: Rc::default(),
+            split_starts: Rc::default(),
+            active_split: Rc::default(),
+            keyboard_split: None,
         }
     }
 
@@ -203,6 +298,24 @@ impl<D: PaneData> MullionView<D> {
     fn command(&mut self, command: crate::PaneCommand, cx: &mut Context<Self>) {
         let _ = self.execute(command, |_, _, _| None, cx);
     }
+    fn resize_keyboard_split(&mut self, delta: f64, cx: &mut Context<Self>) {
+        let Some(key) = self.keyboard_split.clone() else {
+            return;
+        };
+        if let Some(ratio) = crate::tree::find_ratio(self.model.tree(), &key) {
+            self.model.resize(&key, ratio + delta);
+            self.finish(cx);
+        }
+    }
+    fn cancel_split_resize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((key, start_ratio)) = self.active_split.borrow_mut().take() else {
+            return;
+        };
+        if cx.stop_active_drag(window) {
+            self.model.resize(&key, start_ratio);
+            self.finish(cx);
+        }
+    }
     fn all_activities(&self, data: &D) -> Vec<Activity<D>> {
         let mut out = Vec::new();
         for node in &self.activities {
@@ -284,57 +397,227 @@ impl<D: PaneData> MullionView<D> {
                 first,
                 second,
             } => {
+                // The first leaf of the second subtree is a collision-free key that
+                // survives ratio changes and rerenders.
                 let key = second.leftmost_leaf_id().clone();
                 let first_el = self.render_node(first, window, cx);
                 let second_el = self.render_node(second, window, cx);
-                let amount = *ratio;
                 let handle_color = self.theme.border;
-                let key_inc = key.clone();
-                let key_dec = key;
+                let focused_color = self.theme.focused;
+                let drag_bounds = self.split_bounds.clone();
+                let drag_starts = self.split_starts.clone();
+                let drag_active = self.active_split.clone();
+                let drag_key = key.clone();
+                let drag_direction = *direction;
+                let drag_ratio = *ratio;
+                let mouse_key = key.clone();
+                let drag_start_cursor = Rc::new(Cell::new(None));
+                let mouse_starts = self.split_starts.clone();
+                let decrement_key = key.clone();
+                let increment_key = key.clone();
+                let arrow_key = key.clone();
+
+                // Keep the actual layout separator one pixel wide. Its absolutely
+                // positioned child supplies an eight-pixel, centered hit target.
                 let handle = div()
-                    .id(SharedString::from(format!("split-handle:{}", key_inc.0)))
-                    .flex_shrink_0()
-                    .when(*direction == SplitDirection::Horizontal, |e| {
-                        e.w(px(5.)).h_full().cursor_col_resize()
+                    .id(SharedString::from(format!("split-handle:{}", key.0)))
+                    .debug_selector({
+                        let key = key.clone();
+                        move || format!("split-handle:{}", key.0)
                     })
-                    .when(*direction == SplitDirection::Vertical, |e| {
-                        e.h(px(5.)).w_full().cursor_row_resize()
+                    .relative()
+                    .flex_shrink_0()
+                    .when(*direction == SplitDirection::Horizontal, |element| {
+                        element.w(px(SPLIT_BAR_WIDTH)).h_full()
+                    })
+                    .when(*direction == SplitDirection::Vertical, |element| {
+                        element.h(px(SPLIT_BAR_WIDTH)).w_full()
                     })
                     .bg(handle_color)
-                    .hover(|e| e.bg(self.theme.focused))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| {
-                            this.model.resize(&key_inc, amount + 0.04);
-                            this.finish(cx)
-                        }),
-                    )
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(move |this, _, _, cx| {
-                            this.model.resize(&key_dec, amount - 0.04);
-                            this.finish(cx)
-                        }),
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("split-hit-target:{}", key.0)))
+                            .debug_selector({
+                                let key = key.clone();
+                                move || format!("split-hit-target:{}", key.0)
+                            })
+                            .absolute()
+                            .focusable()
+                            .tab_stop(true)
+                            .role(gpui::Role::Splitter)
+                            .accessibility_id(format!("mullion-splitter-{}", key.0))
+                            .aria_label("Resize panes")
+                            .aria_min_numeric_value(0.1)
+                            .aria_max_numeric_value(0.9)
+                            .aria_numeric_value(*ratio)
+                            .aria_numeric_value_step(KEYBOARD_RESIZE_STEP)
+                            .aria_orientation(match direction {
+                                SplitDirection::Horizontal => gpui::Orientation::Vertical,
+                                SplitDirection::Vertical => gpui::Orientation::Horizontal,
+                            })
+                            .aria_keyshortcuts("Ctrl+Alt+[ Ctrl+Alt+]")
+                            .when(*direction == SplitDirection::Horizontal, |element| {
+                                element
+                                    .left(px(-(SPLIT_HIT_TARGET - SPLIT_BAR_WIDTH) / 2.0))
+                                    .w(px(SPLIT_HIT_TARGET))
+                                    .h_full()
+                                    .cursor_col_resize()
+                            })
+                            .when(*direction == SplitDirection::Vertical, |element| {
+                                element
+                                    .top(px(-(SPLIT_HIT_TARGET - SPLIT_BAR_WIDTH) / 2.0))
+                                    .h(px(SPLIT_HIT_TARGET))
+                                    .w_full()
+                                    .cursor_row_resize()
+                            })
+                            .hover(move |element| element.bg(focused_color))
+                            .block_mouse_except_scroll()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, event: &gpui::MouseDownEvent, _, _| {
+                                    mouse_starts
+                                        .borrow_mut()
+                                        .insert(mouse_key.clone(), event.position);
+                                    this.keyboard_split = Some(mouse_key.clone());
+                                }),
+                            )
+                            .on_key_down(cx.listener(
+                                move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                    let delta = match event.keystroke.key.as_str() {
+                                        "left" | "up" => -KEYBOARD_RESIZE_STEP,
+                                        "right" | "down" => KEYBOARD_RESIZE_STEP,
+                                        _ => return,
+                                    };
+                                    if let Some(current) =
+                                        crate::tree::find_ratio(this.model.tree(), &arrow_key)
+                                    {
+                                        this.model.resize(&arrow_key, current + delta);
+                                        this.finish(cx);
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
+                            .on_a11y_action(gpui::AccessibleAction::Decrement, {
+                                let view = cx.entity().downgrade();
+                                move |_, _, cx| {
+                                    view.update(cx, |this, cx| {
+                                        if let Some(current) = crate::tree::find_ratio(
+                                            this.model.tree(),
+                                            &decrement_key,
+                                        ) {
+                                            this.model.resize(
+                                                &decrement_key,
+                                                current - KEYBOARD_RESIZE_STEP,
+                                            );
+                                            this.finish(cx);
+                                        }
+                                    })
+                                    .ok();
+                                }
+                            })
+                            .on_a11y_action(gpui::AccessibleAction::Increment, {
+                                let view = cx.entity().downgrade();
+                                move |_, _, cx| {
+                                    view.update(cx, |this, cx| {
+                                        if let Some(current) = crate::tree::find_ratio(
+                                            this.model.tree(),
+                                            &increment_key,
+                                        ) {
+                                            this.model.resize(
+                                                &increment_key,
+                                                current + KEYBOARD_RESIZE_STEP,
+                                            );
+                                            this.finish(cx);
+                                        }
+                                    })
+                                    .ok();
+                                }
+                            })
+                            .on_drag(
+                                SplitDrag {
+                                    split_key: drag_key,
+                                    direction: drag_direction,
+                                    start_ratio: drag_ratio,
+                                    start_cursor: drag_start_cursor,
+                                    parent_bounds: Cell::new(None),
+                                },
+                                move |drag, _, window, cx| {
+                                    drag.start_cursor.set(Some(
+                                        drag_starts
+                                            .borrow()
+                                            .get(&drag.split_key)
+                                            .copied()
+                                            .unwrap_or_else(|| window.mouse_position()),
+                                    ));
+                                    drag.parent_bounds
+                                        .set(drag_bounds.borrow().get(&drag.split_key).copied());
+                                    *drag_active.borrow_mut() =
+                                        Some((drag.split_key.clone(), drag.start_ratio));
+                                    cx.new(|_| SplitDragPreview)
+                                },
+                            ),
                     );
-                div()
+
+                let active_on_drop = self.active_split.clone();
+                let parent = div()
+                    .id(SharedString::from(format!("split-container:{}", key.0)))
+                    .debug_selector({
+                        let key = key.clone();
+                        move || format!("split-container:{}", key.0)
+                    })
                     .size_full()
                     .flex()
                     .overflow_hidden()
-                    .when(*direction == SplitDirection::Vertical, |e| e.flex_col())
+                    .when(*direction == SplitDirection::Vertical, |element| {
+                        element.flex_col()
+                    })
+                    .on_drag_move::<SplitDrag>(cx.listener(
+                        move |this, event: &gpui::DragMoveEvent<SplitDrag>, _, cx| {
+                            let drag = event.drag(cx);
+                            let Some(start) = drag.start_cursor.get() else {
+                                return;
+                            };
+                            let bounds = drag.parent_bounds.get().unwrap_or(event.bounds);
+                            let (delta, extent) = match drag.direction {
+                                SplitDirection::Horizontal => {
+                                    (event.event.position.x - start.x, bounds.size.width)
+                                }
+                                SplitDirection::Vertical => {
+                                    (event.event.position.y - start.y, bounds.size.height)
+                                }
+                            };
+                            if extent > px(0.) {
+                                this.model.resize(
+                                    &drag.split_key,
+                                    drag.start_ratio + f64::from(delta / extent),
+                                );
+                                this.finish(cx);
+                            }
+                        },
+                    ))
+                    .on_drop::<SplitDrag>(move |_, _, _| {
+                        active_on_drop.borrow_mut().take();
+                    })
                     .child(
                         div()
                             .flex_none()
-                            .when(*direction == SplitDirection::Horizontal, |e| {
-                                e.w(relative(*ratio as f32)).h_full()
+                            .when(*direction == SplitDirection::Horizontal, |element| {
+                                element.w(relative(*ratio as f32)).h_full()
                             })
-                            .when(*direction == SplitDirection::Vertical, |e| {
-                                e.h(relative(*ratio as f32)).w_full()
+                            .when(*direction == SplitDirection::Vertical, |element| {
+                                element.h(relative(*ratio as f32)).w_full()
                             })
                             .child(first_el),
                     )
                     .child(handle)
-                    .child(div().flex_1().min_w_0().min_h_0().child(second_el))
-                    .into_any_element()
+                    .child(div().flex_1().min_w_0().min_h_0().child(second_el));
+
+                SplitBoundsRecorder {
+                    key,
+                    bounds: self.split_bounds.clone(),
+                    child: parent.into_any_element(),
+                }
+                .into_any_element()
             }
         }
     }
@@ -595,6 +878,22 @@ impl<D: PaneData> Render for MullionView<D> {
             .on_action(cx.listener(|this, _: &BalancePanes, _, cx| {
                 this.command(crate::PaneCommand::Balance, cx)
             }))
+            .on_action(cx.listener(|this, _: &ResizeSplitDecrease, _, cx| {
+                this.resize_keyboard_split(-KEYBOARD_RESIZE_STEP, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ResizeSplitIncrease, _, cx| {
+                this.resize_keyboard_split(KEYBOARD_RESIZE_STEP, cx)
+            }))
+            .on_action(cx.listener(|this, _: &CancelSplitResize, window, cx| {
+                this.cancel_split_resize(window, cx)
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| {
+                    this.active_split.borrow_mut().take();
+                    this.split_starts.borrow_mut().clear();
+                }),
+            )
             .when_some(workspace_tabs, |element, tabs| {
                 element.child(
                     div()
@@ -631,6 +930,9 @@ pub fn register_key_bindings(cx: &mut App) {
         gpui::KeyBinding::new("ctrl-shift-backspace", ClosePane, None),
         gpui::KeyBinding::new("ctrl-shift-enter", ToggleZoom, None),
         gpui::KeyBinding::new("ctrl-alt-=", BalancePanes, None),
+        gpui::KeyBinding::new("ctrl-alt-[", ResizeSplitDecrease, Some("Mullion")),
+        gpui::KeyBinding::new("ctrl-alt-]", ResizeSplitIncrease, Some("Mullion")),
+        gpui::KeyBinding::new("escape", CancelSplitResize, Some("Mullion")),
     ]);
 }
 
@@ -782,6 +1084,146 @@ mod tests {
         cx.update(|_| {});
         cx.run_until_parked();
         assert_eq!(disposals.get(), 1);
+    }
+
+    fn split(
+        direction: SplitDirection,
+        ratio: f64,
+        first: PaneNode<String>,
+        second: PaneNode<String>,
+    ) -> PaneNode<String> {
+        PaneNode::Split {
+            direction,
+            ratio,
+            first: Box::new(first),
+            second: Box::new(second),
+        }
+    }
+
+    fn leaf(id: &str) -> PaneNode<String> {
+        PaneNode::leaf(PaneId::new(id), id.to_string())
+    }
+
+    fn ratio(
+        view: &gpui::Entity<MullionView<String>>,
+        key: &str,
+        cx: &mut gpui::VisualTestContext,
+    ) -> f64 {
+        view.read_with(cx, |view, _| {
+            crate::tree::find_ratio(view.model().tree(), &PaneId::new(key)).unwrap()
+        })
+    }
+
+    #[gpui::test]
+    fn horizontal_split_drag_is_proportional_clamped_exact_and_released(cx: &mut TestAppContext) {
+        let tree = split(SplitDirection::Horizontal, 0.5, leaf("a"), leaf("b"));
+        let (view, cx) = cx.add_window_view(move |_, cx| MullionView::new(tree, vec![], cx));
+        cx.simulate_resize(gpui::size(px(1000.), px(700.)));
+        cx.run_until_parked();
+
+        let events = Rc::new(RefCell::new(Vec::<PaneEvent<String>>::new()));
+        let event_log = events.clone();
+        let observed = view.clone();
+        view.update(cx, move |_, cx| {
+            cx.subscribe(&observed, move |_, _, event: &PaneEvent<String>, _| {
+                event_log.borrow_mut().push(event.clone());
+            })
+            .detach();
+        });
+
+        let handle = cx.debug_bounds("split-hit-target:b").unwrap();
+        let parent = cx.debug_bounds("split-container:b").unwrap();
+        let bar = cx.debug_bounds("split-handle:b").unwrap();
+        assert_eq!(handle.size.width, px(8.));
+        assert_eq!(bar.size.width, px(1.));
+        assert_eq!(handle.center().x, bar.center().x);
+        let start = handle.center();
+        cx.simulate_mouse_down(start, MouseButton::Right, gpui::Modifiers::none());
+        cx.simulate_mouse_up(start, MouseButton::Right, gpui::Modifiers::none());
+        assert_eq!(ratio(&view, "b", cx), 0.5);
+
+        cx.simulate_click(start, gpui::Modifiers::none());
+        cx.dispatch_action(ResizeSplitIncrease);
+        assert_eq!(ratio(&view, "b", cx), 0.55);
+        cx.dispatch_action(ResizeSplitDecrease);
+        assert_eq!(ratio(&view, "b", cx), 0.5);
+
+        cx.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_move(
+            gpui::point(start.x + px(4.), start.y),
+            Some(MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_move(
+            gpui::point(start.x + parent.size.width / 4., start.y),
+            Some(MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        assert_eq!(ratio(&view, "b", cx), 0.75);
+
+        let logged = events.borrow();
+        let resized = logged.iter().rev().find_map(|event| match event {
+            PaneEvent::Resized { split_key, ratio } => Some((split_key, *ratio)),
+            _ => None,
+        });
+        assert_eq!(resized, Some((&PaneId::new("b"), 0.75)));
+        let snapshot_ratio = logged.iter().rev().find_map(|event| match event {
+            PaneEvent::TreeChanged { tree } => crate::tree::find_ratio(tree, &PaneId::new("b")),
+            _ => None,
+        });
+        assert_eq!(snapshot_ratio, Some(0.75));
+        drop(logged);
+
+        cx.simulate_mouse_move(
+            gpui::point(parent.right() + parent.size.width, start.y),
+            Some(MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        assert_eq!(ratio(&view, "b", cx), 0.9);
+        cx.simulate_mouse_up(
+            gpui::point(parent.right() + parent.size.width, start.y),
+            MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_move(start, None, gpui::Modifiers::none());
+        assert_eq!(ratio(&view, "b", cx), 0.9);
+    }
+
+    #[gpui::test]
+    fn nested_vertical_drag_uses_its_parent_bounds_and_cancels(cx: &mut TestAppContext) {
+        let nested = split(SplitDirection::Vertical, 0.5, leaf("b"), leaf("c"));
+        let tree = split(SplitDirection::Horizontal, 0.4, leaf("a"), nested);
+        let (view, cx) = cx.add_window_view(move |_, cx| MullionView::new(tree, vec![], cx));
+        cx.simulate_resize(gpui::size(px(1000.), px(800.)));
+        cx.run_until_parked();
+
+        let handle = cx.debug_bounds("split-hit-target:c").unwrap();
+        let parent = cx.debug_bounds("split-container:c").unwrap();
+        assert_eq!(handle.size.height, px(8.));
+        assert!(parent.size.width < cx.debug_bounds("split-container:b").unwrap().size.width);
+        let start = handle.center();
+        cx.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_move(
+            gpui::point(start.x, start.y + px(4.)),
+            Some(MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_move(
+            gpui::point(start.x, start.y + parent.size.height / 4.),
+            Some(MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        assert_eq!(ratio(&view, "c", cx), 0.75);
+        assert_eq!(ratio(&view, "b", cx), 0.4);
+
+        cx.dispatch_action(CancelSplitResize);
+        assert_eq!(ratio(&view, "c", cx), 0.5);
+        cx.simulate_mouse_move(
+            gpui::point(start.x, start.y + parent.size.height / 3.),
+            Some(MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        assert_eq!(ratio(&view, "c", cx), 0.5);
     }
 
     #[test]
