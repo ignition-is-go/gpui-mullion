@@ -33,9 +33,12 @@ struct BrowserActiveActivity {
 }
 
 fn activity(id: &str, name: &str, color: u32) -> ActivityNode<PaneData> {
+    let activity_id = ActivityId::new(id);
+    let content_label = activity_id.0.clone();
+    let name: gpui::SharedString = name.to_owned().into();
     ActivityNode::Activity(Activity {
-        id: ActivityId::new(id),
-        name: name.to_owned().into(),
+        id: activity_id,
+        name: name.clone(),
         filter: |_| true,
         render: Arc::new(move |pane, data| {
             div()
@@ -48,7 +51,7 @@ fn activity(id: &str, name: &str, color: u32) -> ActivityNode<PaneData> {
                 .bg(rgb(color))
                 .text_color(gpui::white())
                 .text_xl()
-                .child(format!("{} · {}", data.project, pane.0))
+                .child(format!("{content_label} · {} · {}", data.project, pane.0))
                 .child("Drag a pane onto another to move it")
                 .child("Left/right-click a separator to resize")
                 .into_any_element()
