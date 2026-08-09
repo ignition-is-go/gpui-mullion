@@ -48,6 +48,50 @@ impl ActivityBarEdge {
     }
 }
 
+/// Built-in pane management controls, in their reference render order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaneControl {
+    Move,
+    SplitHorizontal,
+    SplitVertical,
+    Close,
+}
+
+impl PaneControl {
+    pub const ORDER: [Self; 4] = [
+        Self::Move,
+        Self::SplitHorizontal,
+        Self::SplitVertical,
+        Self::Close,
+    ];
+
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Move => "move",
+            Self::SplitHorizontal => "split-h",
+            Self::SplitVertical => "split-v",
+            Self::Close => "close",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Move => "Move",
+            Self::SplitHorizontal => "Split H",
+            Self::SplitVertical => "Split V",
+            Self::Close => "Close",
+        }
+    }
+
+    pub fn debug_selector(self, pane: &PaneId) -> String {
+        format!("pane-control:{}:{}", self.key(), pane.0)
+    }
+
+    pub fn accessibility_id(self, pane: &PaneId) -> String {
+        format!("mullion-pane-{}-{}", self.key(), pane.0)
+    }
+}
+
 /// Per-pane visibility policy for an activity bar.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ActivityBarMode {

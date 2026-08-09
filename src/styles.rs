@@ -38,8 +38,26 @@ pub struct ActivityBarStyle {
     pub active_icon_opacity: f32,
 }
 
-/// Split grabber geometry separates the painted line from its pointer target.
+/// Geometry for the built-in pane management affordances.
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PaneControlStyle {
+    pub compact_size: Pixels,
+    pub compact_icon_size: Pixels,
+    pub expanded_label_size: Pixels,
+    pub hidden_size: Pixels,
+    pub hidden_icon_size: Pixels,
+    pub capsule_inset: Pixels,
+    pub capsule_padding: Pixels,
+    pub capsule_gap: Pixels,
+    pub capsule_radius: Pixels,
+    pub capsule_border_width: Pixels,
+    pub capsule_opacity: f32,
+    pub capsule_background: Hsla,
+    pub capsule_border: Hsla,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+/// Split grabber geometry separates the painted line from its pointer target.
 pub struct SplitHandleStyle {
     pub thickness: Pixels,
     pub hover_target_thickness: Pixels,
@@ -86,6 +104,7 @@ pub struct MullionStyles {
     pub root: MullionRootStyle,
     pub pane: PaneStyle,
     pub activity_bar: ActivityBarStyle,
+    pub pane_controls: PaneControlStyle,
     pub split_handle: SplitHandleStyle,
     pub drop_overlay: DropOverlayStyle,
     pub header: PaneHeaderStyle,
@@ -122,6 +141,21 @@ impl MullionStyles {
                 category_edge: rgba(0xffffff14).into(),
                 inactive_icon_opacity: 0.5,
                 active_icon_opacity: 1.0,
+            },
+            pane_controls: PaneControlStyle {
+                compact_size: px(28.),
+                compact_icon_size: px(14.),
+                expanded_label_size: px(11.),
+                hidden_size: px(22.),
+                hidden_icon_size: px(13.),
+                capsule_inset: px(6.),
+                capsule_padding: px(2.),
+                capsule_gap: px(2.),
+                capsule_radius: px(6.),
+                capsule_border_width: px(1.),
+                capsule_opacity: 0.95,
+                capsule_background: theme.surface,
+                capsule_border: theme.border,
             },
             split_handle: SplitHandleStyle {
                 thickness: px(4.),

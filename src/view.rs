@@ -6,9 +6,9 @@ use crate::{
     MullionOverlay, MullionSettings, MullionStyles, MullionTheme, MullionThemeMode, NewPaneFactory,
     OverlayAlignment, OverlayError, OverlayHostConfig, OverlayLength, PaletteEntry,
     PaletteInvocation, PaletteInvocationError, PaletteSearchResult, PaneCommandExecutionOptions,
-    PaneData, PaneDirection, PaneEvent, PaneFocusBehavior, PaneId, PaneNode, PaneSplitFactory,
-    SplitDirection, VisibleActivityNode, WorkspaceChanged, WorkspaceEvent, WorkspaceId,
-    WorkspaceSet, WorkspaceSetError,
+    PaneControl, PaneData, PaneDirection, PaneEvent, PaneFocusBehavior, PaneId, PaneNode,
+    PaneSplitFactory, SplitDirection, VisibleActivityNode, WorkspaceChanged, WorkspaceEvent,
+    WorkspaceId, WorkspaceSet, WorkspaceSetError,
 };
 use gpui::{
     actions, div, prelude::*, px, relative, AnyElement, App, Bounds, Context, DragMoveEvent,
@@ -50,6 +50,15 @@ struct InternalEdges {
     right: bool,
     bottom: bool,
     left: bool,
+}
+
+#[derive(Clone, Copy)]
+struct PaneControlRenderStyle {
+    size: Pixels,
+    icon_size: Pixels,
+    label_size: Pixels,
+    show_label: bool,
+    theme: MullionTheme,
 }
 
 type SplitBounds = Rc<RefCell<HashMap<PaneId, Bounds<Pixels>>>>;
@@ -1422,6 +1431,168 @@ impl<D: PaneData> MullionView<D> {
         rendered
     }
 
+    fn render_pane_command_control(
+        pane: &PaneId,
+        control: PaneControl,
+        command: crate::PaneCommand,
+        enabled: bool,
+        style: PaneControlRenderStyle,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let icon = match control {
+            PaneControl::Move => "⠿",
+            PaneControl::SplitHorizontal => "◫",
+            PaneControl::SplitVertical => "⊟",
+            PaneControl::Close => "×",
+        };
+        let selector = control.debug_selector(pane);
+        let accessibility_id = control.accessibility_id(pane);
+        let pane_click = pane.clone();
+        let pane_key = pane.clone();
+        let pane_a11y = pane.clone();
+        let click_command = command;
+        let key_command = command;
+        let a11y_command = command;
+        let click_view = cx.entity().downgrade();
+        let key_view = cx.entity().downgrade();
+        let a11y_view = cx.entity().downgrade();
+        let mut element = div()
+            .id(SharedString::from(selector.clone()))
+            .debug_selector(move || selector.clone())
+            .role(gpui::Role::Button)
+            .accessibility_id(accessibility_id)
+            .aria_label(control.label())
+            .aria_description(if enabled {
+                format!("{} pane {}", control.label(), pane.0)
+            } else {
+                format!("{} pane {} (unavailable)", control.label(), pane.0)
+            })
+            .focusable()
+            .tab_stop(enabled)
+            .h(style.size)
+            .w(style.size)
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .overflow_hidden()
+            .text_color(style.theme.text)
+            .when(enabled, |element| {
+                element
+                    .cursor_pointer()
+                    .hover(|element| element.bg(style.theme.accent))
+            })
+            .when(!enabled, |element| {
+                element.cursor_not_allowed().opacity(0.35)
+            })
+            .child(
+                div()
+                    .w(style.size)
+                    .h(style.size)
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(style.icon_size)
+                    .child(icon),
+            )
+            .when(style.show_label, |element| {
+                element.child(
+                    div()
+                        .text_size(style.label_size)
+                        .whitespace_nowrap()
+                        .child(control.label()),
+                )
+            });
+        if enabled {
+            element = element
+                .on_click(move |_, _, cx| {
+                    click_view
+                        .update(cx, |this, cx| {
+                            this.model.focus(&pane_click);
+                            this.command(click_command, cx);
+                        })
+                        .ok();
+                })
+                .on_key_down(move |event: &gpui::KeyDownEvent, _, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space" | " ") {
+                        key_view
+                            .update(cx, |this, cx| {
+                                this.model.focus(&pane_key);
+                                this.command(key_command, cx);
+                            })
+                            .ok();
+                        cx.stop_propagation();
+                    }
+                })
+                .on_a11y_action(gpui::AccessibleAction::Click, move |_, _, cx| {
+                    a11y_view
+                        .update(cx, |this, cx| {
+                            this.model.focus(&pane_a11y);
+                            this.command(a11y_command, cx);
+                        })
+                        .ok();
+                });
+        }
+        element.into_any_element()
+    }
+
+    fn render_pane_move_control(
+        pane: &PaneId,
+        size: Pixels,
+        icon_size: Pixels,
+        icon: Option<AnyElement>,
+        theme: MullionTheme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let selector = PaneControl::Move.debug_selector(pane);
+        let pane_drag = pane.clone();
+        let pane_key = pane.clone();
+        let drag_selector = format!("pane-drag-handle:{}", pane.0);
+        let view = cx.entity().downgrade();
+        div()
+            .id(SharedString::from(selector.clone()))
+            .debug_selector(move || selector.clone())
+            .role(gpui::Role::Button)
+            .accessibility_id(PaneControl::Move.accessibility_id(pane))
+            .aria_label(PaneControl::Move.label())
+            .aria_description(format!("Move pane {}", pane.0))
+            .aria_keyshortcuts("Mullion move-pane commands")
+            .focusable()
+            .tab_stop(true)
+            .h(size)
+            .w(size)
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_move()
+            .text_color(theme.text)
+            .on_drag(DockDrag::pane(pane_drag), |drag, _, _, cx| {
+                cx.new(|_| drag.clone())
+            })
+            .on_key_down(move |event: &gpui::KeyDownEvent, _, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space" | " ") {
+                    view.update(cx, |this, cx| {
+                        this.model.focus(&pane_key);
+                        this.finish(cx);
+                    })
+                    .ok();
+                    cx.stop_propagation();
+                }
+            })
+            .child(
+                div()
+                    .debug_selector(move || drag_selector.clone())
+                    .size(icon_size)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(icon_size)
+                    .child(icon.unwrap_or_else(|| div().child("⠿").into_any_element())),
+            )
+            .into_any_element()
+    }
+
     fn render_leaf(
         &mut self,
         id: &PaneId,
@@ -1464,15 +1635,6 @@ impl<D: PaneData> MullionView<D> {
         let hover_focus_handle = self.focus_handle.clone();
         let id_drop = id.clone();
         let id_move = id.clone();
-        let id_drag_header = id.clone();
-        let key_drag_header = id.clone();
-        let id_drag_activity = id.clone();
-        let key_drag_activity = id.clone();
-        let id_close = id.clone();
-        let key_close = id.clone();
-        let a11y_close = id.clone();
-        let drag_accessibility = crate::MullionAccessibilityNode::drag_handle(id);
-        let close_accessibility = crate::MullionAccessibilityNode::close_pane(id);
         let can_create_panes = self.dock_config.can_create_panes();
         let activities = self.all_activities(data);
         let selected = active
@@ -1540,13 +1702,12 @@ impl<D: PaneData> MullionView<D> {
         if let Some(render) = self.host.header.accessory.clone() {
             custom_headers.push(render(id, data, window, cx));
         }
-        let header = self.host.header.visible.then(|| {
+        let header = (self.host.header.visible && selected.is_some()).then(|| {
             div()
                 .h(styles.header.height)
                 .flex_shrink_0()
                 .flex()
                 .items_center()
-                .justify_between()
                 .px(styles.header.horizontal_padding)
                 .gap(styles.header.gap)
                 .border_b(styles.header.border_width)
@@ -1556,85 +1717,11 @@ impl<D: PaneData> MullionView<D> {
                 .text_size(styles.header.font_size)
                 .child(
                     div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div()
-                                .id(SharedString::from(format!("pane-drag-handle:{}", id.0)))
-                                .debug_selector({
-                                    let id = id.clone();
-                                    move || format!("pane-drag-handle:{}", id.0)
-                                })
-                                .role(gpui::Role::Button)
-                                .accessibility_id(format!("mullion-pane-drag-{}", id.0))
-                                .aria_label(drag_accessibility.label.clone())
-                                .aria_description(drag_accessibility.description.clone())
-                                .aria_keyshortcuts("Mullion move-pane commands")
-                                .focusable()
-                                .tab_stop(true)
-                                .cursor_move()
-                                .px_1()
-                                .on_drag(DockDrag::pane(id_drag_header), |drag, _, _, cx| {
-                                    cx.new(|_| drag.clone())
-                                })
-                                .on_key_down(cx.listener(
-                                    move |this, event: &gpui::KeyDownEvent, _, cx| {
-                                        if matches!(
-                                            event.keystroke.key.as_str(),
-                                            "enter" | "space" | " "
-                                        ) {
-                                            this.model.focus(&key_drag_header);
-                                            this.finish(cx);
-                                            cx.stop_propagation();
-                                        }
-                                    },
-                                ))
-                                .child("⠿"),
-                        )
-                        .child(
-                            selected
-                                .as_ref()
-                                .map(|a| a.name.clone())
-                                .unwrap_or_else(|| SharedString::from("Pane")),
-                        )
-                        .children(custom_headers),
+                        .text_color(styles.header.title)
+                        .font_weight(gpui::FontWeight(styles.header.title_weight.into()))
+                        .child(selected.as_ref().unwrap().name.clone()),
                 )
-                .child(
-                    div()
-                        .id(SharedString::from(format!("close:{}", id.0)))
-                        .role(gpui::Role::Button)
-                        .accessibility_id(format!("mullion-pane-close-{}", id.0))
-                        .aria_label(close_accessibility.label)
-                        .aria_description(close_accessibility.description)
-                        .focusable()
-                        .tab_stop(true)
-                        .px_2()
-                        .cursor_pointer()
-                        .hover(|e| e.bg(theme.accent))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.model.close(&id_close);
-                            this.finish(cx)
-                        }))
-                        .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space" | " ") {
-                                this.model.close(&key_close);
-                                this.finish(cx);
-                                cx.stop_propagation();
-                            }
-                        }))
-                        .on_a11y_action(gpui::AccessibleAction::Click, {
-                            let view = cx.entity().downgrade();
-                            move |_, _, cx| {
-                                view.update(cx, |this, cx| {
-                                    this.model.close(&a11y_close);
-                                    this.finish(cx);
-                                })
-                                .ok();
-                            }
-                        })
-                        .child("×"),
-                )
+                .children(custom_headers)
         });
         let app_icon = self
             .host
@@ -1660,6 +1747,66 @@ impl<D: PaneData> MullionView<D> {
             .pane_accessory
             .clone()
             .map(|render| render(id, data, window, cx));
+        let can_split = self.command_options.split_factory().is_some();
+        let can_close = pane_ids.len() > 1;
+        let compact_move = (mode != ActivityBarMode::Hidden).then(|| {
+            Self::render_pane_move_control(
+                id,
+                styles.pane_controls.compact_size,
+                styles.pane_controls.compact_icon_size,
+                app_icon,
+                theme,
+                cx,
+            )
+        });
+        let compact_split_h = (mode != ActivityBarMode::Hidden).then(|| {
+            Self::render_pane_command_control(
+                id,
+                PaneControl::SplitHorizontal,
+                crate::PaneCommand::Split(SplitDirection::Horizontal),
+                can_split,
+                PaneControlRenderStyle {
+                    size: styles.pane_controls.compact_size,
+                    icon_size: styles.pane_controls.compact_icon_size,
+                    label_size: styles.pane_controls.expanded_label_size,
+                    show_label: true,
+                    theme,
+                },
+                cx,
+            )
+        });
+        let compact_split_v = (mode != ActivityBarMode::Hidden).then(|| {
+            Self::render_pane_command_control(
+                id,
+                PaneControl::SplitVertical,
+                crate::PaneCommand::Split(SplitDirection::Vertical),
+                can_split,
+                PaneControlRenderStyle {
+                    size: styles.pane_controls.compact_size,
+                    icon_size: styles.pane_controls.compact_icon_size,
+                    label_size: styles.pane_controls.expanded_label_size,
+                    show_label: true,
+                    theme,
+                },
+                cx,
+            )
+        });
+        let compact_close = (mode != ActivityBarMode::Hidden).then(|| {
+            Self::render_pane_command_control(
+                id,
+                PaneControl::Close,
+                crate::PaneCommand::Close,
+                can_close,
+                PaneControlRenderStyle {
+                    size: styles.pane_controls.compact_size,
+                    icon_size: styles.pane_controls.compact_icon_size,
+                    label_size: styles.pane_controls.expanded_label_size,
+                    show_label: true,
+                    theme,
+                },
+                cx,
+            )
+        });
         let bar = (mode != ActivityBarMode::Hidden).then(|| {
             let pane = id.clone();
             let delay = self.host.activity_bar.behavior.hover_intent.expand_delay_ms;
@@ -1758,15 +1905,93 @@ impl<D: PaneData> MullionView<D> {
                 }));
             if bar_visible {
                 bar = bar
-                    .p(styles.activity_bar.expanded_padding)
-                    .when_some(app_icon, |bar, icon| bar.child(icon))
-                    .when_some(leading_slot, |bar, slot| bar.child(slot))
+                    .when_some(compact_move, |bar, control| bar.child(control))
                     .children(primary_tabs)
                     .child(div().flex_1())
+                    .when_some(leading_slot, |bar, slot| bar.child(slot))
                     .children(trailing_tabs)
-                    .when_some(trailing_slot, |bar, slot| bar.child(slot));
+                    .when_some(trailing_slot, |bar, slot| bar.child(slot))
+                    .when_some(pane_accessory, |bar, accessory| bar.child(accessory))
+                    .when_some(compact_split_h, |bar, control| bar.child(control))
+                    .when_some(compact_split_v, |bar, control| bar.child(control))
+                    .when_some(compact_close, |bar, control| bar.child(control));
             }
             bar.into_any_element()
+        });
+        let hidden_controls = (mode == ActivityBarMode::Hidden && focused).then(|| {
+            let move_control = Self::render_pane_move_control(
+                id,
+                styles.pane_controls.hidden_size,
+                styles.pane_controls.hidden_icon_size,
+                None,
+                theme,
+                cx,
+            );
+            let split_h = Self::render_pane_command_control(
+                id,
+                PaneControl::SplitHorizontal,
+                crate::PaneCommand::Split(SplitDirection::Horizontal),
+                can_split,
+                PaneControlRenderStyle {
+                    size: styles.pane_controls.hidden_size,
+                    icon_size: styles.pane_controls.hidden_icon_size,
+                    label_size: styles.pane_controls.expanded_label_size,
+                    show_label: false,
+                    theme,
+                },
+                cx,
+            );
+            let split_v = Self::render_pane_command_control(
+                id,
+                PaneControl::SplitVertical,
+                crate::PaneCommand::Split(SplitDirection::Vertical),
+                can_split,
+                PaneControlRenderStyle {
+                    size: styles.pane_controls.hidden_size,
+                    icon_size: styles.pane_controls.hidden_icon_size,
+                    label_size: styles.pane_controls.expanded_label_size,
+                    show_label: false,
+                    theme,
+                },
+                cx,
+            );
+            let close = Self::render_pane_command_control(
+                id,
+                PaneControl::Close,
+                crate::PaneCommand::Close,
+                can_close,
+                PaneControlRenderStyle {
+                    size: styles.pane_controls.hidden_size,
+                    icon_size: styles.pane_controls.hidden_icon_size,
+                    label_size: styles.pane_controls.expanded_label_size,
+                    show_label: false,
+                    theme,
+                },
+                cx,
+            );
+            div()
+                .id(SharedString::from(format!("pane-controls:{}", id.0)))
+                .debug_selector({
+                    let id = id.clone();
+                    move || format!("pane-controls:{}", id.0)
+                })
+                .aria_label(format!("Pane controls for {}", id.0))
+                .absolute()
+                .top(styles.pane_controls.capsule_inset - styles.pane.border_width)
+                .right(styles.pane_controls.capsule_inset - styles.pane.border_width)
+                .p(styles.pane_controls.capsule_padding)
+                .gap(styles.pane_controls.capsule_gap)
+                .rounded(styles.pane_controls.capsule_radius)
+                .border(styles.pane_controls.capsule_border_width)
+                .border_color(styles.pane_controls.capsule_border)
+                .bg(styles.pane_controls.capsule_background)
+                .opacity(styles.pane_controls.capsule_opacity)
+                .flex()
+                .items_center()
+                .child(move_control)
+                .child(split_h)
+                .child(split_v)
+                .child(close)
         });
         let unfocused_opacity = if focused {
             1.0
@@ -1891,9 +2116,6 @@ impl<D: PaneData> MullionView<D> {
                     .flex()
                     .flex_col()
                     .when_some(header, |content, header| content.child(header))
-                    .when_some(pane_accessory, |content, accessory| {
-                        content.child(accessory)
-                    })
                     .child(div().flex_1().min_h_0().overflow_hidden().child(body));
                 let visual = div()
                     .id(SharedString::from(format!("pane-visual:{}", id.0)))
@@ -1904,47 +2126,6 @@ impl<D: PaneData> MullionView<D> {
                     .size_full()
                     .relative()
                     .flex()
-                    .when(!self.host.header.visible, |visual| {
-                        visual.child(
-                            div()
-                                .id(SharedString::from(format!("pane-drag-handle:{}", id.0)))
-                                .debug_selector({
-                                    let id = id.clone();
-                                    move || format!("pane-drag-handle:{}", id.0)
-                                })
-                                .role(gpui::Role::Button)
-                                .accessibility_id(format!("mullion-pane-drag-{}", id.0))
-                                .aria_label(drag_accessibility.label.clone())
-                                .aria_description(drag_accessibility.description.clone())
-                                .aria_keyshortcuts("Mullion move-pane commands")
-                                .focusable()
-                                .tab_stop(true)
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .cursor_move()
-                                .size(px(24.))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .on_drag(DockDrag::pane(id_drag_activity), |drag, _, _, cx| {
-                                    cx.new(|_| drag.clone())
-                                })
-                                .on_key_down(cx.listener(
-                                    move |this, event: &gpui::KeyDownEvent, _, cx| {
-                                        if matches!(
-                                            event.keystroke.key.as_str(),
-                                            "enter" | "space" | " "
-                                        ) {
-                                            this.model.focus(&key_drag_activity);
-                                            this.finish(cx);
-                                            cx.stop_propagation();
-                                        }
-                                    },
-                                ))
-                                .child("⠿"),
-                        )
-                    })
                     .when(horizontal, |visual| visual.flex_col())
                     .when(!horizontal, |visual| visual.flex_row())
                     .opacity(unfocused_opacity);
@@ -1958,6 +2139,7 @@ impl<D: PaneData> MullionView<D> {
                         .child(content)
                 }
             })
+            .when_some(hidden_controls, |pane, controls| pane.child(controls))
             .when_some(
                 self.dock_hover
                     .as_ref()
@@ -4032,6 +4214,146 @@ mod tests {
     pinned_edge_test!(pinned_right_rail_follows_content, ActivityBarEdge::Right);
     pinned_edge_test!(pinned_top_rail_precedes_content, ActivityBarEdge::Top);
     pinned_edge_test!(pinned_bottom_rail_follows_content, ActivityBarEdge::Bottom);
+
+    #[gpui::test]
+    fn pinned_pane_controls_have_exact_bounds_secondary_order_and_split_dispatch(
+        cx: &mut TestAppContext,
+    ) {
+        let slots = crate::ActivityBarSlots::new()
+            .with_leading(|_, _, _, _| {
+                div()
+                    .size(px(6.))
+                    .debug_selector(|| "bottom-leading".into())
+                    .into_any_element()
+            })
+            .with_trailing(|_, _, _, _| {
+                div()
+                    .size(px(6.))
+                    .debug_selector(|| "bottom-trailing".into())
+                    .into_any_element()
+            })
+            .with_pane_accessory(|_, _, _, _| {
+                div()
+                    .size(px(6.))
+                    .debug_selector(|| "pane-accessory-order".into())
+                    .into_any_element()
+            });
+        let catalog = ActivityCatalog::new(Vec::new()).with_trailing(vec![ActivityNode::Activity(
+            rendered_activity("trailing-control", show_activity),
+        )]);
+        let tree = PaneNode::leaf_with_activity(
+            PaneId::new("pane"),
+            ActivityId::new("trailing-control"),
+            "data".to_owned(),
+        );
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::try_new_with_catalog(tree, catalog, cx)
+                .unwrap()
+                .with_activity_bar_host(ActivityBarHostConfig::new().with_slots(slots))
+                .with_split_factory_fn(|pane, direction, data| {
+                    let suffix = match direction {
+                        SplitDirection::Horizontal => "h",
+                        SplitDirection::Vertical => "v",
+                    };
+                    Some((PaneId::new(format!("{}-{suffix}", pane.0)), data.clone()))
+                })
+        });
+        cx.simulate_resize(gpui::size(px(500.), px(400.)));
+        cx.run_until_parked();
+
+        let ordered = [
+            cx.debug_bounds("bottom-leading").unwrap(),
+            cx.debug_bounds("activity:pane:trailing-control").unwrap(),
+            cx.debug_bounds("bottom-trailing").unwrap(),
+            cx.debug_bounds("pane-accessory-order").unwrap(),
+            cx.debug_bounds("pane-control:split-h:pane").unwrap(),
+            cx.debug_bounds("pane-control:split-v:pane").unwrap(),
+            cx.debug_bounds("pane-control:close:pane").unwrap(),
+        ];
+        assert!(ordered
+            .windows(2)
+            .all(|pair| pair[0].bottom() <= pair[1].top()));
+        for selector in [
+            "pane-control:move:pane",
+            "pane-control:split-h:pane",
+            "pane-control:split-v:pane",
+            "pane-control:close:pane",
+        ] {
+            assert_eq!(
+                cx.debug_bounds(selector).unwrap().size,
+                gpui::size(px(28.), px(28.))
+            );
+        }
+
+        let split_h = cx
+            .debug_bounds("pane-control:split-h:pane")
+            .unwrap()
+            .center();
+        cx.simulate_click(split_h, gpui::Modifiers::none());
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| {
+            assert!(view.model().tree().find(&PaneId::new("pane-h")).is_some());
+            assert_eq!(
+                view.routed_commands.last(),
+                Some(&crate::PaneCommand::Split(SplitDirection::Horizontal))
+            );
+        });
+        let split_v = cx
+            .debug_bounds("pane-control:split-v:pane")
+            .unwrap()
+            .center();
+        cx.simulate_click(split_v, gpui::Modifiers::none());
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| {
+            assert!(view.model().tree().find(&PaneId::new("pane-v")).is_some());
+            assert_eq!(
+                view.routed_commands.last(),
+                Some(&crate::PaneCommand::Split(SplitDirection::Vertical))
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn hidden_capsule_has_exact_inset_bounds_order_and_disabled_controls_refuse_clicks(
+        cx: &mut TestAppContext,
+    ) {
+        let host = ActivityBarHostConfig::new().with_activity_bar(crate::ActivityBarConfig {
+            mode: ActivityBarMode::Hidden,
+            ..crate::ActivityBarConfig::default()
+        });
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::new(leaf("pane"), vec![], cx).with_activity_bar_host(host)
+        });
+        cx.simulate_resize(gpui::size(px(500.), px(320.)));
+        cx.run_until_parked();
+
+        let pane = cx.debug_bounds("pane:pane").unwrap();
+        let capsule = cx.debug_bounds("pane-controls:pane").unwrap();
+        assert_eq!(capsule.top(), pane.top() + px(6.));
+        assert_eq!(capsule.right(), pane.right() - px(6.));
+        assert_eq!(capsule.size, gpui::size(px(100.), px(28.)));
+        let selectors = [
+            "pane-control:move:pane",
+            "pane-control:split-h:pane",
+            "pane-control:split-v:pane",
+            "pane-control:close:pane",
+        ];
+        let bounds = selectors.map(|selector| cx.debug_bounds(selector).unwrap());
+        assert!(bounds
+            .windows(2)
+            .all(|pair| pair[0].right() + px(2.) == pair[1].left()));
+        assert!(bounds
+            .iter()
+            .all(|bounds| bounds.size == gpui::size(px(22.), px(22.))));
+
+        cx.simulate_click(bounds[1].center(), gpui::Modifiers::none());
+        cx.simulate_click(bounds[3].center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.model().tree().leaf_ids(), vec![PaneId::new("pane")]);
+            assert!(view.routed_commands.is_empty());
+        });
+    }
 
     #[gpui::test]
     fn hidden_and_autohide_rails_have_exact_overlay_geometry_and_cancel_stale_intent(
