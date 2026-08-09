@@ -1,7 +1,7 @@
 use gpui::{div, prelude::*, px, rgb, size, App, Bounds, WindowBounds, WindowOptions};
 use gpui_mullion::{
     register_key_bindings, Activity, ActivityId, ActivityNode, MullionView, PaneId, PaneNode,
-    SplitDirection,
+    SplitDirection, Workspace, WorkspaceId, WorkspaceSet,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -69,6 +69,38 @@ fn main() {
                 )),
             }),
         };
+        let workspaces = WorkspaceSet {
+            active: WorkspaceId("rship".into()),
+            workspaces: vec![
+                Workspace {
+                    id: WorkspaceId("rship".into()),
+                    name: "Rship".into(),
+                    tree,
+                },
+                Workspace {
+                    id: WorkspaceId("browser".into()),
+                    name: "Browser".into(),
+                    tree: PaneNode::Split {
+                        direction: SplitDirection::Vertical,
+                        ratio: 0.55,
+                        first: Box::new(PaneNode::leaf_with_activity(
+                            PaneId::new("browser-main"),
+                            ActivityId::new("files"),
+                            PaneData {
+                                project: "Browser".into(),
+                            },
+                        )),
+                        second: Box::new(PaneNode::leaf_with_activity(
+                            PaneId::new("browser-console"),
+                            ActivityId::new("terminal"),
+                            PaneData {
+                                project: "Browser".into(),
+                            },
+                        )),
+                    },
+                },
+            ],
+        };
         let activities = vec![
             activity("files", "F", 0x243044),
             activity("terminal", "T", 0x26382f),
@@ -85,7 +117,10 @@ fn main() {
                 ..Default::default()
             },
             move |window, cx| {
-                let view = cx.new(|cx| MullionView::new(tree, activities, cx));
+                let view = cx.new(|cx| {
+                    MullionView::new_with_workspaces(workspaces, activities, cx)
+                        .expect("demo workspace set has a valid active workspace")
+                });
                 view.read(cx).focus_handle().clone().focus(window, cx);
                 view
             },

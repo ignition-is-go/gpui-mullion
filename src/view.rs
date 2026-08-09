@@ -1,6 +1,7 @@
 use crate::{
     Activity, ActivityId, ActivityNode, DropEdge, MullionModel, MullionTheme, PaneData,
-    PaneDirection, PaneEvent, PaneId, PaneNode, SplitDirection,
+    PaneDirection, PaneEvent, PaneId, PaneNode, SplitDirection, WorkspaceChanged, WorkspaceId,
+    WorkspaceSet,
 };
 use gpui::{
     actions, div, prelude::*, px, relative, AnyElement, App, Context, EventEmitter, FocusHandle,
@@ -38,7 +39,7 @@ impl Render for PaneDrag {
     }
 }
 
-/// Native GPUI view over the portable model.
+/// Shared native/WebAssembly GPUI view over the portable model.
 pub struct MullionView<D: PaneData> {
     model: MullionModel<D>,
     activities: Vec<ActivityNode<D>>,
@@ -46,9 +47,11 @@ pub struct MullionView<D: PaneData> {
     activity_bar_width: gpui::Pixels,
     show_headers: bool,
     focus_handle: FocusHandle,
+    workspaces: Option<WorkspaceSet<D>>,
 }
 
 impl<D: PaneData> EventEmitter<PaneEvent<D>> for MullionView<D> {}
+impl<D: PaneData> EventEmitter<WorkspaceChanged> for MullionView<D> {}
 
 impl<D: PaneData> MullionView<D> {
     pub fn new(
@@ -63,7 +66,21 @@ impl<D: PaneData> MullionView<D> {
             activity_bar_width: px(42.),
             show_headers: true,
             focus_handle: cx.focus_handle(),
+            workspaces: None,
         }
+    }
+
+    /// Construct a view which owns and renders a set of internal workspaces.
+    /// Returns `None` when the set's active id does not name a workspace.
+    pub fn new_with_workspaces(
+        workspaces: WorkspaceSet<D>,
+        activities: Vec<ActivityNode<D>>,
+        cx: &mut Context<Self>,
+    ) -> Option<Self> {
+        let tree = workspaces.active()?.tree.clone();
+        let mut view = Self::new(tree, activities, cx);
+        view.workspaces = Some(workspaces);
+        Some(view)
     }
     pub fn with_theme(mut self, theme: MullionTheme) -> Self {
         self.theme = theme;
@@ -75,6 +92,35 @@ impl<D: PaneData> MullionView<D> {
     }
     pub fn model(&self) -> &MullionModel<D> {
         &self.model
+    }
+    /// The internally owned workspace set, when this view was constructed with one.
+    pub fn workspaces(&self) -> Option<&WorkspaceSet<D>> {
+        self.workspaces.as_ref()
+    }
+
+    /// Switch the tree displayed in this same GPUI window/canvas.
+    /// The outgoing tree is persisted before switching.
+    pub fn switch_workspace(&mut self, id: &WorkspaceId, cx: &mut Context<Self>) -> bool {
+        let Some(workspaces) = self.workspaces.as_mut() else {
+            return false;
+        };
+        if &workspaces.active == id {
+            return true;
+        }
+        let previous = workspaces.active.clone();
+        if !workspaces.persist_active(self.model.snapshot()) {
+            return false;
+        }
+        let Some(tree) = workspaces.switch(id) else {
+            return false;
+        };
+        self.model.replace_tree(tree);
+        self.finish(cx);
+        cx.emit(WorkspaceChanged {
+            previous,
+            active: id.clone(),
+        });
+        true
     }
     /// The stable focus handle used for key-action dispatch. Hosts should focus it
     /// after creating the view (and pane pointer interaction does so automatically).
@@ -93,7 +139,16 @@ impl<D: PaneData> MullionView<D> {
         result
     }
     fn finish(&mut self, cx: &mut Context<Self>) {
-        for event in self.model.take_events() {
+        let events = self.model.take_events();
+        if events
+            .iter()
+            .any(|event| matches!(event, PaneEvent::TreeChanged { .. }))
+        {
+            if let Some(workspaces) = &mut self.workspaces {
+                workspaces.persist_active(self.model.snapshot());
+            }
+        }
+        for event in events {
             cx.emit(event)
         }
         cx.notify();
@@ -342,10 +397,44 @@ impl<D: PaneData> Render for MullionView<D> {
             .and_then(|id| self.model.tree().find(id))
             .unwrap_or(self.model.tree())
             .clone();
+        let workspace_tabs = self.workspaces.as_ref().map(|set| {
+            let active = set.active.clone();
+            set.workspaces
+                .iter()
+                .map(|workspace| {
+                    let id = workspace.id.clone();
+                    let selected = id == active;
+                    div()
+                        .id(SharedString::from(format!("workspace:{}", id.0)))
+                        .px_3()
+                        .py_1()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .text_sm()
+                        .text_color(if selected {
+                            self.theme.text
+                        } else {
+                            self.theme.muted_text
+                        })
+                        .bg(if selected {
+                            self.theme.accent
+                        } else {
+                            Hsla::transparent_black()
+                        })
+                        .hover(|element| element.bg(self.theme.accent))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.switch_workspace(&id, cx);
+                        }))
+                        .child(workspace.name.clone())
+                })
+                .collect::<Vec<_>>()
+        });
         div()
             .key_context("Mullion")
             .track_focus(&self.focus_handle)
             .size_full()
+            .flex()
+            .flex_col()
             .bg(self.theme.background)
             .on_action(cx.listener(|this, _: &FocusLeft, _, cx| {
                 this.command(crate::PaneCommand::Focus(PaneDirection::Left), cx)
@@ -376,7 +465,27 @@ impl<D: PaneData> Render for MullionView<D> {
             .on_action(cx.listener(|this, _: &BalancePanes, _, cx| {
                 this.command(crate::PaneCommand::Balance, cx)
             }))
-            .child(self.render_node(&tree, cx))
+            .when_some(workspace_tabs, |element, tabs| {
+                element.child(
+                    div()
+                        .h(px(36.))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .px_2()
+                        .border_b_1()
+                        .border_color(self.theme.border)
+                        .children(tabs),
+                )
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .child(self.render_node(&tree, cx)),
+            )
     }
 }
 

@@ -43,12 +43,38 @@ impl<D: PaneData> MullionModel<D> {
         });
     }
     pub fn replace_tree(&mut self, tree: PaneNode<D>) {
+        let previous_focus = self.focused.clone();
+        let previous_zoom = self.zoomed.clone();
         self.tree = tree;
-        if self.focused.as_ref().is_none_or(|p| !self.tree.contains(p)) {
+
+        if self
+            .zoomed
+            .as_ref()
+            .is_some_and(|pane| !self.tree.contains(pane))
+        {
+            self.zoomed = None;
+        }
+        if let Some(zoomed) = self.zoomed.clone() {
+            // Zoom is a view of the focused pane, so a surviving zoom takes
+            // precedence when a replacement invalidates the old focus.
+            self.focused = Some(zoomed);
+        } else if self
+            .focused
+            .as_ref()
+            .is_none_or(|pane| !self.tree.contains(pane))
+        {
             self.focused = self.tree.leaf_ids().into_iter().next();
         }
-        if self.zoomed.as_ref().is_some_and(|p| !self.tree.contains(p)) {
-            self.zoomed = None;
+
+        if self.focused != previous_focus {
+            self.events.push(PaneEvent::FocusChanged {
+                pane: self.focused.clone(),
+            });
+        }
+        if self.zoomed != previous_zoom {
+            self.events.push(PaneEvent::ZoomChanged {
+                pane: self.zoomed.clone(),
+            });
         }
         self.changed();
     }
@@ -61,6 +87,14 @@ impl<D: PaneData> MullionModel<D> {
             self.events.push(PaneEvent::FocusChanged {
                 pane: self.focused.clone(),
             });
+            // Coherent navigation semantics: navigating while zoomed keeps
+            // zoom enabled and moves the zoom viewport to the new focus.
+            if self.zoomed.is_some() {
+                self.zoomed = Some(pane.clone());
+                self.events.push(PaneEvent::ZoomChanged {
+                    pane: self.zoomed.clone(),
+                });
+            }
         }
         true
     }
@@ -128,13 +162,16 @@ impl<D: PaneData> MullionModel<D> {
             id: pane.clone(),
             data: data.clone(),
         });
+        // Closing a zoomed pane exits zoom before choosing replacement focus;
+        // otherwise `focus` would coherently migrate zoom to that replacement.
+        if self.zoomed.as_ref() == Some(pane) {
+            self.zoomed = None;
+            self.events.push(PaneEvent::ZoomChanged { pane: None });
+        }
         if self.focused.as_ref() == Some(pane) {
             let left = at.saturating_sub(1).min(self.tree.leaf_ids().len() - 1);
             let next = self.tree.leaf_ids()[left].clone();
             self.focus(&next);
-        }
-        if self.zoomed.as_ref() == Some(pane) {
-            self.zoomed = None;
         }
         self.changed();
         Some(data)
@@ -388,6 +425,62 @@ mod tests {
         assert_eq!(m.close(&PaneId::new("b")), Some(D(2)));
         assert_eq!(m.focused(), Some(&PaneId::new("a")));
     }
+    #[test]
+    fn replace_tree_emits_focus_and_zoom_changes_only_when_they_change() {
+        let mut m = model();
+        m.focus(&PaneId::new("b"));
+        m.toggle_zoom();
+        m.take_events();
+
+        m.replace_tree(PaneNode::leaf(PaneId::new("c"), D(3)));
+        assert_eq!(m.focused(), Some(&PaneId::new("c")));
+        assert_eq!(m.zoomed(), None);
+        let events = m.take_events();
+        assert!(matches!(events.as_slice(), [
+            PaneEvent::FocusChanged { pane: Some(p) },
+            PaneEvent::ZoomChanged { pane: None },
+            PaneEvent::TreeChanged { .. }
+        ] if p == &PaneId::new("c")));
+
+        m.replace_tree(PaneNode::leaf(PaneId::new("c"), D(4)));
+        assert!(matches!(
+            m.take_events().as_slice(),
+            [PaneEvent::TreeChanged { .. }]
+        ));
+    }
+
+    #[test]
+    fn close_emits_complete_focus_and_zoom_changes() {
+        let mut m = model();
+        m.focus(&PaneId::new("b"));
+        m.toggle_zoom();
+        m.take_events();
+
+        assert_eq!(m.close(&PaneId::new("b")), Some(D(2)));
+        let events = m.take_events();
+        assert!(matches!(events.as_slice(), [
+            PaneEvent::Closed { id, .. },
+            PaneEvent::ZoomChanged { pane: None },
+            PaneEvent::FocusChanged { pane: Some(focus) },
+            PaneEvent::TreeChanged { .. }
+        ] if id == &PaneId::new("b") && focus == &PaneId::new("a")));
+    }
+
+    #[test]
+    fn focus_navigation_moves_zoom_to_the_new_focus() {
+        let mut m = model();
+        m.toggle_zoom();
+        m.take_events();
+
+        assert!(m.cycle_focus(1));
+        assert_eq!(m.focused(), Some(&PaneId::new("b")));
+        assert_eq!(m.zoomed(), m.focused());
+        assert!(matches!(m.take_events().as_slice(), [
+            PaneEvent::FocusChanged { pane: Some(focus) },
+            PaneEvent::ZoomChanged { pane: Some(zoom) }
+        ] if focus == zoom && focus == &PaneId::new("b")));
+    }
+
     #[test]
     fn resize_event_reports_the_stored_clamped_ratio() {
         let mut m = model();

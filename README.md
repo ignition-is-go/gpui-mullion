@@ -10,7 +10,7 @@ This repository is the GPUI successor to the Leptos `mullion` library and is int
 - Split, close, move, swap, resize, rotate, balance, five standard layouts, stable split keys, geometric directional navigation, boundary calculations, and extensive inherited parity tests.
 - Toolkit-independent `MullionModel`: durable focus, zoom, pane data/activity updates, commands, host-created splits, and typed mutation plus snapshot events.
 - Shared GPUI `MullionView`: recursive horizontal/vertical layout, activity rail and content renderers, headers, focus chrome, zoom, native pane drag/drop, clickable resize separators, theming, event emission, actions, and default key bindings.
-- Serializable named workspaces and a runnable native demo.
+- Serializable named workspaces managed and switched inside the shared view, plus runnable native/browser demos with two workspaces.
 
 ## Quick start
 
@@ -36,7 +36,7 @@ let view = cx.new(|cx| {
 });
 ```
 
-At application startup call `register_key_bindings(cx)` and focus `view.read(cx).focus_handle()` after opening the window (as the demo does). Subscribe to `PaneEvent<D>` on the view entity to persist `TreeChanged` snapshots.
+At application startup call `register_key_bindings(cx)` and focus `view.read(cx).focus_handle()` after opening the window (as the demo does). Subscribe to `PaneEvent<D>` for pane/model changes. `MullionView::new_with_workspaces` optionally gives the view ownership of a `WorkspaceSet`; every `TreeChanged` snapshot is persisted into its active workspace, the built-in tab strip switches trees in the same window/canvas, and `WorkspaceChanged` is emitted after a successful switch. Use `workspaces()` to inspect the current set and `switch_workspace(...)` to switch programmatically.
 
 ## Window architecture
 
@@ -53,6 +53,7 @@ cd examples/web && trunk serve
 
 Demo controls:
 
+- click the Rship/Browser tabs to switch internal workspaces;
 - click a pane to focus it;
 - drag a pane onto another pane to relocate it;
 - left/right-click a separator to adjust its ratio;
@@ -69,7 +70,7 @@ PaneNode::Leaf { id, active_activity, data }
 PaneNode::Split { direction, ratio, first, second }
 ```
 
-IDs remain one-field string tuple structs and enum tagging remains serde's external default. Compatibility is guarded by JSON golden tests. UI configuration and render callbacks are intentionally *not* serialized. Use `snapshot()` / `TreeChanged` for persistence and reconstruct native activity renderers at startup.
+IDs remain one-field string tuple structs and enum tagging remains serde's external default. Compatibility is guarded by JSON golden tests. UI configuration and render callbacks are intentionally *not* serialized. Use `snapshot()` / `TreeChanged` for persistence, or let an owning `MullionView` keep its `WorkspaceSet` synchronized, and reconstruct native activity renderers at startup. While zoomed, focus navigation coherently moves the zoom viewport to the newly focused pane; zoom and focus therefore never diverge.
 
 ## Migration / parity roadmap
 

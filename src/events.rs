@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{ActivityId, DropEdge, PaneData, PaneId, PaneNode, SplitDirection};
+use crate::{ActivityId, DropEdge, PaneData, PaneId, PaneNode, SplitDirection, WorkspaceId};
 
 /// An observable change made by [`crate::MullionModel`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -46,4 +46,11 @@ pub enum PaneEvent<D: PaneData> {
     TreeChanged {
         tree: PaneNode<D>,
     },
+}
+
+/// Emitted by [`crate::MullionView`] after its active internal workspace changes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceChanged {
+    pub previous: WorkspaceId,
+    pub active: WorkspaceId,
 }
