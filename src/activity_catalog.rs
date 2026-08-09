@@ -240,7 +240,7 @@ impl<D: PaneData> ActivityCatalog<D> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ActivityCatalogGroup {
     Primary,
     Trailing,
