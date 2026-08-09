@@ -17,6 +17,37 @@ pub enum PaletteInvocation {
     SelectActivity { pane: PaneId, activity: ActivityId },
 }
 
+/// A typed palette invocation failed without losing the underlying command error.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PaletteInvocationError {
+    Command(crate::PaneCommandError),
+    PaneNotFound(PaneId),
+    ActivityNotVisible { pane: PaneId, activity: ActivityId },
+}
+
+impl std::fmt::Display for PaletteInvocationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Command(error) => error.fmt(formatter),
+            Self::PaneNotFound(pane) => write!(formatter, "pane `{}` does not exist", pane.0),
+            Self::ActivityNotVisible { pane, activity } => write!(
+                formatter,
+                "activity `{}` is not visible in pane `{}`",
+                activity.0, pane.0
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PaletteInvocationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Command(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
 impl PaletteInvocation {
     pub fn pane_command(&self) -> Option<PaneCommand> {
         match self {

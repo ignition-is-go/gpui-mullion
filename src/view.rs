@@ -4,7 +4,8 @@ use crate::{
     ActivityExpansionState, ActivityFactoryRegistry, ActivityId, ActivityNode, DockBounds,
     DockConfig, DockDrag, DockHover, DockPayload, DropEdge, FocusPresentation, MullionModel,
     MullionOverlay, MullionSettings, MullionStyles, MullionTheme, MullionThemeMode, NewPaneFactory,
-    OverlayAlignment, OverlayError, OverlayHostConfig, OverlayLength, PaneCommandExecutionOptions,
+    OverlayAlignment, OverlayError, OverlayHostConfig, OverlayLength, PaletteEntry,
+    PaletteInvocation, PaletteInvocationError, PaletteSearchResult, PaneCommandExecutionOptions,
     PaneData, PaneDirection, PaneEvent, PaneFocusBehavior, PaneId, PaneNode, PaneSplitFactory,
     SplitDirection, VisibleActivityNode, WorkspaceChanged, WorkspaceEvent, WorkspaceId,
     WorkspaceSet, WorkspaceSetError,
@@ -471,6 +472,67 @@ impl<D: PaneData> MullionView<D> {
     pub fn model(&self) -> &MullionModel<D> {
         &self.model
     }
+    /// Return a fresh host-palette projection of the mounted view.
+    ///
+    /// The projection always contains all 37 stable commands, one dynamic focus
+    /// command per live pane, and the activities currently visible for the
+    /// focused pane. Unsupported split commands remain discoverable and report
+    /// `SplitUnavailable` when invoked.
+    pub fn palette_entries(&self) -> Vec<PaletteEntry> {
+        let panes = self.model.tree().leaf_ids();
+        let mut entries = crate::mullion_palette_entries(&panes, true);
+        if let Some(focused) = self.model.focused() {
+            if let Some(PaneNode::Leaf { data, .. }) = self.model.tree().find(focused) {
+                entries.extend(crate::activity_palette_entries(
+                    &self.catalog,
+                    focused,
+                    data,
+                ));
+            }
+        }
+        entries
+    }
+
+    /// Search the current live palette projection.
+    pub fn search_palette(&self, query: &str) -> Vec<PaletteSearchResult> {
+        crate::search_palette(&self.palette_entries(), query)
+    }
+
+    /// Execute a typed palette invocation through the same configured command
+    /// dispatcher and event forwarding path used by GPUI actions.
+    pub fn invoke_palette(
+        &mut self,
+        invocation: PaletteInvocation,
+        cx: &mut Context<Self>,
+    ) -> Result<(), PaletteInvocationError> {
+        let result = match invocation {
+            PaletteInvocation::PaneCommand(command) => self
+                .model
+                .execute_with_options(command, &self.command_options)
+                .map_err(PaletteInvocationError::Command),
+            PaletteInvocation::SelectActivity { pane, activity } => {
+                let Some(PaneNode::Leaf { data, .. }) = self.model.tree().find(&pane) else {
+                    return Err(PaletteInvocationError::PaneNotFound(pane));
+                };
+                let visible = crate::activity_palette_entries(&self.catalog, &pane, data)
+                    .into_iter()
+                    .any(|entry| {
+                        entry.invocation
+                            == PaletteInvocation::SelectActivity {
+                                pane: pane.clone(),
+                                activity: activity.clone(),
+                            }
+                    });
+                if !visible {
+                    return Err(PaletteInvocationError::ActivityNotVisible { pane, activity });
+                }
+                debug_assert!(self.model.set_activity(&pane, Some(activity)));
+                Ok(())
+            }
+        };
+        self.finish(cx);
+        result
+    }
     /// The internally owned workspace set, when this view was constructed with one.
     pub fn workspaces(&self) -> Option<&WorkspaceSet<D>> {
         self.workspaces.as_ref()
@@ -841,6 +903,8 @@ impl<D: PaneData> MullionView<D> {
                 let decrement_key = key.clone();
                 let increment_key = key.clone();
                 let arrow_key = key.clone();
+                let split_accessibility =
+                    crate::MullionAccessibilityNode::split(*direction, *ratio, false);
 
                 // Keep the actual layout separator one pixel wide. Its absolutely
                 // positioned child supplies an eight-pixel, centered hit target.
@@ -871,7 +935,8 @@ impl<D: PaneData> MullionView<D> {
                             .tab_stop(true)
                             .role(gpui::Role::Splitter)
                             .accessibility_id(format!("mullion-splitter-{}", key.0))
-                            .aria_label("Resize panes")
+                            .aria_label(split_accessibility.label)
+                            .aria_description(split_accessibility.description)
                             .aria_min_numeric_value(0.1)
                             .aria_max_numeric_value(0.9)
                             .aria_numeric_value(*ratio)
@@ -1132,9 +1197,18 @@ impl<D: PaneData> MullionView<D> {
                     let activity = &visible.activity;
                     let active = selected == Some(&activity.id);
                     let pane_id = pane.clone();
+                    let key_pane_id = pane.clone();
                     let activity_id = activity.id.clone();
+                    let key_activity_id = activity.id.clone();
+                    let a11y_pane_id = pane.clone();
+                    let a11y_activity_id = activity.id.clone();
                     let drag_activity_id = activity.id.clone();
                     let can_drag_activity = self.dock_config.can_create_panes();
+                    let accessibility = crate::MullionAccessibilityNode::activity(
+                        &activity.id,
+                        activity.name.as_ref(),
+                        active,
+                    );
                     let icon = self
                         .catalog
                         .activity_chrome(&activity.id)
@@ -1156,11 +1230,16 @@ impl<D: PaneData> MullionView<D> {
                             move || format!("activity:{}:{}", pane.0, activity.0)
                         })
                         .role(gpui::Role::Button)
-                        .aria_label(if can_drag_activity {
-                            format!("{} activity, drag to create pane", activity.name)
+                        .accessibility_id(format!("mullion-activity-{}-{}", pane.0, activity.id.0))
+                        .aria_label(accessibility.label)
+                        .aria_description(if can_drag_activity {
+                            format!("{}; drag to create pane", accessibility.description)
                         } else {
-                            format!("{} activity", activity.name)
+                            accessibility.description
                         })
+                        .aria_selected(active)
+                        .focusable()
+                        .tab_stop(true)
                         .cursor_pointer()
                         .flex()
                         .items_center()
@@ -1182,9 +1261,33 @@ impl<D: PaneData> MullionView<D> {
                         .hover(|element| element.bg(self.theme.accent))
                         .rounded(styles.activity_bar.border_radius)
                         .on_click(cx.listener(move |this, _, _, cx| {
+                            this.model.focus(&pane_id);
                             this.model.set_activity(&pane_id, Some(activity_id.clone()));
                             this.finish(cx);
                         }))
+                        .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space" | " ") {
+                                this.model.focus(&key_pane_id);
+                                this.model
+                                    .set_activity(&key_pane_id, Some(key_activity_id.clone()));
+                                this.finish(cx);
+                                cx.stop_propagation();
+                            }
+                        }))
+                        .on_a11y_action(gpui::AccessibleAction::Click, {
+                            let view = cx.entity().downgrade();
+                            move |_, _, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.model.focus(&a11y_pane_id);
+                                    this.model.set_activity(
+                                        &a11y_pane_id,
+                                        Some(a11y_activity_id.clone()),
+                                    );
+                                    this.finish(cx);
+                                })
+                                .ok();
+                            }
+                        })
                         .when(can_drag_activity, |item| {
                             item.cursor_copy().on_drag(
                                 DockDrag::new_activity(drag_activity_id),
@@ -1211,6 +1314,15 @@ impl<D: PaneData> MullionView<D> {
                         .is_some_and(|state| state.is_expanded(&category.id));
                     let pane_id = pane.clone();
                     let category_id = category.id.clone();
+                    let key_pane_id = pane.clone();
+                    let key_category_id = category.id.clone();
+                    let a11y_pane_id = pane.clone();
+                    let a11y_category_id = category.id.clone();
+                    let accessibility = crate::MullionAccessibilityNode::category(
+                        &category.id,
+                        category.name.as_ref(),
+                        expanded,
+                    );
                     let icon = self
                         .catalog
                         .category_chrome(&category.id)
@@ -1231,11 +1343,16 @@ impl<D: PaneData> MullionView<D> {
                             let category = category.id.clone();
                             move || format!("activity-category:{}:{}", pane.0, category.0)
                         })
-                        .aria_label(format!(
-                            "{} category, {}",
-                            category.name,
-                            if expanded { "expanded" } else { "collapsed" }
+                        .role(gpui::Role::Button)
+                        .accessibility_id(format!(
+                            "mullion-activity-category-{}-{}",
+                            pane.0, category.id.0
                         ))
+                        .aria_label(accessibility.label)
+                        .aria_description(accessibility.description)
+                        .aria_expanded(expanded)
+                        .focusable()
+                        .tab_stop(true)
                         .cursor_pointer()
                         .flex()
                         .items_center()
@@ -1248,12 +1365,38 @@ impl<D: PaneData> MullionView<D> {
                         .bg(styles.activity_bar.category_card_background)
                         .rounded(styles.activity_bar.border_radius)
                         .on_click(cx.listener(move |this, _, _, cx| {
+                            this.model.focus(&pane_id);
                             this.expansion
                                 .entry(pane_id.clone())
                                 .or_default()
                                 .toggle(category_id.clone());
                             cx.notify();
                         }))
+                        .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space" | " ") {
+                                this.model.focus(&key_pane_id);
+                                this.expansion
+                                    .entry(key_pane_id.clone())
+                                    .or_default()
+                                    .toggle(key_category_id.clone());
+                                cx.notify();
+                                cx.stop_propagation();
+                            }
+                        }))
+                        .on_a11y_action(gpui::AccessibleAction::Click, {
+                            let view = cx.entity().downgrade();
+                            move |_, _, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.model.focus(&a11y_pane_id);
+                                    this.expansion
+                                        .entry(a11y_pane_id.clone())
+                                        .or_default()
+                                        .toggle(a11y_category_id.clone());
+                                    cx.notify();
+                                })
+                                .ok();
+                            }
+                        })
                         .child(
                             div()
                                 .size(styles.activity_bar.icon_size)
@@ -1289,6 +1432,22 @@ impl<D: PaneData> MullionView<D> {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let focused = self.model.focused() == Some(id);
+        let pane_ids = self.model.tree().leaf_ids();
+        let pane_index = pane_ids.iter().position(|pane| pane == id).unwrap_or(0);
+        let active_name = active.and_then(|active| {
+            self.all_activities(data)
+                .into_iter()
+                .find(|activity| &activity.id == active)
+                .map(|activity| activity.name)
+        });
+        let pane_accessibility = crate::MullionAccessibilityNode::pane(
+            id,
+            pane_index,
+            pane_ids.len(),
+            active_name.as_deref(),
+            focused,
+            self.model.zoomed() == Some(id),
+        );
         let theme = self.theme;
         let styles = self
             .styles
@@ -1306,8 +1465,14 @@ impl<D: PaneData> MullionView<D> {
         let id_drop = id.clone();
         let id_move = id.clone();
         let id_drag_header = id.clone();
+        let key_drag_header = id.clone();
         let id_drag_activity = id.clone();
+        let key_drag_activity = id.clone();
         let id_close = id.clone();
+        let key_close = id.clone();
+        let a11y_close = id.clone();
+        let drag_accessibility = crate::MullionAccessibilityNode::drag_handle(id);
+        let close_accessibility = crate::MullionAccessibilityNode::close_pane(id);
         let can_create_panes = self.dock_config.can_create_panes();
         let activities = self.all_activities(data);
         let selected = active
@@ -1401,12 +1566,30 @@ impl<D: PaneData> MullionView<D> {
                                     let id = id.clone();
                                     move || format!("pane-drag-handle:{}", id.0)
                                 })
-                                .aria_label(format!("Move pane {}", id.0))
+                                .role(gpui::Role::Button)
+                                .accessibility_id(format!("mullion-pane-drag-{}", id.0))
+                                .aria_label(drag_accessibility.label.clone())
+                                .aria_description(drag_accessibility.description.clone())
+                                .aria_keyshortcuts("Mullion move-pane commands")
+                                .focusable()
+                                .tab_stop(true)
                                 .cursor_move()
                                 .px_1()
                                 .on_drag(DockDrag::pane(id_drag_header), |drag, _, _, cx| {
                                     cx.new(|_| drag.clone())
                                 })
+                                .on_key_down(cx.listener(
+                                    move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                        if matches!(
+                                            event.keystroke.key.as_str(),
+                                            "enter" | "space" | " "
+                                        ) {
+                                            this.model.focus(&key_drag_header);
+                                            this.finish(cx);
+                                            cx.stop_propagation();
+                                        }
+                                    },
+                                ))
                                 .child("⠿"),
                         )
                         .child(
@@ -1420,6 +1603,12 @@ impl<D: PaneData> MullionView<D> {
                 .child(
                     div()
                         .id(SharedString::from(format!("close:{}", id.0)))
+                        .role(gpui::Role::Button)
+                        .accessibility_id(format!("mullion-pane-close-{}", id.0))
+                        .aria_label(close_accessibility.label)
+                        .aria_description(close_accessibility.description)
+                        .focusable()
+                        .tab_stop(true)
                         .px_2()
                         .cursor_pointer()
                         .hover(|e| e.bg(theme.accent))
@@ -1427,6 +1616,23 @@ impl<D: PaneData> MullionView<D> {
                             this.model.close(&id_close);
                             this.finish(cx)
                         }))
+                        .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space" | " ") {
+                                this.model.close(&key_close);
+                                this.finish(cx);
+                                cx.stop_propagation();
+                            }
+                        }))
+                        .on_a11y_action(gpui::AccessibleAction::Click, {
+                            let view = cx.entity().downgrade();
+                            move |_, _, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.model.close(&a11y_close);
+                                    this.finish(cx);
+                                })
+                                .ok();
+                            }
+                        })
                         .child("×"),
                 )
         });
@@ -1622,6 +1828,13 @@ impl<D: PaneData> MullionView<D> {
                 let id = id.clone();
                 move || format!("pane:{}", id.0)
             })
+            .role(gpui::Role::Pane)
+            .accessibility_id(format!("mullion-pane-{}", id.0))
+            .aria_label(pane_accessibility.label)
+            .aria_description(pane_accessibility.description)
+            .aria_selected(focused)
+            .focusable()
+            .tab_stop(true)
             .relative()
             .size_full()
             .min_w_0()
@@ -1699,7 +1912,13 @@ impl<D: PaneData> MullionView<D> {
                                     let id = id.clone();
                                     move || format!("pane-drag-handle:{}", id.0)
                                 })
-                                .aria_label(format!("Move pane {}", id.0))
+                                .role(gpui::Role::Button)
+                                .accessibility_id(format!("mullion-pane-drag-{}", id.0))
+                                .aria_label(drag_accessibility.label.clone())
+                                .aria_description(drag_accessibility.description.clone())
+                                .aria_keyshortcuts("Mullion move-pane commands")
+                                .focusable()
+                                .tab_stop(true)
                                 .absolute()
                                 .top_0()
                                 .left_0()
@@ -1711,6 +1930,18 @@ impl<D: PaneData> MullionView<D> {
                                 .on_drag(DockDrag::pane(id_drag_activity), |drag, _, _, cx| {
                                     cx.new(|_| drag.clone())
                                 })
+                                .on_key_down(cx.listener(
+                                    move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                        if matches!(
+                                            event.keystroke.key.as_str(),
+                                            "enter" | "space" | " "
+                                        ) {
+                                            this.model.focus(&key_drag_activity);
+                                            this.finish(cx);
+                                            cx.stop_propagation();
+                                        }
+                                    },
+                                ))
                                 .child("⠿"),
                         )
                     })
@@ -1733,12 +1964,41 @@ impl<D: PaneData> MullionView<D> {
                     .filter(|hover| &hover.destination == id)
                     .map(|hover| hover.edge.normalized_indicator()),
                 |pane, indicator| {
-                    pane.child(
+                    let active_edge = self.dock_hover.as_ref().unwrap().edge;
+                    let zones = [
+                        (DropEdge::Top, 0.25_f32, 0.0_f32, 0.5_f32, 0.25_f32),
+                        (DropEdge::Bottom, 0.25, 0.75, 0.5, 0.25),
+                        (DropEdge::Left, 0.0, 0.0, 0.25, 1.0),
+                        (DropEdge::Right, 0.75, 0.0, 0.25, 1.0),
+                        (DropEdge::Center, 0.25, 0.25, 0.5, 0.5),
+                    ];
+                    pane.children(zones.into_iter().map(|(edge, left, top, width, height)| {
+                        let accessibility =
+                            crate::MullionAccessibilityNode::drop_target(edge, edge == active_edge);
+                        div()
+                            .id(SharedString::from(format!("dock-target:{}:{edge:?}", id.0)))
+                            .debug_selector({
+                                let id = id.clone();
+                                move || format!("dock-target:{}:{edge:?}", id.0)
+                            })
+                            .role(gpui::Role::Button)
+                            .accessibility_id(format!("mullion-dock-{}-{edge:?}", id.0))
+                            .aria_label(accessibility.label)
+                            .aria_description(accessibility.description)
+                            .aria_selected(edge == active_edge)
+                            .focusable()
+                            .tab_stop(true)
+                            .absolute()
+                            .left(relative(left))
+                            .top(relative(top))
+                            .w(relative(width))
+                            .h(relative(height))
+                    }))
+                    .child(
                         div()
                             .debug_selector({
                                 let id = id.clone();
-                                let edge = self.dock_hover.as_ref().unwrap().edge;
-                                move || format!("dock-indicator:{}:{edge:?}", id.0)
+                                move || format!("dock-indicator:{}:{active_edge:?}", id.0)
                             })
                             .absolute()
                             .left(relative(indicator.left as f32))
@@ -1937,17 +2197,35 @@ impl<D: PaneData> Render for MullionView<D> {
             .clone();
         let workspace_tabs = self.workspaces.as_ref().map(|set| {
             let active = set.active.clone();
+            let count = set.workspaces.len();
             set.workspaces
                 .iter()
-                .map(|workspace| {
+                .enumerate()
+                .map(|(index, workspace)| {
                     let id = workspace.id.clone();
+                    let key_id = workspace.id.clone();
+                    let a11y_id = workspace.id.clone();
                     let selected = id == active;
+                    let accessibility = crate::MullionAccessibilityNode::workspace(
+                        &workspace.id,
+                        &workspace.name,
+                        index,
+                        count,
+                        selected,
+                    );
                     div()
                         .id(SharedString::from(format!("workspace:{}", id.0)))
                         .debug_selector({
                             let id = id.clone();
                             move || format!("workspace:{}", id.0)
                         })
+                        .role(gpui::Role::Tab)
+                        .accessibility_id(format!("mullion-workspace-{}", workspace.id.0))
+                        .aria_label(accessibility.label)
+                        .aria_description(accessibility.description)
+                        .aria_selected(selected)
+                        .focusable()
+                        .tab_stop(true)
                         .px(styles.workspace_switcher.horizontal_padding)
                         .py(styles.workspace_switcher.vertical_padding)
                         .rounded(styles.workspace_switcher.border_radius)
@@ -1967,6 +2245,19 @@ impl<D: PaneData> Render for MullionView<D> {
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.switch_workspace(&id, cx);
                         }))
+                        .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space" | " ") {
+                                this.switch_workspace(&key_id, cx);
+                                cx.stop_propagation();
+                            }
+                        }))
+                        .on_a11y_action(gpui::AccessibleAction::Click, {
+                            let view = cx.entity().downgrade();
+                            move |_, _, cx| {
+                                view.update(cx, |this, cx| this.switch_workspace(&a11y_id, cx))
+                                    .ok();
+                            }
+                        })
                         .child(workspace.name.clone())
                 })
                 .collect::<Vec<_>>()
@@ -2156,6 +2447,9 @@ impl<D: PaneData> Render for MullionView<D> {
             .when_some(workspace_tabs, |element, tabs| {
                 element.child(
                     div()
+                        .id("mullion-workspace-tabs")
+                        .role(gpui::Role::TabList)
+                        .aria_label("Mullion workspaces")
                         .flex_shrink_0()
                         .flex()
                         .items_center()
@@ -3815,6 +4109,90 @@ mod tests {
 
     fn hide_activity(_: &String) -> bool {
         false
+    }
+
+    #[gpui::test]
+    fn live_palette_projects_searches_and_executes_typed_invocations(cx: &mut TestAppContext) {
+        let activities = vec![
+            ActivityNode::Activity(rendered_activity("visible", show_activity)),
+            ActivityNode::Activity(rendered_activity("hidden", hide_activity)),
+        ];
+        let tree = split(
+            SplitDirection::Horizontal,
+            0.5,
+            PaneNode::leaf_with_activity(PaneId::new("a"), ActivityId::new("visible"), "a".into()),
+            leaf("b"),
+        );
+        let (view, cx) = cx.add_window_view(move |_, cx| MullionView::new(tree, activities, cx));
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let observed = view.clone();
+        view.update(cx, |_, cx| {
+            let events = events.clone();
+            cx.subscribe(&observed, move |_, _, event: &PaneEvent<String>, _| {
+                events.borrow_mut().push(event.clone());
+            })
+            .detach();
+        });
+
+        view.update(cx, |view, _| {
+            let entries = view.palette_entries();
+            assert_eq!(
+                entries
+                    .iter()
+                    .filter(|entry| matches!(entry.invocation, PaletteInvocation::PaneCommand(_)))
+                    .count(),
+                39
+            );
+            assert!(entries
+                .iter()
+                .any(|entry| entry.id == "mullion.activity.a.visible"));
+            assert!(!entries.iter().any(|entry| entry.id.contains("hidden")));
+            assert_eq!(view.search_palette("visible")[0].entry.name, "visible");
+        });
+        view.update(cx, |view, cx| {
+            view.invoke_palette(
+                PaletteInvocation::PaneCommand(crate::PaneCommand::FocusIndex(1)),
+                cx,
+            )
+            .unwrap();
+            assert_eq!(view.model().focused(), Some(&PaneId::new("b")));
+            assert!(matches!(
+                view.invoke_palette(
+                    PaletteInvocation::PaneCommand(crate::PaneCommand::Split(
+                        SplitDirection::Horizontal
+                    )),
+                    cx,
+                ),
+                Err(PaletteInvocationError::Command(
+                    crate::PaneCommandError::SplitUnavailable
+                ))
+            ));
+            assert!(matches!(
+                view.invoke_palette(
+                    PaletteInvocation::SelectActivity {
+                        pane: PaneId::new("missing"),
+                        activity: ActivityId::new("visible"),
+                    },
+                    cx,
+                ),
+                Err(PaletteInvocationError::PaneNotFound(_))
+            ));
+            view.invoke_palette(
+                PaletteInvocation::SelectActivity {
+                    pane: PaneId::new("b"),
+                    activity: ActivityId::new("visible"),
+                },
+                cx,
+            )
+            .unwrap();
+        });
+        cx.run_until_parked();
+        assert!(events.borrow().iter().any(|event| matches!(
+            event,
+            PaneEvent::ActivityChanged { pane, activity }
+                if pane == &PaneId::new("b")
+                    && activity.as_ref() == Some(&ActivityId::new("visible"))
+        )));
     }
 
     #[gpui::test]

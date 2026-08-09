@@ -15,6 +15,8 @@ pub enum MullionAccessibilityRole {
     SplitHandle,
     DropTarget,
     Workspace,
+    CloseButton,
+    DragHandle,
 }
 
 /// Common interactive state, kept separate so a view can map each flag to the
@@ -178,6 +180,26 @@ impl MullionAccessibilityNode {
         }
     }
 
+    pub fn close_pane(id: &PaneId) -> Self {
+        Self {
+            role: MullionAccessibilityRole::CloseButton,
+            id: Some(id.0.clone()),
+            label: format!("Close pane {}", id.0),
+            description: "Close this pane".into(),
+            state: MullionAccessibilityState::default(),
+        }
+    }
+
+    pub fn drag_handle(id: &PaneId) -> Self {
+        Self {
+            role: MullionAccessibilityRole::DragHandle,
+            id: Some(id.0.clone()),
+            label: format!("Move pane {}", id.0),
+            description: "Drag to dock this pane in another location".into(),
+            state: MullionAccessibilityState::default(),
+        }
+    }
+
     pub fn workspace(
         id: &WorkspaceId,
         name: &str,
@@ -234,11 +256,13 @@ mod tests {
             MullionAccessibilityRole::SplitHandle,
             MullionAccessibilityRole::DropTarget,
             MullionAccessibilityRole::Workspace,
+            MullionAccessibilityRole::CloseButton,
+            MullionAccessibilityRole::DragHandle,
         ];
         let json = serde_json::to_string(&roles).unwrap();
         assert_eq!(
             json,
-            r#"["Pane","Activity","ActivityCategory","SplitHandle","DropTarget","Workspace"]"#
+            r#"["Pane","Activity","ActivityCategory","SplitHandle","DropTarget","Workspace","CloseButton","DragHandle"]"#
         );
         assert_eq!(
             serde_json::from_str::<Vec<MullionAccessibilityRole>>(&json).unwrap(),
