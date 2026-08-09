@@ -1,6 +1,7 @@
 //! Native, cross-platform GPUI split panes.
 mod activity;
 mod command;
+mod command_actions;
 mod events;
 mod focus;
 mod keybindings;
@@ -13,6 +14,7 @@ mod view;
 mod workspace;
 pub use activity::*;
 pub use command::*;
+pub use command_actions::*;
 pub use events::*;
 pub use focus::*;
 pub use keybindings::*;
