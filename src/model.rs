@@ -1,9 +1,12 @@
 use crate::tree::{collect_split_ratios, directional_neighbor, find_ratio, resize_boundary};
 use crate::{
-    ActivityId, DropEdge, PaneCommand, PaneCommandError, PaneCommandResult, PaneData,
-    PaneDirection, PaneEvent, PaneId, PaneLayout, PaneNode, PaneRotation, PaneValidationError,
-    SplitDirection,
+    ActivityId, DropEdge, PaneCommand, PaneCommandError, PaneCommandExecutionOptions,
+    PaneCommandResult, PaneData, PaneDirection, PaneEvent, PaneId, PaneLayout, PaneNode,
+    PaneRotation, PaneValidationError, SplitDirection,
 };
+
+type MutablePaneSplitFactory<'a, D> =
+    dyn FnMut(&PaneId, SplitDirection, &D) -> Option<(PaneId, D)> + 'a;
 
 /// Toolkit-independent state machine. UI adapters translate input into these methods.
 pub struct MullionModel<D: PaneData> {
@@ -401,6 +404,31 @@ impl<D: PaneData> MullionModel<D> {
     where
         F: FnMut(&PaneId, SplitDirection, &D) -> Option<(PaneId, D)>,
     {
+        self.execute_inner(command, Some(&mut split_factory), 0.05)
+    }
+
+    /// Execute with reusable host split and resize configuration.
+    pub fn execute_with_options(
+        &mut self,
+        command: PaneCommand,
+        options: &PaneCommandExecutionOptions<D>,
+    ) -> PaneCommandResult {
+        match options.split_factory.as_ref() {
+            Some(factory) => {
+                let mut split_factory =
+                    |id: &PaneId, direction, data: &D| factory(id, direction, data);
+                self.execute_inner(command, Some(&mut split_factory), options.resize_step)
+            }
+            None => self.execute_inner(command, None, options.resize_step),
+        }
+    }
+
+    fn execute_inner(
+        &mut self,
+        command: PaneCommand,
+        mut split_factory: Option<&mut MutablePaneSplitFactory<'_, D>>,
+        resize_step: f64,
+    ) -> PaneCommandResult {
         use PaneCommand::*;
 
         match command {
@@ -456,8 +484,11 @@ impl<D: PaneData> MullionModel<D> {
                     Some(PaneNode::Leaf { data, .. }) => data.clone(),
                     _ => return Err(PaneCommandError::NoFocusedPane),
                 };
-                let (new_id, new_data) = split_factory(&focused, direction, &data)
-                    .ok_or(PaneCommandError::SplitRefused)?;
+                let factory = split_factory
+                    .as_mut()
+                    .ok_or(PaneCommandError::SplitUnavailable)?;
+                let (new_id, new_data) =
+                    factory(&focused, direction, &data).ok_or(PaneCommandError::SplitRefused)?;
                 self.split(&focused, direction, new_id, new_data)
                     .then_some(())
                     .ok_or(PaneCommandError::SplitRefused)
@@ -526,7 +557,7 @@ impl<D: PaneData> MullionModel<D> {
                 self.focused
                     .as_ref()
                     .ok_or(PaneCommandError::NoFocusedPane)?;
-                self.resize_focused(direction, 0.05)
+                self.resize_focused(direction, resize_step)
                     .then_some(())
                     .ok_or(PaneCommandError::NotApplicable)
             }
