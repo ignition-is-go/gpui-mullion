@@ -108,5 +108,17 @@ jobs:
           trap 'kill -TERM -- -"$chrome" 2>/dev/null || true; kill "$server" 2>/dev/null || true' EXIT
           if ! timeout 75 node .github/scripts/check_browser.mjs http://127.0.0.1:8181/; then
             cat /tmp/mullion-chrome.log
+            test ! -f /tmp/mullion-browser-failure.json || cat /tmp/mullion-browser-failure.json
             exit 1
           fi
+      - name: Upload browser interaction diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mullion-browser-interaction-diagnostics
+          path: |
+            /tmp/mullion-browser-failure.json
+            /tmp/mullion-browser-failure.png
+            /tmp/mullion-chrome.log
+            /tmp/mullion-server.log
+          if-no-files-found: ignore

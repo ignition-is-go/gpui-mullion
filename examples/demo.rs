@@ -4,11 +4,32 @@ use gpui_mullion::{
     SplitDirection, Workspace, WorkspaceId, WorkspaceSet,
 };
 use serde::{Deserialize, Serialize};
+
+#[cfg(target_family = "wasm")]
+use gpui::Entity;
 use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct PaneData {
     project: String,
+}
+
+#[cfg(target_family = "wasm")]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowserTestState {
+    active_workspace: WorkspaceId,
+    tree: PaneNode<PaneData>,
+    focused: Option<PaneId>,
+    zoomed: Option<PaneId>,
+    active_activities: Vec<BrowserActiveActivity>,
+}
+
+#[cfg(target_family = "wasm")]
+#[derive(Serialize)]
+struct BrowserActiveActivity {
+    pane: PaneId,
+    activity: Option<ActivityId>,
 }
 
 fn activity(id: &str, name: &str, color: u32) -> ActivityNode<PaneData> {
@@ -119,6 +140,8 @@ fn launch(cx: &mut App) {
                     .expect("demo workspace set has a valid active workspace")
             });
             view.read(cx).focus_handle().clone().focus(window, cx);
+            #[cfg(target_family = "wasm")]
+            TEST_VIEW.with(|slot| *slot.borrow_mut() = Some(view.clone()));
             view
         },
     )
@@ -138,6 +161,67 @@ thread_local! {
     static APPLICATION: std::cell::RefCell<Option<gpui::ApplicationHandle>> = const {
         std::cell::RefCell::new(None)
     };
+    static TEST_VIEW: std::cell::RefCell<Option<Entity<MullionView<PaneData>>>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+#[cfg(target_family = "wasm")]
+fn browser_test_state() -> String {
+    APPLICATION.with(|application| {
+        let application = application.borrow();
+        let application = application
+            .as_ref()
+            .expect("the embedded GPUI application is retained");
+        TEST_VIEW.with(|view| {
+            let view = view.borrow();
+            let view = view.as_ref().expect("the demo Mullion entity is retained");
+            application.update(|cx| {
+                let view = view.read(cx);
+                let tree = view.model().snapshot();
+                let active_activities = tree
+                    .leaf_ids()
+                    .into_iter()
+                    .map(|pane| {
+                        let activity = match tree.find(&pane) {
+                            Some(PaneNode::Leaf {
+                                active_activity, ..
+                            }) => active_activity.clone(),
+                            _ => None,
+                        };
+                        BrowserActiveActivity { pane, activity }
+                    })
+                    .collect();
+                let state = BrowserTestState {
+                    active_workspace: view
+                        .workspaces()
+                        .expect("the demo owns workspaces")
+                        .active
+                        .clone(),
+                    tree,
+                    focused: view.model().focused().cloned(),
+                    zoomed: view.model().zoomed().cloned(),
+                    active_activities,
+                };
+                serde_json::to_string(&state).expect("browser test state is serializable")
+            })
+        })
+    })
+}
+
+#[cfg(target_family = "wasm")]
+fn install_browser_test_bridge() {
+    use wasm_bindgen::{closure::Closure, JsCast, JsValue};
+
+    // NOTE(ts): CI drives the rendered canvas and can only snapshot the retained entity.
+    let snapshot = Closure::<dyn Fn() -> String>::new(browser_test_state);
+    js_sys::Reflect::set(
+        &js_sys::global(),
+        &JsValue::from_str("__mullionTestState"),
+        snapshot.as_ref().unchecked_ref(),
+    )
+    .expect("globalThis accepts the browser test bridge");
+    snapshot.forget();
 }
 
 #[cfg(target_family = "wasm")]
@@ -145,4 +229,5 @@ fn main() {
     gpui_platform::web_init();
     let application = gpui_platform::application().run_embedded(launch);
     APPLICATION.with(|slot| *slot.borrow_mut() = Some(application));
+    install_browser_test_bridge();
 }

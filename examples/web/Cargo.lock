@@ -3210,7 +3210,10 @@ dependencies = [
  "gpui",
  "gpui-mullion",
  "gpui_platform",
+ "js-sys",
  "serde",
+ "serde_json",
+ "wasm-bindgen",
 ]
 
 [[package]]
