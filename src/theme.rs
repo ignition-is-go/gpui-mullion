@@ -17,13 +17,18 @@ impl MullionTheme {
     pub fn dark() -> Self {
         Self {
             background: rgb(0x0e0e0e).into(),
-            surface: rgb(0x151515).into(),
-            border: rgb(0x303030).into(),
-            accent: rgb(0x242424).into(),
+            surface: rgb(0x111111).into(),
+            border: rgb(0x1a1a1a).into(),
+            accent: rgb(0x222222).into(),
             text: rgb(0xeeeeee).into(),
-            muted_text: rgb(0x909090).into(),
-            focused: rgb(0x62a0ea).into(),
-            drop_target: rgb(0x355070).into(),
+            muted_text: rgb(0x888888).into(),
+            focused: rgb(0x333333).into(),
+            drop_target: Hsla {
+                h: 0.0,
+                s: 0.0,
+                l: 1.0,
+                a: 0.06,
+            },
         }
     }
 
@@ -73,6 +78,19 @@ impl MullionThemeMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dark_palette_matches_reference_literals() {
+        let theme = MullionTheme::dark();
+        assert_eq!(theme.background, rgb(0x0e0e0e).into());
+        assert_eq!(theme.surface, rgb(0x111111).into());
+        assert_eq!(theme.border, rgb(0x1a1a1a).into());
+        assert_eq!(theme.accent, rgb(0x222222).into());
+        assert_eq!(theme.text, rgb(0xeeeeee).into());
+        assert_eq!(theme.muted_text, rgb(0x888888).into());
+        assert_eq!(theme.focused, rgb(0x333333).into());
+        assert_eq!(theme.drop_target.a, 0.06);
+    }
 
     #[test]
     fn system_mode_tracks_all_gpui_appearances() {

@@ -64,9 +64,11 @@ type PaneActivitySource<D> = (Option<ActivityId>, D);
 #[derive(Clone, Copy)]
 struct PaneControlRenderStyle {
     size: Pixels,
+    row_extent: Pixels,
     icon_size: Pixels,
     label_size: Pixels,
     show_label: bool,
+    label_opacity: f32,
     theme: MullionTheme,
 }
 
@@ -192,7 +194,10 @@ pub struct MullionView<D: PaneData> {
     settings: MullionSettings,
     focus_presentation: FocusPresentation,
     expansion: HashMap<PaneId, ActivityExpansionState>,
+    expansion_active: HashMap<PaneId, Option<ActivityId>>,
     hover: HashMap<PaneId, ActivityBarHoverState>,
+    /// Horizontal rails expand only the row under the pointer.
+    hovered_bar_items: HashSet<(PaneId, String)>,
     focus_handle: FocusHandle,
     workspaces: Option<WorkspaceSet<D>>,
     activity_factories: ActivityFactoryRegistry<D>,
@@ -240,7 +245,9 @@ impl<D: PaneData> MullionView<D> {
             settings: MullionSettings::default(),
             focus_presentation: FocusPresentation::default(),
             expansion: HashMap::new(),
+            expansion_active: HashMap::new(),
             hover: HashMap::new(),
+            hovered_bar_items: HashSet::new(),
             focus_handle: cx.focus_handle(),
             workspaces: None,
             activity_factories: ActivityFactoryRegistry::new(),
@@ -1299,6 +1306,43 @@ impl<D: PaneData> MullionView<D> {
         self.finish(cx);
     }
 
+    fn handle_activity_bar_hover(
+        &mut self,
+        pane: &PaneId,
+        hovered: bool,
+        delay_ms: u32,
+        cx: &mut Context<Self>,
+    ) {
+        if hovered {
+            let state = self.hover.entry(pane.clone()).or_default();
+            if state.is_hovered() {
+                return;
+            }
+            let generation = state.enter();
+            let pane = pane.clone();
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(delay_ms.into()))
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    if this.hover.entry(pane).or_default().apply_open(generation) {
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        } else {
+            let state = self.hover.entry(pane.clone()).or_default();
+            if !state.is_hovered() {
+                return;
+            }
+            state.leave();
+            self.hovered_bar_items
+                .retain(|(item_pane, _)| item_pane != pane);
+            cx.notify();
+        }
+    }
+
     fn render_activity_nodes(
         &self,
         pane: &PaneId,
@@ -1308,19 +1352,46 @@ impl<D: PaneData> MullionView<D> {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
+        fn contains_active<D: PaneData>(
+            node: &VisibleActivityNode<D>,
+            selected: Option<&ActivityId>,
+        ) -> bool {
+            match node {
+                VisibleActivityNode::Activity(activity) => selected == Some(&activity.activity.id),
+                VisibleActivityNode::Category(category) => category
+                    .children
+                    .iter()
+                    .any(|child| contains_active(child, selected)),
+            }
+        }
+
         let styles = self
             .styles
             .unwrap_or_else(|| MullionStyles::from_theme(self.theme));
-        let horizontal = self.host.activity_bar.edge.is_horizontal();
+        let panel_expanded = self
+            .hover
+            .get(pane)
+            .is_some_and(|state| state.is_expanded())
+            && self.host.activity_bar.behavior.hover_expand;
+        let edge = self.host.activity_bar.edge;
+        let horizontal = edge.is_horizontal();
         let mut rendered = Vec::new();
         for node in nodes {
             match node {
                 VisibleActivityNode::Activity(visible) => {
                     let activity = &visible.activity;
                     let active = selected == Some(&activity.id);
+                    let item_key = format!("activity:{}", activity.id.0);
+                    let item_expanded = panel_expanded
+                        && (!horizontal
+                            || self
+                                .hovered_bar_items
+                                .contains(&(pane.clone(), item_key.clone())));
                     let pane_id = pane.clone();
+                    let down_pane_id = pane.clone();
                     let key_pane_id = pane.clone();
                     let activity_id = activity.id.clone();
+                    let down_activity_id = activity.id.clone();
                     let key_activity_id = activity.id.clone();
                     let a11y_pane_id = pane.clone();
                     let a11y_activity_id = activity.id.clone();
@@ -1337,11 +1408,18 @@ impl<D: PaneData> MullionView<D> {
                         .and_then(|chrome| chrome.icon.clone());
                     let child = icon.map(|icon| icon.render(window, cx)).unwrap_or_else(|| {
                         div()
-                            .text_xs()
+                            .text_size(styles.activity_bar.font_size)
                             .child(activity.name.clone())
                             .into_any_element()
                     });
-                    let mut item = div()
+                    let hover_pane = pane.clone();
+                    let hover_key = item_key.clone();
+                    let foreground = if active {
+                        visible.inherited_color.unwrap_or(styles.activity_bar.icon)
+                    } else {
+                        styles.activity_bar.icon
+                    };
+                    let item = div()
                         .id(SharedString::from(format!(
                             "activity:{}:{}",
                             pane.0, activity.id.0
@@ -1363,25 +1441,53 @@ impl<D: PaneData> MullionView<D> {
                         .focusable()
                         .tab_stop(true)
                         .cursor_pointer()
+                        .relative()
                         .flex()
                         .items_center()
-                        .justify_center()
-                        .gap_1()
-                        .size(styles.activity_bar.thickness)
+                        .h(styles.activity_bar.thickness)
+                        .flex_shrink_0()
+                        .when(horizontal, |item| {
+                            item.w(if item_expanded {
+                                styles.activity_bar.expanded_extent
+                            } else {
+                                styles.activity_bar.thickness
+                            })
+                        })
+                        .when(!horizontal, |item| item.w_full())
+                        .overflow_hidden()
                         .text_size(styles.activity_bar.font_size)
-                        .text_color(visible.inherited_color.unwrap_or(styles.activity_bar.icon))
+                        .text_color(foreground)
                         .opacity(if active {
                             styles.activity_bar.active_icon_opacity
                         } else {
                             styles.activity_bar.inactive_icon_opacity
                         })
-                        .bg(if active {
-                            self.theme.accent
-                        } else {
-                            Hsla::transparent_black()
+                        .when(horizontal, |item| {
+                            item.on_hover(cx.listener(move |this, hovered, _, cx| {
+                                let key = (hover_pane.clone(), hover_key.clone());
+                                let changed = if *hovered {
+                                    this.hovered_bar_items.insert(key)
+                                } else {
+                                    this.hovered_bar_items.remove(&key)
+                                };
+                                if changed {
+                                    cx.notify();
+                                }
+                            }))
                         })
-                        .hover(|element| element.bg(self.theme.accent))
-                        .rounded(styles.activity_bar.border_radius)
+                        .when(!can_drag_activity, |item| {
+                            item.on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    this.model.focus(&down_pane_id);
+                                    this.model.set_activity(
+                                        &down_pane_id,
+                                        Some(down_activity_id.clone()),
+                                    );
+                                    this.finish(cx);
+                                }),
+                            )
+                        })
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.model.focus(&pane_id);
                             this.model.set_activity(&pane_id, Some(activity_id.clone()));
@@ -1418,15 +1524,41 @@ impl<D: PaneData> MullionView<D> {
                         })
                         .child(
                             div()
-                                .size(styles.activity_bar.icon_size)
+                                .debug_selector({
+                                    let pane = pane.clone();
+                                    let id = activity.id.clone();
+                                    move || format!("activity-icon-slot:{}:{}", pane.0, id.0)
+                                })
+                                .w(styles.activity_bar.thickness)
+                                .h(styles.activity_bar.thickness)
+                                .flex_shrink_0()
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .child(child),
+                                .child(
+                                    div()
+                                        .size(styles.activity_bar.icon_size)
+                                        .overflow_hidden()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(child),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .debug_selector({
+                                    let pane = pane.clone();
+                                    let id = activity.id.clone();
+                                    move || format!("activity-label:{}:{}", pane.0, id.0)
+                                })
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .opacity(if item_expanded { 1.0 } else { 0.0 })
+                                .child(activity.name.clone()),
                         );
-                    if !horizontal && depth > 0 {
-                        item = item.ml(px((depth as f32) * 5.));
-                    }
                     rendered.push(item.into_any_element());
                 }
                 VisibleActivityNode::Category(category) => {
@@ -1434,12 +1566,22 @@ impl<D: PaneData> MullionView<D> {
                         .expansion
                         .get(pane)
                         .is_some_and(|state| state.is_expanded(&category.id));
+                    let has_active = contains_active(node, selected);
+                    let show_dot = !expanded && has_active;
+                    let item_key = format!("category:{}", category.id.0);
+                    let item_expanded = panel_expanded
+                        && (!horizontal
+                            || self
+                                .hovered_bar_items
+                                .contains(&(pane.clone(), item_key.clone())));
                     let pane_id = pane.clone();
                     let category_id = category.id.clone();
                     let key_pane_id = pane.clone();
                     let key_category_id = category.id.clone();
                     let a11y_pane_id = pane.clone();
                     let a11y_category_id = category.id.clone();
+                    let hover_pane = pane.clone();
+                    let hover_key = item_key;
                     let accessibility = crate::MullionAccessibilityNode::category(
                         &category.id,
                         category.name.as_ref(),
@@ -1451,9 +1593,33 @@ impl<D: PaneData> MullionView<D> {
                         .and_then(|chrome| chrome.icon.clone());
                     let child = icon.map(|icon| icon.render(window, cx)).unwrap_or_else(|| {
                         div()
-                            .text_xs()
+                            .text_size(styles.activity_bar.font_size)
                             .child(category.name.clone())
                             .into_any_element()
+                    });
+                    let dot = show_dot.then(|| {
+                        div()
+                            .debug_selector({
+                                let pane = pane.clone();
+                                let id = category.id.clone();
+                                move || format!("activity-category-dot:{}:{}", pane.0, id.0)
+                            })
+                            .absolute()
+                            .size(px(4.))
+                            .rounded(px(2.))
+                            .bg(category.color)
+                            .when(edge == ActivityBarEdge::Left, |dot| {
+                                dot.left(px(2.)).top(px(12.))
+                            })
+                            .when(edge == ActivityBarEdge::Right, |dot| {
+                                dot.right(px(2.)).top(px(12.))
+                            })
+                            .when(edge == ActivityBarEdge::Top, |dot| {
+                                dot.bottom(px(2.)).left(px(12.))
+                            })
+                            .when(edge == ActivityBarEdge::Bottom, |dot| {
+                                dot.top(px(2.)).left(px(12.))
+                            })
                     });
                     let label = div()
                         .id(SharedString::from(format!(
@@ -1476,24 +1642,52 @@ impl<D: PaneData> MullionView<D> {
                         .focusable()
                         .tab_stop(true)
                         .cursor_pointer()
+                        .relative()
                         .flex()
                         .items_center()
-                        .justify_center()
-                        .gap_1()
-                        .size(styles.activity_bar.thickness)
-                        .border_l(styles.activity_bar.category_border_width)
-                        .border_color(category.color)
+                        .h(styles.activity_bar.thickness)
+                        .flex_shrink_0()
+                        .when(horizontal, |item| {
+                            item.w(if item_expanded {
+                                styles.activity_bar.expanded_extent
+                            } else {
+                                styles.activity_bar.thickness
+                            })
+                        })
+                        .when(!horizontal, |item| item.w_full())
+                        .overflow_hidden()
+                        .text_size(styles.activity_bar.font_size)
+                        .font_weight(gpui::FontWeight(600.))
                         .text_color(styles.activity_bar.category_label)
-                        .bg(styles.activity_bar.category_card_background)
-                        .rounded(styles.activity_bar.border_radius)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.model.focus(&pane_id);
-                            this.expansion
-                                .entry(pane_id.clone())
-                                .or_default()
-                                .toggle(category_id.clone());
-                            cx.notify();
-                        }))
+                        .opacity(if expanded || has_active {
+                            1.0
+                        } else {
+                            styles.activity_bar.inactive_icon_opacity
+                        })
+                        .when(horizontal, |item| {
+                            item.on_hover(cx.listener(move |this, hovered, _, cx| {
+                                let key = (hover_pane.clone(), hover_key.clone());
+                                let changed = if *hovered {
+                                    this.hovered_bar_items.insert(key)
+                                } else {
+                                    this.hovered_bar_items.remove(&key)
+                                };
+                                if changed {
+                                    cx.notify();
+                                }
+                            }))
+                        })
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                this.model.focus(&pane_id);
+                                this.expansion
+                                    .entry(pane_id.clone())
+                                    .or_default()
+                                    .toggle(category_id.clone());
+                                cx.notify();
+                            }),
+                        )
                         .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
                             if matches!(event.keystroke.key.as_str(), "enter" | "space" | " ") {
                                 this.model.focus(&key_pane_id);
@@ -1521,23 +1715,131 @@ impl<D: PaneData> MullionView<D> {
                         })
                         .child(
                             div()
-                                .size(styles.activity_bar.icon_size)
+                                .relative()
+                                .w(styles.activity_bar.thickness)
+                                .h(styles.activity_bar.thickness)
+                                .flex_shrink_0()
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .child(child),
+                                .when_some(dot, |slot, dot| slot.child(dot))
+                                .child(
+                                    div()
+                                        .size(styles.activity_bar.icon_size)
+                                        .overflow_hidden()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(child),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .opacity(if item_expanded { 1.0 } else { 0.0 })
+                                .child(category.name.clone()),
+                        )
+                        .child(
+                            div()
+                                .ml_auto()
+                                .w(px(14.))
+                                .flex_shrink_0()
+                                .text_size(px(9.))
+                                .text_center()
+                                .opacity(if item_expanded { 0.5 } else { 0.0 })
+                                .child("▸"),
                         );
-                    rendered.push(label.into_any_element());
+
+                    let mut wrapper = div()
+                        .debug_selector({
+                            let pane = pane.clone();
+                            let id = category.id.clone();
+                            move || format!("activity-category-card:{}:{}", pane.0, id.0)
+                        })
+                        .relative()
+                        .flex_shrink_0()
+                        .when(horizontal, |wrapper| wrapper.flex().flex_row().h_full())
+                        .when(!horizontal, |wrapper| wrapper.flex().flex_col().w_full())
+                        .when(depth == 0 && edge == ActivityBarEdge::Left, |wrapper| {
+                            wrapper.mr(-styles.activity_bar.expanded_padding)
+                        })
+                        .when(depth == 0 && edge == ActivityBarEdge::Right, |wrapper| {
+                            wrapper.ml(-styles.activity_bar.expanded_padding)
+                        })
+                        .bg(if expanded {
+                            styles.activity_bar.category_card_background
+                        } else {
+                            Hsla::transparent_black()
+                        })
+                        .border_color(if expanded {
+                            styles.activity_bar.category_edge
+                        } else {
+                            Hsla::transparent_black()
+                        })
+                        .when(horizontal, |wrapper| wrapper.border_l(px(1.)))
+                        .when(!horizontal, |wrapper| wrapper.border_t(px(1.)))
+                        .child(label);
                     if expanded {
-                        rendered.extend(self.render_activity_nodes(
+                        let border = div()
+                            .debug_selector({
+                                let pane = pane.clone();
+                                let id = category.id.clone();
+                                move || format!("activity-category-stripe:{}:{}", pane.0, id.0)
+                            })
+                            .absolute()
+                            .bg(category.color)
+                            .when(edge == ActivityBarEdge::Left, |b| {
+                                b.left_0()
+                                    .top_0()
+                                    .bottom_0()
+                                    .w(styles.activity_bar.category_border_width)
+                            })
+                            .when(edge == ActivityBarEdge::Right, |b| {
+                                b.right_0()
+                                    .top_0()
+                                    .bottom_0()
+                                    .w(styles.activity_bar.category_border_width)
+                            })
+                            .when(edge == ActivityBarEdge::Top, |b| {
+                                b.left_0()
+                                    .right_0()
+                                    .bottom_0()
+                                    .h(styles.activity_bar.category_border_width)
+                            })
+                            .when(edge == ActivityBarEdge::Bottom, |b| {
+                                b.left_0()
+                                    .right_0()
+                                    .top_0()
+                                    .h(styles.activity_bar.category_border_width)
+                            });
+                        let children = self.render_activity_nodes(
                             pane,
                             &category.children,
                             selected,
                             depth + 1,
                             window,
                             cx,
-                        ));
+                        );
+                        wrapper = wrapper.child(
+                            div()
+                                .debug_selector({
+                                    let pane = pane.clone();
+                                    let id = category.id.clone();
+                                    move || {
+                                        format!("activity-category-children:{}:{}", pane.0, id.0)
+                                    }
+                                })
+                                .relative()
+                                .when(horizontal, |c| c.flex().flex_row().h_full())
+                                .when(!horizontal, |c| c.flex().flex_col().w_full())
+                                .child(border)
+                                .children(children),
+                        );
                     }
+                    rendered.push(wrapper.into_any_element());
                 }
             }
         }
@@ -1583,7 +1885,7 @@ impl<D: PaneData> MullionView<D> {
             .focusable()
             .tab_stop(enabled)
             .h(style.size)
-            .w(style.size)
+            .w(style.row_extent)
             .flex_shrink_0()
             .flex()
             .items_center()
@@ -1611,14 +1913,18 @@ impl<D: PaneData> MullionView<D> {
             .when(style.show_label, |element| {
                 element.child(
                     div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
                         .text_size(style.label_size)
                         .whitespace_nowrap()
+                        .opacity(style.label_opacity)
                         .child(control.label()),
                 )
             });
         if enabled {
             element = element
-                .on_click(move |_, _, cx| {
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     click_view
                         .update(cx, |this, cx| {
                             this.model.focus(&pane_click);
@@ -1652,6 +1958,7 @@ impl<D: PaneData> MullionView<D> {
     fn render_pane_move_control(
         pane: &PaneId,
         size: Pixels,
+        row_extent: Pixels,
         icon_size: Pixels,
         icon: Option<AnyElement>,
         theme: MullionTheme,
@@ -1673,7 +1980,7 @@ impl<D: PaneData> MullionView<D> {
             .focusable()
             .tab_stop(true)
             .h(size)
-            .w(size)
+            .w(row_extent)
             .flex_shrink_0()
             .flex()
             .items_center()
@@ -1695,14 +2002,24 @@ impl<D: PaneData> MullionView<D> {
             })
             .child(
                 div()
-                    .debug_selector(move || drag_selector.clone())
-                    .size(icon_size)
+                    .w(size)
+                    .h(size)
+                    .flex_shrink_0()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(icon_size)
-                    .child(icon.unwrap_or_else(|| div().child("⠿").into_any_element())),
+                    .child(
+                        div()
+                            .debug_selector(move || drag_selector.clone())
+                            .size(icon_size)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(icon_size)
+                            .child(icon.unwrap_or_else(|| div().child("⠿").into_any_element())),
+                    ),
             )
+            .child(div().min_w_0().overflow_hidden().child(""))
             .into_any_element()
     }
 
@@ -1769,20 +2086,22 @@ impl<D: PaneData> MullionView<D> {
             })
             .or_else(|| render_data.activities.first().cloned());
         let projection = render_data.projection;
-        self.expansion
-            .entry(id.clone())
-            .or_default()
-            .reveal_active(&projection.active_ancestors);
+        if self.expansion_active.get(id) != Some(&active.cloned()) {
+            self.expansion
+                .entry(id.clone())
+                .or_default()
+                .reveal_active(&projection.active_ancestors);
+            self.expansion_active.insert(id.clone(), active.cloned());
+        }
         let horizontal = self.host.activity_bar.edge.is_horizontal();
+        let mode = self.host.mode_for(id, data);
+        let hover_expanded = self.hover.get(id).is_some_and(|state| state.is_expanded());
+        let panel_expanded = hover_expanded && self.host.activity_bar.behavior.hover_expand;
         let selected_id = selected.as_ref().map(|activity| &activity.id);
         let primary_tabs =
             self.render_activity_nodes(id, &projection.primary, selected_id, 0, window, cx);
         let trailing_tabs =
             self.render_activity_nodes(id, &projection.trailing, selected_id, 0, window, cx);
-        let mode = self.host.mode_for(id, data);
-        let hover_expanded = self.hover.get(id).is_some_and(|state| state.is_expanded());
-        let bar_visible = mode == ActivityBarMode::Pinned
-            || (mode == ActivityBarMode::AutoHide && hover_expanded);
         let cached = selected.as_ref().and_then(|activity| {
             let key =
                 ActivityCacheKey::new(self.workspace_namespace(), id.clone(), activity.id.clone());
@@ -1894,6 +2213,11 @@ impl<D: PaneData> MullionView<D> {
             Self::render_pane_move_control(
                 id,
                 styles.pane_controls.compact_size,
+                if panel_expanded && !horizontal {
+                    styles.activity_bar.expanded_extent
+                } else {
+                    styles.pane_controls.compact_size
+                },
                 styles.pane_controls.compact_icon_size,
                 app_icon,
                 theme,
@@ -1908,9 +2232,19 @@ impl<D: PaneData> MullionView<D> {
                 can_split,
                 PaneControlRenderStyle {
                     size: styles.pane_controls.compact_size,
+                    row_extent: if panel_expanded && !horizontal {
+                        styles.activity_bar.expanded_extent
+                    } else {
+                        styles.pane_controls.compact_size
+                    },
                     icon_size: styles.pane_controls.compact_icon_size,
                     label_size: styles.pane_controls.expanded_label_size,
                     show_label: true,
+                    label_opacity: if panel_expanded && !horizontal {
+                        1.0
+                    } else {
+                        0.0
+                    },
                     theme,
                 },
                 cx,
@@ -1924,9 +2258,19 @@ impl<D: PaneData> MullionView<D> {
                 can_split,
                 PaneControlRenderStyle {
                     size: styles.pane_controls.compact_size,
+                    row_extent: if panel_expanded && !horizontal {
+                        styles.activity_bar.expanded_extent
+                    } else {
+                        styles.pane_controls.compact_size
+                    },
                     icon_size: styles.pane_controls.compact_icon_size,
                     label_size: styles.pane_controls.expanded_label_size,
                     show_label: true,
+                    label_opacity: if panel_expanded && !horizontal {
+                        1.0
+                    } else {
+                        0.0
+                    },
                     theme,
                 },
                 cx,
@@ -1940,9 +2284,19 @@ impl<D: PaneData> MullionView<D> {
                 can_close,
                 PaneControlRenderStyle {
                     size: styles.pane_controls.compact_size,
+                    row_extent: if panel_expanded && !horizontal {
+                        styles.activity_bar.expanded_extent
+                    } else {
+                        styles.pane_controls.compact_size
+                    },
                     icon_size: styles.pane_controls.compact_icon_size,
                     label_size: styles.pane_controls.expanded_label_size,
                     show_label: true,
+                    label_opacity: if panel_expanded && !horizontal {
+                        1.0
+                    } else {
+                        0.0
+                    },
                     theme,
                 },
                 cx,
@@ -1952,116 +2306,165 @@ impl<D: PaneData> MullionView<D> {
             let pane = id.clone();
             let delay = self.host.activity_bar.behavior.hover_intent.expand_delay_ms;
             let auto_hide = mode == ActivityBarMode::AutoHide;
-            let hover_expand = self.host.activity_bar.behavior.hover_expand;
-            // A pinned rail participates in flex layout at its compact thickness. Auto-hide
-            // rails are edge-anchored overlays: the collapsed strip and expanded rail never
-            // change the pane content's measured extent.
-            let extent = if auto_hide {
-                if bar_visible {
-                    styles.activity_bar.expanded_extent
-                } else {
-                    px(3.)
-                }
+            let edge = self.host.activity_bar.edge;
+            let revealed = !auto_hide || hover_expanded;
+            let panel_extent = if panel_expanded && !horizontal {
+                styles.activity_bar.expanded_extent + styles.activity_bar.expanded_padding
             } else {
                 styles.activity_bar.thickness
             };
-            let mut bar = div()
+
+            let primary_group = div()
+                .debug_selector({
+                    let pane = id.clone();
+                    move || format!("activity-bar-primary:{}", pane.0)
+                })
+                .flex()
+                .flex_shrink_0()
+                .when(horizontal, |group| group.flex_row().h_full())
+                .when(!horizontal, |group| group.flex_col().w_full())
+                .when_some(compact_move, |group, control| group.child(control))
+                .children(primary_tabs);
+            let trailing_group = div()
+                .debug_selector({
+                    let pane = id.clone();
+                    move || format!("activity-bar-trailing:{}", pane.0)
+                })
+                .flex()
+                .flex_shrink_0()
+                .when(horizontal, |group| group.flex_row().h_full().ml_auto())
+                .when(!horizontal, |group| group.flex_col().w_full().mt_auto())
+                .when_some(leading_slot, |group, slot| group.child(slot))
+                .children(trailing_tabs)
+                .when_some(trailing_slot, |group, slot| group.child(slot))
+                .when_some(pane_accessory, |group, accessory| group.child(accessory))
+                .when_some(compact_split_h, |group, control| group.child(control))
+                .when_some(compact_split_v, |group, control| group.child(control))
+                .when_some(compact_close, |group, control| group.child(control));
+
+            let panel_hover_pane = id.clone();
+            let panel = div()
+                .id(SharedString::from(format!("activity-bar-panel:{}", id.0)))
+                .debug_selector({
+                    let pane = id.clone();
+                    move || format!("activity-bar-panel:{}", pane.0)
+                })
+                .absolute()
+                .flex()
+                .overflow_hidden()
+                .bg(styles.activity_bar.background)
+                .border_color(styles.activity_bar.border)
+                .when(horizontal, |panel| {
+                    panel
+                        .left_0()
+                        .right_0()
+                        .h(styles.activity_bar.thickness)
+                        .flex_row()
+                })
+                .when(!horizontal, |panel| {
+                    panel.top_0().bottom_0().w(panel_extent).flex_col()
+                })
+                .when(edge == ActivityBarEdge::Left, |panel| {
+                    panel
+                        .left(if revealed { px(0.) } else { -panel_extent })
+                        .border_r(styles.activity_bar.border_width)
+                        .when(panel_expanded, |panel| {
+                            panel.pr(styles.activity_bar.expanded_padding)
+                        })
+                })
+                .when(edge == ActivityBarEdge::Right, |panel| {
+                    panel
+                        .right(if revealed { px(0.) } else { -panel_extent })
+                        .border_l(styles.activity_bar.border_width)
+                        .when(panel_expanded, |panel| {
+                            panel.pl(styles.activity_bar.expanded_padding)
+                        })
+                })
+                .when(edge == ActivityBarEdge::Top, |panel| {
+                    panel
+                        .top(if revealed {
+                            px(0.)
+                        } else {
+                            -styles.activity_bar.thickness
+                        })
+                        .border_b(styles.activity_bar.border_width)
+                })
+                .when(edge == ActivityBarEdge::Bottom, |panel| {
+                    panel
+                        .bottom(if revealed {
+                            px(0.)
+                        } else {
+                            -styles.activity_bar.thickness
+                        })
+                        .border_t(styles.activity_bar.border_width)
+                })
+                .on_hover(cx.listener(move |this, hovered, _, cx| {
+                    this.handle_activity_bar_hover(&panel_hover_pane, *hovered, delay, cx);
+                }))
+                .child(primary_group)
+                .child(trailing_group);
+
+            let edge_trigger = auto_hide.then(|| {
+                let trigger_pane = id.clone();
+                div()
+                    .id(SharedString::from(format!("activity-bar-trigger:{}", id.0)))
+                    .debug_selector({
+                        let pane = id.clone();
+                        move || format!("activity-bar-trigger:{}", pane.0)
+                    })
+                    .absolute()
+                    .on_hover(cx.listener(move |this, hovered, _, cx| {
+                        this.handle_activity_bar_hover(&trigger_pane, *hovered, delay, cx);
+                    }))
+                    .when(edge == ActivityBarEdge::Left, |trigger| {
+                        trigger.left_0().top_0().bottom_0().w(px(12.))
+                    })
+                    .when(edge == ActivityBarEdge::Right, |trigger| {
+                        trigger.right_0().top_0().bottom_0().w(px(12.))
+                    })
+                    .when(edge == ActivityBarEdge::Top, |trigger| {
+                        trigger.left_0().right_0().top_0().h(px(12.))
+                    })
+                    .when(edge == ActivityBarEdge::Bottom, |trigger| {
+                        trigger.left_0().right_0().bottom_0().h(px(12.))
+                    })
+            });
+
+            div()
                 .id(SharedString::from(format!("activity-bar:{}", id.0)))
                 .debug_selector({
                     let pane = id.clone();
                     move || format!("activity-bar:{}", pane.0)
                 })
                 .aria_label(format!("Activity bar for pane {}", id.0))
+                .relative()
                 .flex_shrink_0()
-                .flex()
-                .when(horizontal, |bar| bar.flex_row().h(extent).w_full())
-                .when(!horizontal, |bar| bar.flex_col().w(extent).h_full())
-                .items_center()
-                .gap_1()
-                .bg(styles.activity_bar.background)
-                .border_color(styles.activity_bar.border)
-                .when(
-                    self.host.activity_bar.edge == ActivityBarEdge::Left,
-                    |bar| bar.border_r(styles.activity_bar.border_width),
-                )
-                .when(
-                    self.host.activity_bar.edge == ActivityBarEdge::Right,
-                    |bar| bar.border_l(styles.activity_bar.border_width),
-                )
-                .when(self.host.activity_bar.edge == ActivityBarEdge::Top, |bar| {
-                    bar.border_b(styles.activity_bar.border_width)
+                .when(horizontal, |scope| {
+                    scope.w_full().h(if auto_hide {
+                        px(0.)
+                    } else {
+                        styles.activity_bar.thickness
+                    })
                 })
-                .when(
-                    self.host.activity_bar.edge == ActivityBarEdge::Bottom,
-                    |bar| bar.border_t(styles.activity_bar.border_width),
-                )
-                .when(auto_hide, |bar| {
-                    bar.absolute()
-                        .when(
-                            self.host.activity_bar.edge == ActivityBarEdge::Left,
-                            |bar| bar.left_0().top_0().bottom_0(),
-                        )
-                        .when(
-                            self.host.activity_bar.edge == ActivityBarEdge::Right,
-                            |bar| bar.right_0().top_0().bottom_0(),
-                        )
-                        .when(self.host.activity_bar.edge == ActivityBarEdge::Top, |bar| {
-                            bar.top_0().left_0().right_0()
-                        })
-                        .when(
-                            self.host.activity_bar.edge == ActivityBarEdge::Bottom,
-                            |bar| bar.bottom_0().left_0().right_0(),
-                        )
+                .when(!horizontal, |scope| {
+                    scope.h_full().w(if auto_hide {
+                        px(0.)
+                    } else {
+                        styles.activity_bar.thickness
+                    })
                 })
                 .on_hover(cx.listener(move |this, hovered, _, cx| {
-                    if !auto_hide || !hover_expand {
-                        return;
-                    }
-                    if *hovered {
-                        let generation = this.hover.entry(pane.clone()).or_default().enter();
-                        if delay == 0 {
-                            this.hover
-                                .entry(pane.clone())
-                                .or_default()
-                                .apply_open(generation);
-                            cx.notify();
-                        } else {
-                            let pane = pane.clone();
-                            cx.spawn(async move |this, cx| {
-                                cx.background_executor()
-                                    .timer(Duration::from_millis(delay.into()))
-                                    .await;
-                                let _ = this.update(cx, |this, cx| {
-                                    if this.hover.entry(pane).or_default().apply_open(generation) {
-                                        cx.notify();
-                                    }
-                                });
-                            })
-                            .detach();
-                        }
-                    } else {
-                        this.hover.entry(pane.clone()).or_default().leave();
-                        cx.notify();
-                    }
-                }));
-            if bar_visible {
-                bar = bar
-                    .when_some(compact_move, |bar, control| bar.child(control))
-                    .children(primary_tabs)
-                    .child(div().flex_1())
-                    .when_some(leading_slot, |bar, slot| bar.child(slot))
-                    .children(trailing_tabs)
-                    .when_some(trailing_slot, |bar, slot| bar.child(slot))
-                    .when_some(pane_accessory, |bar, accessory| bar.child(accessory))
-                    .when_some(compact_split_h, |bar, control| bar.child(control))
-                    .when_some(compact_split_v, |bar, control| bar.child(control))
-                    .when_some(compact_close, |bar, control| bar.child(control));
-            }
-            bar.into_any_element()
+                    this.handle_activity_bar_hover(&pane, *hovered, delay, cx);
+                }))
+                .when_some(edge_trigger, |scope, trigger| scope.child(trigger))
+                .child(panel)
+                .into_any_element()
         });
+
         let hidden_controls = (mode == ActivityBarMode::Hidden && focused).then(|| {
             let move_control = Self::render_pane_move_control(
                 id,
+                styles.pane_controls.hidden_size,
                 styles.pane_controls.hidden_size,
                 styles.pane_controls.hidden_icon_size,
                 None,
@@ -2075,9 +2478,11 @@ impl<D: PaneData> MullionView<D> {
                 can_split,
                 PaneControlRenderStyle {
                     size: styles.pane_controls.hidden_size,
+                    row_extent: styles.pane_controls.hidden_size,
                     icon_size: styles.pane_controls.hidden_icon_size,
                     label_size: styles.pane_controls.expanded_label_size,
                     show_label: false,
+                    label_opacity: 0.0,
                     theme,
                 },
                 cx,
@@ -2089,9 +2494,11 @@ impl<D: PaneData> MullionView<D> {
                 can_split,
                 PaneControlRenderStyle {
                     size: styles.pane_controls.hidden_size,
+                    row_extent: styles.pane_controls.hidden_size,
                     icon_size: styles.pane_controls.hidden_icon_size,
                     label_size: styles.pane_controls.expanded_label_size,
                     show_label: false,
+                    label_opacity: 0.0,
                     theme,
                 },
                 cx,
@@ -2103,9 +2510,11 @@ impl<D: PaneData> MullionView<D> {
                 can_close,
                 PaneControlRenderStyle {
                     size: styles.pane_controls.hidden_size,
+                    row_extent: styles.pane_controls.hidden_size,
                     icon_size: styles.pane_controls.hidden_icon_size,
                     label_size: styles.pane_controls.expanded_label_size,
                     show_label: false,
+                    label_opacity: 0.0,
                     theme,
                 },
                 cx,
@@ -4661,14 +5070,16 @@ mod tests {
         cx.run_until_parked();
         let content_before = cx.debug_bounds("pane-content:pane").unwrap();
         let strip = cx.debug_bounds("activity-bar:pane").unwrap();
-        assert_eq!(strip.size.width, px(3.));
-        cx.simulate_mouse_move(strip.center(), None, gpui::Modifiers::none());
+        assert_eq!(strip.size.width, px(0.));
+        let trigger = cx.debug_bounds("activity-bar-trigger:pane").unwrap();
+        assert_eq!(trigger.size.width, px(12.));
+        cx.simulate_mouse_move(trigger.center(), None, gpui::Modifiers::none());
         cx.simulate_mouse_move(content_before.center(), None, gpui::Modifiers::none());
         cx.executor().advance_clock(Duration::from_millis(60));
         cx.run_until_parked();
         assert_eq!(
             cx.debug_bounds("activity-bar:pane").unwrap().size.width,
-            px(3.)
+            px(0.)
         );
 
         view.update(cx, |view, cx| {
@@ -4676,11 +5087,15 @@ mod tests {
             cx.notify();
         });
         cx.run_until_parked();
-        let strip = cx.debug_bounds("activity-bar:pane").unwrap();
-        cx.simulate_mouse_move(strip.center(), None, gpui::Modifiers::none());
+        let trigger = cx.debug_bounds("activity-bar-trigger:pane").unwrap();
+        cx.simulate_mouse_move(trigger.center(), None, gpui::Modifiers::none());
         cx.run_until_parked();
-        let expanded = cx.debug_bounds("activity-bar:pane").unwrap();
-        assert_eq!(expanded.size.width, px(150.));
+        let expanded = cx.debug_bounds("activity-bar-panel:pane").unwrap();
+        assert_eq!(
+            cx.debug_bounds("activity-bar:pane").unwrap().size.width,
+            px(0.)
+        );
+        assert_eq!(expanded.size.width, px(158.));
         assert_eq!(
             expanded.left(),
             cx.debug_bounds("pane-visual:pane").unwrap().left()
@@ -4706,6 +5121,61 @@ mod tests {
 
     fn hide_activity(_: &String) -> bool {
         false
+    }
+
+    #[gpui::test]
+    fn pinned_vertical_panel_and_horizontal_item_expand_without_resizing_content(
+        cx: &mut TestAppContext,
+    ) {
+        let catalog = ActivityCatalog::new(vec![ActivityNode::Activity(rendered_activity(
+            "activity",
+            show_activity,
+        ))]);
+        let tree = PaneNode::leaf_with_activity(
+            PaneId::new("pane"),
+            ActivityId::new("activity"),
+            "data".to_owned(),
+        );
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::try_new_with_catalog(tree, catalog, cx).unwrap()
+        });
+        cx.simulate_resize(gpui::size(px(500.), px(320.)));
+        cx.run_until_parked();
+        let content = cx.debug_bounds("pane-content:pane").unwrap();
+        assert!(cx.debug_bounds("activity-label:pane:activity").is_some());
+        let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
+        assert_eq!(panel.size.width, px(28.));
+        cx.simulate_mouse_move(panel.center(), None, gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(
+            cx.debug_bounds("activity-bar-panel:pane")
+                .unwrap()
+                .size
+                .width,
+            px(158.)
+        );
+        assert_eq!(cx.debug_bounds("pane-content:pane").unwrap(), content);
+
+        view.update(cx, |view, cx| {
+            view.host.activity_bar.edge = ActivityBarEdge::Top;
+            view.hover.clear();
+            view.hovered_bar_items.clear();
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let content = cx.debug_bounds("pane-content:pane").unwrap();
+        let item = cx.debug_bounds("activity:pane:activity").unwrap();
+        assert_eq!(item.size.width, px(28.));
+        cx.simulate_mouse_move(item.center(), None, gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(
+            cx.debug_bounds("activity:pane:activity")
+                .unwrap()
+                .size
+                .width,
+            px(150.)
+        );
+        assert_eq!(cx.debug_bounds("pane-content:pane").unwrap(), content);
     }
 
     #[gpui::test]
@@ -4929,14 +5399,17 @@ mod tests {
                 Some(&ActivityId::new("nested"))
             );
         });
-        // The active ancestor is force-revealed after an attempted collapse.
+        // Manual collapse keeps the active descendant represented by the exact dot.
         let category = cx
             .debug_bounds("activity-category:pane:category")
             .unwrap()
             .center();
         cx.simulate_click(category, gpui::Modifiers::none());
         cx.run_until_parked();
-        assert!(cx.debug_bounds("activity:pane:nested").is_some());
+        assert!(cx.debug_bounds("activity:pane:nested").is_none());
+        assert!(cx
+            .debug_bounds("activity-category-dot:pane:category")
+            .is_some());
 
         let trailing = cx.debug_bounds("activity:pane:trailing").unwrap().center();
         cx.simulate_click(trailing, gpui::Modifiers::none());
@@ -4952,6 +5425,66 @@ mod tests {
                 .is_some());
         });
         assert!(cx.debug_bounds("pane-drag-handle:pane").is_some());
+    }
+
+    #[gpui::test]
+    fn autohide_all_edges_reserve_zero_use_exact_trigger_and_reveal_when_collapsed(
+        cx: &mut TestAppContext,
+    ) {
+        let host = ActivityBarHostConfig::new().with_activity_bar(crate::ActivityBarConfig {
+            mode: ActivityBarMode::AutoHide,
+            behavior: crate::ActivityBarBehavior {
+                hover_expand: false,
+                hover_intent: crate::ActivityBarHoverIntent::default(),
+            },
+            ..crate::ActivityBarConfig::default()
+        });
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::new(leaf("pane"), vec![], cx).with_activity_bar_host(host)
+        });
+        cx.simulate_resize(gpui::size(px(500.), px(320.)));
+        for edge in [
+            ActivityBarEdge::Left,
+            ActivityBarEdge::Right,
+            ActivityBarEdge::Top,
+            ActivityBarEdge::Bottom,
+        ] {
+            view.update(cx, |view, cx| {
+                view.host.activity_bar.edge = edge;
+                view.hover.clear();
+                cx.notify();
+            });
+            cx.run_until_parked();
+            let pane = cx.debug_bounds("pane-visual:pane").unwrap();
+            let scope = cx.debug_bounds("activity-bar:pane").unwrap();
+            let trigger = cx.debug_bounds("activity-bar-trigger:pane").unwrap();
+            match edge.axis() {
+                crate::ActivityBarAxis::Vertical => {
+                    assert_eq!(scope.size.width, px(0.));
+                    assert_eq!(trigger.size.width, px(12.));
+                    assert_eq!(trigger.size.height, pane.size.height);
+                }
+                crate::ActivityBarAxis::Horizontal => {
+                    assert_eq!(scope.size.height, px(0.));
+                    assert_eq!(trigger.size.height, px(12.));
+                    assert_eq!(trigger.size.width, pane.size.width);
+                }
+            }
+            cx.simulate_mouse_move(trigger.center(), None, gpui::Modifiers::none());
+            cx.run_until_parked();
+            let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
+            match edge {
+                ActivityBarEdge::Left => assert_eq!(panel.left(), pane.left()),
+                ActivityBarEdge::Right => assert_eq!(panel.right(), pane.right()),
+                ActivityBarEdge::Top => assert_eq!(panel.top(), pane.top()),
+                ActivityBarEdge::Bottom => assert_eq!(panel.bottom(), pane.bottom()),
+            }
+            if edge.is_horizontal() {
+                assert_eq!(panel.size.height, px(28.));
+            } else {
+                assert_eq!(panel.size.width, px(28.));
+            }
+        }
     }
 
     #[gpui::test]

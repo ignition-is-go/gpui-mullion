@@ -1,5 +1,5 @@
 use crate::MullionTheme;
-use gpui::{px, rgba, Hsla, Pixels};
+use gpui::{px, Hsla, Pixels};
 
 /// Root surface tokens.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -137,8 +137,18 @@ impl MullionStyles {
                 border: theme.border,
                 icon: theme.text,
                 category_label: theme.muted_text,
-                category_card_background: rgba(0xffffff0b).into(),
-                category_edge: rgba(0xffffff14).into(),
+                category_card_background: Hsla {
+                    h: 0.0,
+                    s: 0.0,
+                    l: 1.0,
+                    a: 0.045,
+                },
+                category_edge: Hsla {
+                    h: 0.0,
+                    s: 0.0,
+                    l: 1.0,
+                    a: 0.08,
+                },
                 inactive_icon_opacity: 0.5,
                 active_icon_opacity: 1.0,
             },
