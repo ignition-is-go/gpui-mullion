@@ -2,14 +2,14 @@
 
 Native split panes and activity surfaces for GPUI, targeting browsers plus Windows, macOS, and Linux. GPUI and `gpui_platform` are pinned to official Zed revision `08827f9208b4848d62f3faf86ffa15155966d63c`.
 
-This repository is the native successor to the Leptos `mullion` library and is intended to become the canonical pane UI for the Rship desktop application. The browser implementation is migration/reference material, not a permanently co-maintained frontend. Persisted pane trees deliberately retain Mullion's serde representation so desktop migration can load existing layouts.
+This repository is the GPUI successor to the Leptos `mullion` library and is intended to become the canonical pane UI for Rship on desktop and the web. One shared `MullionView` implementation runs on every target; only the thin application host differs. The Leptos implementation remains migration/reference material rather than a separately maintained frontend. Persisted pane trees deliberately retain Mullion's serde representation so existing layouts migrate cleanly.
 
 ## Current production foundation
 
 - Portable, serde-compatible binary `PaneNode<D>` with stable string pane/activity/category IDs.
 - Split, close, move, swap, resize, rotate, balance, five standard layouts, stable split keys, geometric directional navigation, boundary calculations, and extensive inherited parity tests.
 - Toolkit-independent `MullionModel`: durable focus, zoom, pane data/activity updates, commands, host-created splits, and typed mutation plus snapshot events.
-- Native GPUI 0.2.2 `MullionView`: recursive horizontal/vertical layout, activity rail and content renderers, headers, focus chrome, zoom, native pane drag/drop, clickable resize separators, theming, event emission, actions, and default key bindings.
+- Shared GPUI `MullionView`: recursive horizontal/vertical layout, activity rail and content renderers, headers, focus chrome, zoom, native pane drag/drop, clickable resize separators, theming, event emission, actions, and default key bindings.
 - Serializable named workspaces and a runnable native demo.
 
 ## Quick start
