@@ -167,15 +167,16 @@ try {
   state = await waitFor("full-keymap focus action", (next) => next.focused === "logs");
   await key({ key: "Enter", code: "Enter", keyCode: 13, modifiers: 10 }); // Ctrl+Shift+Enter: ToggleZoom
   state = await waitFor("full-keymap zoom action", (next) => next.zoomed === "logs");
-  await key({ key: "Enter", code: "Enter", keyCode: 13, modifiers: 10 });
-  await waitFor("full-keymap unzoom action", (next) => next.zoomed === null);
+  // Keep the pane zoomed while switching workspaces; the switch must reconcile the
+  // transient zoom because the destination workspace has different pane IDs.
 
   // Workspace switcher styling documents 12px horizontal padding; Browser is the second tab.
   await click(left + 90, top + 12);
   state = await waitFor("workspace tab click", (next) =>
     next.activeWorkspace === "browser"
       && treeContains(next, "browser-main")
-      && treeContains(next, "browser-console"));
+      && treeContains(next, "browser-console")
+      && next.zoomed === null);
 
   // Pinned left activity bar: 8px padding, then 28px square items. Click its second item.
   await click(left + 22, top + workspaceHeight + 50);
