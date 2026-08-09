@@ -40,6 +40,29 @@ let view = cx.new(|cx| {
 });
 ```
 
+For durable content, keep the legacy `Activity` definition and add a UI-local factory registry:
+
+```rust
+let factories = ActivityFactoryRegistry::new().with_factory(
+    ActivityId::new("files"),
+    |pane, data: &MyData, _window, cx| {
+        let body = cx.new(|cx| FilesView::new(pane.clone(), data.clone(), cx));
+        ActivityInstance::new(body.clone())
+            .with_header(cx.new(|_| FilesHeader::new(pane.clone())))
+            .with_update({
+                let body = body.clone();
+                move |data, _window, cx| body.update(cx, |view, cx| view.set_data(data.clone(), cx))
+            })
+            .with_dispose(|cx| { /* release host resources; called exactly once */ })
+    },
+);
+let view = cx.new(|cx| {
+    MullionView::new(tree, activities, cx).with_activity_factories(factories)
+});
+```
+
+Factories are `Rc`-backed and deliberately have no `Send + Sync` requirement. They run lazily once per `(workspace, pane, activity)` when selected. Body and optional header are stable `AnyView` entities across activity switching and topology-only changes. A cached instance's update hook runs only when that pane's `D` changes. Filtering out an activity, closing its pane, removing its workspace, or releasing the Mullion root evicts it and calls its App-only disposal hook exactly once. `clear_activity_cache` permits earlier explicit teardown. Registering the same activity ID replaces its factory and returns the previous factory; existing instances retain the factory that created them until eviction. If no factory is registered, the unchanged legacy `Activity::render` path is used.
+
 At application startup call `register_key_bindings(cx)` and focus `view.read(cx).focus_handle()` after opening the window (as the demo does). Subscribe to `PaneEvent<D>` for pane/model changes. `MullionView::new_with_workspaces` optionally gives the view ownership of a `WorkspaceSet`; every `TreeChanged` snapshot is persisted into its active workspace, the built-in tab strip switches trees in the same window/canvas, and `WorkspaceChanged` is emitted after a successful switch. Use `workspaces()` to inspect the current set and `switch_workspace(...)` to switch programmatically.
 
 ## Window architecture
@@ -88,7 +111,7 @@ The new repository stands alone; future work lands here rather than maintaining 
 | command IDs/errors/focus policy and event traces | partial; compatibility fixes required |
 | native recursive view, zoom, and basic activity content | implemented baseline |
 | center-only pane docking and click-step resize | implemented baseline |
-| stateful per-pane activity/header lifecycle | design and tests required |
+| stateful per-pane activity/header lifecycle | implemented with lazy stable entities and deterministic disposal |
 | proportional pointer-drag resize with keyboard accessibility | missing |
 | five-edge drop target overlay and activity-to-create drag | missing |
 | visual nested category expansion; primary/trailing groups | missing |

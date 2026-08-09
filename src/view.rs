@@ -1,12 +1,13 @@
 use crate::{
-    Activity, ActivityId, ActivityNode, DropEdge, MullionModel, MullionTheme, PaneData,
-    PaneDirection, PaneEvent, PaneId, PaneNode, SplitDirection, WorkspaceChanged, WorkspaceId,
-    WorkspaceSet,
+    Activity, ActivityCache, ActivityCacheKey, ActivityFactoryRegistry, ActivityId, ActivityNode,
+    DropEdge, MullionModel, MullionTheme, PaneData, PaneDirection, PaneEvent, PaneId, PaneNode,
+    SplitDirection, WorkspaceChanged, WorkspaceId, WorkspaceSet,
 };
 use gpui::{
     actions, div, prelude::*, px, relative, AnyElement, App, Context, EventEmitter, FocusHandle,
     Hsla, MouseButton, SharedString, Window,
 };
+use std::collections::{HashMap, HashSet};
 
 actions!(
     mullion,
@@ -48,6 +49,8 @@ pub struct MullionView<D: PaneData> {
     show_headers: bool,
     focus_handle: FocusHandle,
     workspaces: Option<WorkspaceSet<D>>,
+    activity_factories: ActivityFactoryRegistry<D>,
+    activity_cache: ActivityCache<D>,
 }
 
 impl<D: PaneData> EventEmitter<PaneEvent<D>> for MullionView<D> {}
@@ -59,6 +62,8 @@ impl<D: PaneData> MullionView<D> {
         activities: Vec<ActivityNode<D>>,
         cx: &mut Context<Self>,
     ) -> Self {
+        cx.on_release(|this, cx| this.dispose_all_activities(cx))
+            .detach();
         Self {
             model: MullionModel::new(tree),
             activities,
@@ -67,6 +72,8 @@ impl<D: PaneData> MullionView<D> {
             show_headers: true,
             focus_handle: cx.focus_handle(),
             workspaces: None,
+            activity_factories: ActivityFactoryRegistry::new(),
+            activity_cache: ActivityCache::default(),
         }
     }
 
@@ -89,6 +96,31 @@ impl<D: PaneData> MullionView<D> {
     pub fn with_headers(mut self, visible: bool) -> Self {
         self.show_headers = visible;
         self
+    }
+    /// Install stateful activity factories while preserving legacy renderers as fallback.
+    pub fn with_activity_factories(mut self, factories: ActivityFactoryRegistry<D>) -> Self {
+        self.activity_factories = factories;
+        self
+    }
+    /// Register a stateful activity factory on an existing view.
+    pub fn register_activity_factory(
+        &mut self,
+        id: ActivityId,
+        factory: impl Fn(&PaneId, &D, &mut Window, &mut App) -> crate::ActivityInstance<D> + 'static,
+    ) -> Option<crate::ActivityFactory<D>> {
+        self.activity_factories.register(id, factory)
+    }
+    /// Explicitly dispose all cached activities. GPUI also calls this automatically
+    /// when the Mullion root entity is released.
+    pub fn clear_activity_cache(&mut self, cx: &mut App) {
+        self.dispose_all_activities(cx);
+    }
+    fn dispose_all_activities(&mut self, cx: &mut App) {
+        for instance in self.activity_cache.drain() {
+            if let Some(dispose) = instance.dispose {
+                dispose(cx);
+            }
+        }
     }
     pub fn model(&self) -> &MullionModel<D> {
         &self.model
@@ -171,20 +203,81 @@ impl<D: PaneData> MullionView<D> {
     fn command(&mut self, command: crate::PaneCommand, cx: &mut Context<Self>) {
         let _ = self.execute(command, |_, _, _| None, cx);
     }
-    fn all_activities<'a>(&'a self, data: &D) -> Vec<&'a Activity<D>> {
+    fn all_activities(&self, data: &D) -> Vec<Activity<D>> {
         let mut out = Vec::new();
         for node in &self.activities {
-            node.activities(data, &mut out)
+            let mut borrowed = Vec::new();
+            node.activities(data, &mut borrowed);
+            out.extend(borrowed.into_iter().cloned());
         }
         out
     }
-    fn render_node(&self, node: &PaneNode<D>, cx: &mut Context<Self>) -> AnyElement {
+    fn workspace_namespace(&self) -> Option<WorkspaceId> {
+        self.workspaces.as_ref().map(|set| set.active.clone())
+    }
+    fn collect_panes(
+        node: &PaneNode<D>,
+        workspace: Option<WorkspaceId>,
+        out: &mut HashMap<(Option<WorkspaceId>, PaneId), D>,
+    ) {
+        match node {
+            PaneNode::Leaf { id, data, .. } => {
+                out.insert((workspace, id.clone()), data.clone());
+            }
+            PaneNode::Split { first, second, .. } => {
+                Self::collect_panes(first, workspace.clone(), out);
+                Self::collect_panes(second, workspace, out);
+            }
+        }
+    }
+    fn sync_activity_cache(&mut self, window: &mut Window, cx: &mut App) {
+        let mut pane_data = HashMap::new();
+        if let Some(workspaces) = &self.workspaces {
+            for workspace in &workspaces.workspaces {
+                let tree = if workspace.id == workspaces.active {
+                    self.model.tree()
+                } else {
+                    &workspace.tree
+                };
+                Self::collect_panes(tree, Some(workspace.id.clone()), &mut pane_data);
+            }
+        } else {
+            Self::collect_panes(self.model.tree(), None, &mut pane_data);
+        }
+        let valid = pane_data
+            .iter()
+            .flat_map(|((workspace, pane), data)| {
+                self.all_activities(data).into_iter().map(move |activity| {
+                    ActivityCacheKey::new(workspace.clone(), pane.clone(), activity.id)
+                })
+            })
+            .collect::<HashSet<_>>();
+        for instance in self
+            .activity_cache
+            .remove_invalid(|key| valid.contains(key))
+        {
+            if let Some(dispose) = instance.dispose {
+                dispose(cx);
+            }
+        }
+        // Do not update an instance that became filtered out on this same data
+        // change; eviction and disposal are its only lifecycle transitions.
+        for (update, data) in self.activity_cache.changed_callbacks(&pane_data) {
+            update(&data, window, cx);
+        }
+    }
+    fn render_node(
+        &mut self,
+        node: &PaneNode<D>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         match node {
             PaneNode::Leaf {
                 id,
                 active_activity,
                 data,
-            } => self.render_leaf(id, active_activity.as_ref(), data, cx),
+            } => self.render_leaf(id, active_activity.as_ref(), data, window, cx),
             PaneNode::Split {
                 direction,
                 ratio,
@@ -192,8 +285,8 @@ impl<D: PaneData> MullionView<D> {
                 second,
             } => {
                 let key = second.leftmost_leaf_id().clone();
-                let first_el = self.render_node(first, cx);
-                let second_el = self.render_node(second, cx);
+                let first_el = self.render_node(first, window, cx);
+                let second_el = self.render_node(second, window, cx);
                 let amount = *ratio;
                 let handle_color = self.theme.border;
                 let key_inc = key.clone();
@@ -246,10 +339,11 @@ impl<D: PaneData> MullionView<D> {
         }
     }
     fn render_leaf(
-        &self,
+        &mut self,
         id: &PaneId,
         active: Option<&ActivityId>,
         data: &D,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let focused = self.model.focused() == Some(id);
@@ -261,50 +355,75 @@ impl<D: PaneData> MullionView<D> {
         let id_close = id.clone();
         let activities = self.all_activities(data);
         let selected = active
-            .and_then(|a| activities.iter().find(|x| &x.id == a).copied())
-            .or_else(|| activities.first().copied());
-        let tabs = activities.iter().map(|activity| {
-            let pane = id.clone();
-            let activity_id = activity.id.clone();
-            let is_active = selected.is_some_and(|a| a.id == activity.id);
-            div()
-                .id(SharedString::from(format!(
-                    "activity:{}:{}",
-                    id.0, activity.id.0
-                )))
-                .size(px(30.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded_sm()
-                .text_xs()
-                .text_color(if is_active {
-                    theme.text
-                } else {
-                    theme.muted_text
-                })
-                .bg(if is_active {
-                    theme.accent
-                } else {
-                    Hsla::transparent_black()
-                })
-                .hover(|e| e.bg(theme.accent))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.model.set_activity(&pane, Some(activity_id.clone()));
-                    this.finish(cx)
-                }))
-                .child(activity.name.clone())
+            .and_then(|a| activities.iter().find(|x| &x.id == a).cloned())
+            .or_else(|| activities.first().cloned());
+        let tabs = activities
+            .iter()
+            .map(|activity| {
+                let pane = id.clone();
+                let activity_id = activity.id.clone();
+                let is_active = selected.as_ref().is_some_and(|a| a.id == activity.id);
+                div()
+                    .id(SharedString::from(format!(
+                        "activity:{}:{}",
+                        id.0, activity.id.0
+                    )))
+                    .size(px(30.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_sm()
+                    .text_xs()
+                    .text_color(if is_active {
+                        theme.text
+                    } else {
+                        theme.muted_text
+                    })
+                    .bg(if is_active {
+                        theme.accent
+                    } else {
+                        Hsla::transparent_black()
+                    })
+                    .hover(|e| e.bg(theme.accent))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.model.set_activity(&pane, Some(activity_id.clone()));
+                        this.finish(cx)
+                    }))
+                    .child(activity.name.clone())
+            })
+            .collect::<Vec<_>>();
+        let cached = selected.as_ref().and_then(|activity| {
+            let factory = self.activity_factories.get(&activity.id)?.clone();
+            let key =
+                ActivityCacheKey::new(self.workspace_namespace(), id.clone(), activity.id.clone());
+            if self.activity_cache.get(&key).is_none() {
+                let instance = factory(id, data, window, cx);
+                self.activity_cache
+                    .insert(key.clone(), instance, data.clone());
+            }
+            self.activity_cache
+                .get(&key)
+                .map(|entry| (entry.instance.body.clone(), entry.instance.header.clone()))
         });
-        let body = selected.map(|a| (a.render)(id, data)).unwrap_or_else(|| {
-            div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(theme.muted_text)
-                .child("No activity")
-                .into_any_element()
-        });
+        let body = cached
+            .as_ref()
+            .map(|(body, _)| body.clone().into_any_element())
+            .or_else(|| {
+                selected
+                    .as_ref()
+                    .map(|activity| (activity.render)(id, data))
+            })
+            .unwrap_or_else(|| {
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(theme.muted_text)
+                    .child("No activity")
+                    .into_any_element()
+            });
+        let custom_header = cached.and_then(|(_, header)| header);
         let header = self.show_headers.then(|| {
             div()
                 .h(px(30.))
@@ -317,9 +436,19 @@ impl<D: PaneData> MullionView<D> {
                 .border_color(theme.border)
                 .text_sm()
                 .child(
-                    selected
-                        .map(|a| a.name.clone())
-                        .unwrap_or_else(|| SharedString::from("Pane")),
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            selected
+                                .as_ref()
+                                .map(|a| a.name.clone())
+                                .unwrap_or_else(|| SharedString::from("Pane")),
+                        )
+                        .when_some(custom_header, |header, custom| {
+                            header.child(custom.into_any_element())
+                        }),
                 )
                 .child(
                     div()
@@ -390,7 +519,8 @@ impl<D: PaneData> MullionView<D> {
 }
 
 impl<D: PaneData> Render for MullionView<D> {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_activity_cache(window, cx);
         let tree = self
             .model
             .zoomed()
@@ -484,7 +614,7 @@ impl<D: PaneData> Render for MullionView<D> {
                     .flex_1()
                     .min_w_0()
                     .min_h_0()
-                    .child(self.render_node(&tree, cx)),
+                    .child(self.render_node(&tree, window, cx)),
             )
     }
 }
@@ -502,4 +632,162 @@ pub fn register_key_bindings(cx: &mut App) {
         gpui::KeyBinding::new("ctrl-shift-enter", ToggleZoom, None),
         gpui::KeyBinding::new("ctrl-alt-=", BalancePanes, None),
     ]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{div, TestAppContext};
+    use std::{cell::Cell, rc::Rc, sync::Arc};
+
+    struct StatefulBody;
+
+    impl Render for StatefulBody {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().child("stateful")
+        }
+    }
+
+    fn legacy_activity() -> Activity<String> {
+        Activity {
+            id: ActivityId::new("legacy"),
+            name: "Legacy".into(),
+            filter: |_| true,
+            render: Arc::new(|_, _| div().child("legacy fallback").into_any_element()),
+        }
+    }
+
+    fn visible_data(data: &String) -> bool {
+        data != "hidden"
+    }
+
+    #[gpui::test]
+    fn rendered_stateful_activity_is_lazy_stable_updated_and_filtered(cx: &mut TestAppContext) {
+        let factory_calls = Rc::new(Cell::new(0));
+        let updates = Rc::new(Cell::new(0));
+        let disposals = Rc::new(Cell::new(0));
+        let factory_count = factory_calls.clone();
+        let update_count = updates.clone();
+        let dispose_count = disposals.clone();
+        let registry = ActivityFactoryRegistry::new().with_factory(
+            ActivityId::new("stateful"),
+            move |_, _, _, cx| {
+                factory_count.set(factory_count.get() + 1);
+                let body = cx.new(|_| StatefulBody);
+                crate::ActivityInstance::new(body)
+                    .with_header(cx.new(|_| StatefulBody))
+                    .with_update({
+                        let updates = update_count.clone();
+                        move |_, _, _| updates.set(updates.get() + 1)
+                    })
+                    .with_dispose({
+                        let disposals = dispose_count.clone();
+                        move |_| disposals.set(disposals.get() + 1)
+                    })
+            },
+        );
+        let activity = Activity {
+            id: ActivityId::new("stateful"),
+            name: "Stateful".into(),
+            filter: visible_data,
+            render: Arc::new(|_, _| div().child("legacy").into_any_element()),
+        };
+        let tree = PaneNode::leaf_with_activity(
+            PaneId::new("pane"),
+            ActivityId::new("stateful"),
+            "one".to_string(),
+        );
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::new(tree, vec![ActivityNode::Activity(activity)], cx)
+                .with_activity_factories(registry)
+        });
+
+        assert_eq!(factory_calls.get(), 1);
+        view.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert_eq!(factory_calls.get(), 1);
+        assert_eq!(updates.get(), 0);
+
+        view.update(cx, |view, cx| {
+            assert!(view.update_model(cx, |model| {
+                model.update_data(&PaneId::new("pane"), "two".to_string())
+            }));
+        });
+        cx.run_until_parked();
+        assert_eq!(factory_calls.get(), 1);
+        assert_eq!(updates.get(), 1);
+        assert_eq!(disposals.get(), 0);
+
+        view.update(cx, |view, cx| {
+            assert!(view.update_model(cx, |model| {
+                model.update_data(&PaneId::new("pane"), "hidden".to_string())
+            }));
+        });
+        cx.run_until_parked();
+        assert_eq!(updates.get(), 1);
+        assert_eq!(disposals.get(), 1);
+    }
+
+    #[gpui::test]
+    fn root_release_disposes_cached_instance_exactly_once(cx: &mut TestAppContext) {
+        let disposals = Rc::new(Cell::new(0));
+        let view = cx.new(|cx| {
+            MullionView::new(
+                PaneNode::leaf(PaneId::new("pane"), "data".to_string()),
+                vec![ActivityNode::Activity(legacy_activity())],
+                cx,
+            )
+        });
+        let count = disposals.clone();
+        view.update(cx, |view, cx| {
+            let body = cx.new(|_| StatefulBody);
+            view.activity_cache.insert(
+                ActivityCacheKey::new(None, PaneId::new("pane"), ActivityId::new("legacy")),
+                crate::ActivityInstance::new(body).with_dispose(move |_| {
+                    count.set(count.get() + 1);
+                }),
+                "data".to_string(),
+            );
+        });
+        drop(view);
+        cx.update(|_| {});
+        cx.run_until_parked();
+        assert_eq!(disposals.get(), 1);
+    }
+
+    #[gpui::test]
+    fn explicit_clear_then_root_release_does_not_double_dispose(cx: &mut TestAppContext) {
+        let disposals = Rc::new(Cell::new(0));
+        let view = cx.new(|cx| {
+            MullionView::new(
+                PaneNode::leaf(PaneId::new("pane"), "data".to_string()),
+                vec![ActivityNode::Activity(legacy_activity())],
+                cx,
+            )
+        });
+        let count = disposals.clone();
+        view.update(cx, |view, cx| {
+            let body = cx.new(|_| StatefulBody);
+            view.activity_cache.insert(
+                ActivityCacheKey::new(None, PaneId::new("pane"), ActivityId::new("legacy")),
+                crate::ActivityInstance::new(body).with_dispose(move |_| {
+                    count.set(count.get() + 1);
+                }),
+                "data".to_string(),
+            );
+            view.clear_activity_cache(cx);
+        });
+        assert_eq!(disposals.get(), 1);
+        drop(view);
+        cx.update(|_| {});
+        cx.run_until_parked();
+        assert_eq!(disposals.get(), 1);
+    }
+
+    #[test]
+    fn legacy_activity_struct_literal_remains_source_compatible() {
+        let activity = legacy_activity();
+        let rendered = (activity.render)(&PaneId::new("pane"), &"data".to_string());
+        drop(rendered);
+    }
 }
