@@ -80,8 +80,19 @@ impl<D: PaneData> PaneEvent<D> {
     }
 }
 
+/// A durable, typed workspace-management event.
+///
+/// The full validated snapshot deliberately avoids requiring persistence consumers to
+/// replay a second workspace mutation language. Transient pane focus/zoom events are
+/// emitted separately and are not represented here.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(bound = "")]
+pub enum WorkspaceEvent<D: PaneData> {
+    SnapshotChanged { workspaces: crate::WorkspaceSet<D> },
+}
+
 /// Emitted by [`crate::MullionView`] after its active internal workspace changes.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceChanged {
     pub previous: WorkspaceId,
     pub active: WorkspaceId,

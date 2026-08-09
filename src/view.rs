@@ -2,7 +2,7 @@ use crate::{
     Activity, ActivityCache, ActivityCacheKey, ActivityFactoryRegistry, ActivityId, ActivityNode,
     DropEdge, FocusPresentation, MullionModel, MullionSettings, MullionTheme, PaneData,
     PaneDirection, PaneEvent, PaneFocusBehavior, PaneId, PaneNode, SplitDirection,
-    WorkspaceChanged, WorkspaceId, WorkspaceSet,
+    WorkspaceChanged, WorkspaceEvent, WorkspaceId, WorkspaceSet, WorkspaceSetError,
 };
 use gpui::{
     actions, div, prelude::*, px, relative, AnyElement, App, Bounds, Context, Element, ElementId,
@@ -157,6 +157,7 @@ pub struct MullionView<D: PaneData> {
 
 impl<D: PaneData> EventEmitter<PaneEvent<D>> for MullionView<D> {}
 impl<D: PaneData> EventEmitter<WorkspaceChanged> for MullionView<D> {}
+impl<D: PaneData> EventEmitter<WorkspaceEvent<D>> for MullionView<D> {}
 
 impl<D: PaneData> MullionView<D> {
     pub fn new(
@@ -186,16 +187,30 @@ impl<D: PaneData> MullionView<D> {
     }
 
     /// Construct a view which owns and renders a set of internal workspaces.
-    /// Returns `None` when the set's active id does not name a workspace.
+    /// Returns `None` when validation fails, preserving the original optional API.
     pub fn new_with_workspaces(
         workspaces: WorkspaceSet<D>,
         activities: Vec<ActivityNode<D>>,
         cx: &mut Context<Self>,
     ) -> Option<Self> {
-        let tree = workspaces.active()?.tree.clone();
+        Self::try_new_with_workspaces(workspaces, activities, cx).ok()
+    }
+
+    /// Typed constructor for persisted workspace input.
+    pub fn try_new_with_workspaces(
+        workspaces: WorkspaceSet<D>,
+        activities: Vec<ActivityNode<D>>,
+        cx: &mut Context<Self>,
+    ) -> Result<Self, WorkspaceSetError> {
+        workspaces.validate()?;
+        let tree = workspaces
+            .active()
+            .expect("validated workspace set has an active workspace")
+            .tree
+            .clone();
         let mut view = Self::new(tree, activities, cx);
         view.workspaces = Some(workspaces);
-        Some(view)
+        Ok(view)
     }
     pub fn with_theme(mut self, theme: MullionTheme) -> Self {
         self.theme = theme;
@@ -281,30 +296,159 @@ impl<D: PaneData> MullionView<D> {
     pub fn workspaces(&self) -> Option<&WorkspaceSet<D>> {
         self.workspaces.as_ref()
     }
+    /// Compatibility-explicit alias for hosts which call the aggregate a workspace set.
+    pub fn workspace_set(&self) -> Option<&WorkspaceSet<D>> {
+        self.workspaces()
+    }
+    pub fn active_workspace(&self) -> Option<&crate::Workspace<D>> {
+        self.workspaces.as_ref()?.active()
+    }
+    pub fn workspace(&self, id: &WorkspaceId) -> Option<&crate::Workspace<D>> {
+        self.workspaces
+            .as_ref()?
+            .workspaces
+            .iter()
+            .find(|workspace| &workspace.id == id)
+    }
+
+    fn emit_workspace_snapshot(&self, cx: &mut Context<Self>) {
+        if let Some(workspaces) = &self.workspaces {
+            cx.emit(WorkspaceEvent::SnapshotChanged {
+                workspaces: workspaces.clone(),
+            });
+        }
+    }
+
+    /// Add a workspace to this mounted view.
+    pub fn add_workspace(
+        &mut self,
+        workspace: crate::Workspace<D>,
+        cx: &mut Context<Self>,
+    ) -> Result<usize, WorkspaceSetError> {
+        let workspaces = self.workspaces.as_mut().ok_or(WorkspaceSetError::Empty)?;
+        let index = workspaces.add(workspace)?;
+        self.emit_workspace_snapshot(cx);
+        cx.notify();
+        Ok(index)
+    }
+
+    /// Remove a non-active workspace and dispose every cached activity in its namespace.
+    pub fn remove_workspace(
+        &mut self,
+        id: &WorkspaceId,
+        cx: &mut Context<Self>,
+    ) -> Result<crate::Workspace<D>, WorkspaceSetError> {
+        let workspaces = self.workspaces.as_mut().ok_or(WorkspaceSetError::Empty)?;
+        let removed = workspaces.remove(id)?;
+        for instance in self
+            .activity_cache
+            .remove_invalid(|key| key.workspace.as_ref() != Some(id))
+        {
+            if let Some(dispose) = instance.dispose {
+                dispose(cx);
+            }
+        }
+        self.emit_workspace_snapshot(cx);
+        cx.notify();
+        Ok(removed)
+    }
+
+    pub fn rename_workspace(
+        &mut self,
+        id: &WorkspaceId,
+        name: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) -> Result<String, WorkspaceSetError> {
+        let workspaces = self.workspaces.as_mut().ok_or(WorkspaceSetError::Empty)?;
+        let previous = workspaces.rename(id, name)?;
+        self.emit_workspace_snapshot(cx);
+        cx.notify();
+        Ok(previous)
+    }
+
+    pub fn reorder_workspace(
+        &mut self,
+        id: &WorkspaceId,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> Result<usize, WorkspaceSetError> {
+        let workspaces = self.workspaces.as_mut().ok_or(WorkspaceSetError::Empty)?;
+        let previous = workspaces.reorder(id, index)?;
+        self.emit_workspace_snapshot(cx);
+        cx.notify();
+        Ok(previous)
+    }
+
+    /// Replace a stored tree. Updating the active tree uses the model's non-echo path.
+    pub fn update_workspace_tree(
+        &mut self,
+        id: &WorkspaceId,
+        tree: PaneNode<D>,
+        cx: &mut Context<Self>,
+    ) -> Result<PaneNode<D>, WorkspaceSetError> {
+        let workspaces = self.workspaces.as_mut().ok_or(WorkspaceSetError::Empty)?;
+        let old = workspaces.update_tree(id, tree.clone())?;
+        if &workspaces.active == id {
+            self.model.set_tree(tree);
+            for event in self.model.take_events() {
+                cx.emit(event);
+            }
+        }
+        self.emit_workspace_snapshot(cx);
+        cx.notify();
+        Ok(old)
+    }
 
     /// Switch the tree displayed in this same GPUI window/canvas.
-    /// The outgoing tree is persisted before switching.
-    pub fn switch_workspace(&mut self, id: &WorkspaceId, cx: &mut Context<Self>) -> bool {
-        let Some(workspaces) = self.workspaces.as_mut() else {
-            return false;
-        };
-        if &workspaces.active == id {
-            return true;
+    ///
+    /// The operation is staged: invalid targets cannot persist or otherwise mutate the
+    /// outgoing workspace. The outgoing model tree is persisted before the staged active
+    /// id changes, and the incoming tree is installed through the non-echo model path.
+    /// Focus and zoom use shared-ID reconciliation: each survives iff that pane id exists
+    /// in the incoming tree; a surviving zoom owns focus, otherwise invalid focus falls
+    /// back to the incoming tree's first leaf. Their transient events precede both the
+    /// durable snapshot and `WorkspaceChanged`.
+    pub fn try_switch_workspace(
+        &mut self,
+        id: &WorkspaceId,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, WorkspaceSetError> {
+        let current = self.workspaces.as_ref().ok_or(WorkspaceSetError::Empty)?;
+        if &current.active == id {
+            return Ok(false);
         }
-        let previous = workspaces.active.clone();
-        if !workspaces.persist_active(self.model.snapshot()) {
-            return false;
+        let previous = current.active.clone();
+        let mut staged = current.clone();
+        staged.try_persist_active(self.model.snapshot())?;
+        let tree = staged.try_switch(id)?;
+
+        self.model.set_tree(tree);
+        self.workspaces = Some(staged);
+        for event in self.model.take_events() {
+            cx.emit(event);
         }
-        let Some(tree) = workspaces.switch(id) else {
-            return false;
-        };
-        self.model.replace_tree(tree);
-        self.finish(cx);
+        self.emit_workspace_snapshot(cx);
         cx.emit(WorkspaceChanged {
             previous,
             active: id.clone(),
         });
-        true
+        cx.notify();
+        Ok(true)
+    }
+
+    /// Compatibility boolean switching API. A same-workspace request succeeds without
+    /// mutation or notification.
+    pub fn switch_workspace(&mut self, id: &WorkspaceId, cx: &mut Context<Self>) -> bool {
+        match self.try_switch_workspace(id, cx) {
+            Ok(changed) => {
+                changed
+                    || self
+                        .workspaces
+                        .as_ref()
+                        .is_some_and(|set| &set.active == id)
+            }
+            Err(_) => false,
+        }
     }
     /// The stable focus handle used for key-action dispatch. Hosts should focus it
     /// after creating the view (and pane pointer interaction does so automatically).
@@ -1560,6 +1704,270 @@ mod tests {
         view.read_with(cx, |view, _| {
             assert_eq!(view.model().focused(), Some(&PaneId::new("c")));
             assert_eq!(view.model().zoomed(), None);
+        });
+    }
+
+    fn workspace_set(second_tree: PaneNode<String>) -> WorkspaceSet<String> {
+        WorkspaceSet::try_new(
+            WorkspaceId("one".into()),
+            vec![
+                crate::Workspace {
+                    id: WorkspaceId("one".into()),
+                    name: "One".into(),
+                    tree: split(SplitDirection::Horizontal, 0.5, leaf("a"), leaf("b")),
+                },
+                crate::Workspace {
+                    id: WorkspaceId("two".into()),
+                    name: "Two".into(),
+                    tree: second_tree,
+                },
+            ],
+        )
+        .unwrap()
+    }
+
+    #[gpui::test]
+    fn mounted_workspace_operations_emit_complete_snapshots_and_update_active_model(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::new_with_workspaces(workspace_set(leaf("c")), vec![], cx).unwrap()
+        });
+        let snapshots = Rc::new(RefCell::new(Vec::new()));
+        let log = snapshots.clone();
+        let observed = view.clone();
+        view.update(cx, move |_, cx| {
+            cx.subscribe(&observed, move |_, _, event: &WorkspaceEvent<String>, _| {
+                log.borrow_mut().push(event.clone());
+            })
+            .detach();
+        });
+
+        view.update(cx, |view, cx| {
+            assert_eq!(
+                view.add_workspace(
+                    crate::Workspace {
+                        id: WorkspaceId("three".into()),
+                        name: "Three".into(),
+                        tree: leaf("d"),
+                    },
+                    cx,
+                ),
+                Ok(2)
+            );
+            assert_eq!(
+                view.rename_workspace(&WorkspaceId("three".into()), "Third", cx),
+                Ok("Three".into())
+            );
+            assert_eq!(
+                view.reorder_workspace(&WorkspaceId("three".into()), 1, cx),
+                Ok(2)
+            );
+            assert_eq!(
+                view.update_workspace_tree(&WorkspaceId("one".into()), leaf("z"), cx)
+                    .unwrap()
+                    .leaf_ids(),
+                vec![PaneId::new("a"), PaneId::new("b")]
+            );
+            assert_eq!(view.model().tree().leaf_ids(), vec![PaneId::new("z")]);
+            assert_eq!(
+                view.remove_workspace(&WorkspaceId("three".into()), cx)
+                    .unwrap()
+                    .name,
+                "Third"
+            );
+        });
+        assert_eq!(snapshots.borrow().len(), 5);
+        for event in snapshots.borrow().iter() {
+            let WorkspaceEvent::SnapshotChanged { workspaces } = event;
+            workspaces.validate().unwrap();
+            serde_json::to_string(event).unwrap();
+        }
+    }
+
+    #[gpui::test]
+    fn workspace_switch_is_atomic_persists_outgoing_and_orders_transient_events(
+        cx: &mut TestAppContext,
+    ) {
+        #[derive(Debug, PartialEq)]
+        enum Seen {
+            Focus(Option<PaneId>),
+            Zoom(Option<PaneId>),
+            Snapshot,
+            Changed,
+        }
+        let incoming = split(SplitDirection::Horizontal, 0.5, leaf("b"), leaf("c"));
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::new_with_workspaces(workspace_set(incoming), vec![], cx).unwrap()
+        });
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let observed = view.clone();
+        view.update(cx, |_, cx| {
+            let log = seen.clone();
+            cx.subscribe(
+                &observed,
+                move |_, _, event: &PaneEvent<String>, _| match event {
+                    PaneEvent::FocusChanged { pane } => {
+                        log.borrow_mut().push(Seen::Focus(pane.clone()))
+                    }
+                    PaneEvent::ZoomChanged { pane } => {
+                        log.borrow_mut().push(Seen::Zoom(pane.clone()))
+                    }
+                    _ => {}
+                },
+            )
+            .detach();
+            let log = seen.clone();
+            cx.subscribe(&observed, move |_, _, _: &WorkspaceEvent<String>, _| {
+                log.borrow_mut().push(Seen::Snapshot);
+            })
+            .detach();
+            let log = seen.clone();
+            cx.subscribe(&observed, move |_, _, _: &WorkspaceChanged, _| {
+                log.borrow_mut().push(Seen::Changed);
+            })
+            .detach();
+        });
+        view.update(cx, |view, cx| {
+            view.update_model(cx, |model| {
+                model.focus(&PaneId::new("a"));
+                model.toggle_zoom();
+                model.update_data(&PaneId::new("a"), "persisted".into());
+            });
+        });
+        cx.run_until_parked();
+        seen.borrow_mut().clear();
+        view.update(cx, |view, cx| {
+            let before = view.workspaces().unwrap().clone();
+            assert!(matches!(
+                view.try_switch_workspace(&WorkspaceId("missing".into()), cx),
+                Err(WorkspaceSetError::WorkspaceNotFound { .. })
+            ));
+            assert_eq!(view.workspaces().unwrap(), &before);
+            assert!(view
+                .try_switch_workspace(&WorkspaceId("two".into()), cx)
+                .unwrap());
+            assert_eq!(
+                view.workspaces().unwrap().workspaces[0].tree.leaf_ids(),
+                vec![PaneId::new("a"), PaneId::new("b")]
+            );
+            assert!(matches!(
+                view.workspaces().unwrap().workspaces[0]
+                    .tree
+                    .find(&PaneId::new("a")),
+                Some(PaneNode::Leaf { data, .. }) if data == "persisted"
+            ));
+            let switched = view.workspaces().unwrap().clone();
+            assert!(!view
+                .try_switch_workspace(&WorkspaceId("two".into()), cx)
+                .unwrap());
+            assert_eq!(view.workspaces().unwrap(), &switched);
+        });
+        assert_eq!(
+            *seen.borrow(),
+            vec![
+                Seen::Focus(Some(PaneId::new("b"))),
+                Seen::Zoom(None),
+                Seen::Snapshot,
+                Seen::Changed,
+            ]
+        );
+    }
+
+    #[gpui::test]
+    fn typed_workspace_constructor_rejects_invalid_persistence(cx: &mut TestAppContext) {
+        let invalid = WorkspaceSet {
+            active: WorkspaceId("missing".into()),
+            workspaces: vec![crate::Workspace {
+                id: WorkspaceId("one".into()),
+                name: "One".into(),
+                tree: leaf("a"),
+            }],
+        };
+        let captured = Rc::new(RefCell::new(None));
+        let error = captured.clone();
+        let invalid_for_typed = invalid.clone();
+        let _ = cx.add_window_view(move |_, cx| {
+            match MullionView::try_new_with_workspaces(invalid_for_typed, vec![], cx) {
+                Ok(view) => view,
+                Err(found) => {
+                    *error.borrow_mut() = Some(found);
+                    MullionView::new(leaf("fallback"), vec![], cx)
+                }
+            }
+        });
+        assert!(matches!(
+            captured.borrow().as_ref(),
+            Some(WorkspaceSetError::ActiveWorkspaceNotFound { .. })
+        ));
+        let optional_was_none = Rc::new(Cell::new(false));
+        let was_none = optional_was_none.clone();
+        let _ = cx.add_window_view(move |_, cx| {
+            let result = MullionView::new_with_workspaces(invalid, vec![], cx);
+            was_none.set(result.is_none());
+            result.unwrap_or_else(|| MullionView::new(leaf("fallback"), vec![], cx))
+        });
+        assert!(optional_was_none.get());
+    }
+
+    #[gpui::test]
+    fn workspace_switch_preserves_overlapping_focus_and_zoom_without_transient_events(
+        cx: &mut TestAppContext,
+    ) {
+        let incoming = split(SplitDirection::Horizontal, 0.5, leaf("b"), leaf("c"));
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::new_with_workspaces(workspace_set(incoming), vec![], cx).unwrap()
+        });
+        let pane_events = Rc::new(RefCell::new(Vec::new()));
+        let observed = view.clone();
+        view.update(cx, |_, cx| {
+            let log = pane_events.clone();
+            cx.subscribe(&observed, move |_, _, event: &PaneEvent<String>, _| {
+                log.borrow_mut().push(event.clone());
+            })
+            .detach();
+        });
+        view.update(cx, |view, cx| {
+            view.update_model(cx, |model| {
+                model.focus(&PaneId::new("b"));
+                model.toggle_zoom();
+            });
+        });
+        cx.run_until_parked();
+        pane_events.borrow_mut().clear();
+        view.update(cx, |view, cx| {
+            assert!(view.switch_workspace(&WorkspaceId("two".into()), cx));
+            assert_eq!(view.model().focused(), Some(&PaneId::new("b")));
+            assert_eq!(view.model().zoomed(), Some(&PaneId::new("b")));
+        });
+        cx.run_until_parked();
+        assert!(pane_events.borrow().is_empty());
+    }
+
+    #[gpui::test]
+    fn removing_workspace_disposes_only_its_activity_cache_namespace(cx: &mut TestAppContext) {
+        let disposals = Rc::new(Cell::new(0));
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::new_with_workspaces(workspace_set(leaf("c")), vec![], cx).unwrap()
+        });
+        view.update(cx, |view, cx| {
+            for workspace in ["one", "two"] {
+                let count = disposals.clone();
+                let body = cx.new(|_| StatefulBody);
+                view.activity_cache.insert(
+                    ActivityCacheKey::new(
+                        Some(WorkspaceId(workspace.into())),
+                        PaneId::new("pane"),
+                        ActivityId::new("activity"),
+                    ),
+                    crate::ActivityInstance::new(body)
+                        .with_dispose(move |_| count.set(count.get() + 1)),
+                    "data".into(),
+                );
+            }
+            view.remove_workspace(&WorkspaceId("two".into()), cx)
+                .unwrap();
+            assert_eq!(disposals.get(), 1);
         });
     }
 
