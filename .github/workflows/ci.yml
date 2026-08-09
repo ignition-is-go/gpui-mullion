@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.95.0
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
@@ -35,6 +35,13 @@ jobs:
         run: cargo test --all-targets
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
+      - name: Check nested browser workspace on native host
+        if: runner.os == 'Linux'
+        run: |
+          cargo fmt --manifest-path examples/web/Cargo.toml -- --check
+          cargo check --manifest-path examples/web/Cargo.toml --all-targets
+          cargo test --manifest-path examples/web/Cargo.toml --all-targets
+          cargo clippy --manifest-path examples/web/Cargo.toml --all-targets -- -D warnings
 
   web:
     name: wasm32 and browser bundle
@@ -46,9 +53,15 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+      - name: Format browser workspace
+        run: cargo fmt --manifest-path examples/web/Cargo.toml -- --check
       - name: Check shared view and browser host
-        run: cd examples/web && cargo check --target wasm32-unknown-unknown
+        run: cargo check --manifest-path examples/web/Cargo.toml --target wasm32-unknown-unknown
+      - name: Clippy shared view and browser host
+        run: cargo clippy --manifest-path examples/web/Cargo.toml --target wasm32-unknown-unknown -- -D warnings
       - name: Install Trunk
-        run: cargo install trunk --version 0.21.14 --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: trunk@0.21.14
       - name: Build browser demo
         run: cd examples/web && env -u NO_COLOR trunk build --release

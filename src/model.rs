@@ -143,10 +143,13 @@ impl<D: PaneData> MullionModel<D> {
         if !ratio.is_finite() {
             return false;
         }
-        let ratio = ratio.clamp(0.05, 0.95);
         if !self.tree.set_split_ratio(split_key, ratio) {
             return false;
         }
+        // Report the ratio actually persisted by PaneNode (including its
+        // public 0.1..=0.9 clamp), never merely the requested value.
+        let ratio = find_ratio(&self.tree, split_key)
+            .expect("a successfully resized split remains addressable");
         self.events.push(PaneEvent::Resized {
             split_key: split_key.clone(),
             ratio,
@@ -384,6 +387,14 @@ mod tests {
         m.take_events();
         assert_eq!(m.close(&PaneId::new("b")), Some(D(2)));
         assert_eq!(m.focused(), Some(&PaneId::new("a")));
+    }
+    #[test]
+    fn resize_event_reports_the_stored_clamped_ratio() {
+        let mut m = model();
+        assert!(m.resize(&PaneId::new("b"), 0.01));
+        let events = m.take_events();
+        assert!(matches!(events[0], PaneEvent::Resized { ratio, .. } if ratio == 0.1));
+        assert_eq!(find_ratio(m.tree(), &PaneId::new("b")), Some(0.1));
     }
     #[test]
     fn command_split_uses_host_factory() {

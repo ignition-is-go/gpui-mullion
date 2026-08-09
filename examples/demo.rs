@@ -84,7 +84,11 @@ fn main() {
                 }),
                 ..Default::default()
             },
-            move |_, cx| cx.new(|_| MullionView::new(tree, activities)),
+            move |window, cx| {
+                let view = cx.new(|cx| MullionView::new(tree, activities, cx));
+                view.read(cx).focus_handle().clone().focus(window, cx);
+                view
+            },
         )
         .unwrap();
         cx.activate(true);

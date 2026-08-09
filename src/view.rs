@@ -3,8 +3,8 @@ use crate::{
     PaneDirection, PaneEvent, PaneId, PaneNode, SplitDirection,
 };
 use gpui::{
-    actions, div, prelude::*, px, relative, AnyElement, App, Context, EventEmitter, Hsla,
-    MouseButton, SharedString, Window,
+    actions, div, prelude::*, px, relative, AnyElement, App, Context, EventEmitter, FocusHandle,
+    Hsla, MouseButton, SharedString, Window,
 };
 
 actions!(
@@ -45,18 +45,24 @@ pub struct MullionView<D: PaneData> {
     theme: MullionTheme,
     activity_bar_width: gpui::Pixels,
     show_headers: bool,
+    focus_handle: FocusHandle,
 }
 
 impl<D: PaneData> EventEmitter<PaneEvent<D>> for MullionView<D> {}
 
 impl<D: PaneData> MullionView<D> {
-    pub fn new(tree: PaneNode<D>, activities: Vec<ActivityNode<D>>) -> Self {
+    pub fn new(
+        tree: PaneNode<D>,
+        activities: Vec<ActivityNode<D>>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         Self {
             model: MullionModel::new(tree),
             activities,
             theme: MullionTheme::default(),
             activity_bar_width: px(42.),
             show_headers: true,
+            focus_handle: cx.focus_handle(),
         }
     }
     pub fn with_theme(mut self, theme: MullionTheme) -> Self {
@@ -70,8 +76,21 @@ impl<D: PaneData> MullionView<D> {
     pub fn model(&self) -> &MullionModel<D> {
         &self.model
     }
-    pub fn model_mut(&mut self) -> &mut MullionModel<D> {
-        &mut self.model
+    /// The stable focus handle used for key-action dispatch. Hosts should focus it
+    /// after creating the view (and pane pointer interaction does so automatically).
+    pub fn focus_handle(&self) -> &FocusHandle {
+        &self.focus_handle
+    }
+    /// Mutate the portable model while safely forwarding every resulting event
+    /// through GPUI and scheduling a repaint.
+    pub fn update_model<R>(
+        &mut self,
+        cx: &mut Context<Self>,
+        update: impl FnOnce(&mut MullionModel<D>) -> R,
+    ) -> R {
+        let result = update(&mut self.model);
+        self.finish(cx);
+        result
     }
     fn finish(&mut self, cx: &mut Context<Self>) {
         for event in self.model.take_events() {
@@ -79,9 +98,23 @@ impl<D: PaneData> MullionView<D> {
         }
         cx.notify();
     }
-    fn command(&mut self, command: crate::PaneCommand, cx: &mut Context<Self>) {
-        let _ = self.model.execute(command, |_, _, _| None);
+    /// Execute a command through the view, forwarding events and repainting.
+    /// The factory is consulted only for [`crate::PaneCommand::Split`].
+    pub fn execute<F>(
+        &mut self,
+        command: crate::PaneCommand,
+        split_factory: F,
+        cx: &mut Context<Self>,
+    ) -> crate::PaneCommandResult
+    where
+        F: FnMut(&PaneId, SplitDirection, &D) -> Option<(PaneId, D)>,
+    {
+        let result = self.model.execute(command, split_factory);
         self.finish(cx);
+        result
+    }
+    fn command(&mut self, command: crate::PaneCommand, cx: &mut Context<Self>) {
+        let _ = self.execute(command, |_, _, _| None, cx);
     }
     fn all_activities<'a>(&'a self, data: &D) -> Vec<&'a Activity<D>> {
         let mut out = Vec::new();
@@ -167,6 +200,7 @@ impl<D: PaneData> MullionView<D> {
         let focused = self.model.focused() == Some(id);
         let theme = self.theme;
         let id_focus = id.clone();
+        let focus_handle = self.focus_handle.clone();
         let id_drop = id.clone();
         let id_drag = id.clone();
         let id_close = id.clone();
@@ -257,7 +291,8 @@ impl<D: PaneData> MullionView<D> {
             .border_color(if focused { theme.focused } else { theme.border })
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
+                cx.listener(move |this, _, window, cx| {
+                    focus_handle.focus(window, cx);
                     this.model.focus(&id_focus);
                     this.finish(cx)
                 }),
@@ -309,7 +344,7 @@ impl<D: PaneData> Render for MullionView<D> {
             .clone();
         div()
             .key_context("Mullion")
-            .track_focus(&cx.focus_handle())
+            .track_focus(&self.focus_handle)
             .size_full()
             .bg(self.theme.background)
             .on_action(cx.listener(|this, _: &FocusLeft, _, cx| {

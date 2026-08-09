@@ -31,14 +31,16 @@ let activity = Activity {
 let tree = PaneNode::leaf_with_activity(
     PaneId::new("main"), ActivityId::new("files"), my_data,
 );
-let view = cx.new(|_| MullionView::new(tree, vec![ActivityNode::Activity(activity)]));
+let view = cx.new(|cx| {
+    MullionView::new(tree, vec![ActivityNode::Activity(activity)], cx)
+});
 ```
 
-At application startup call `register_key_bindings(cx)`. Subscribe to `PaneEvent<D>` on the view entity to persist `TreeChanged` snapshots.
+At application startup call `register_key_bindings(cx)` and focus `view.read(cx).focus_handle()` after opening the window (as the demo does). Subscribe to `PaneEvent<D>` on the view entity to persist `TreeChanged` snapshots.
 
 ## Window architecture
 
-A browser session owns exactly one document/canvas-backed GPUI window. `MullionView` renders every pane and workspace inside that root; it never opens a window while rendering or mutating the model. The same rule is the portable default on desktop. Detached OS windows are an optional, host-owned desktop extension through `DetachedWindowService`. `WindowCapabilities::current()` reports availability and `UnavailableDetachedWindows` returns a typed, non-panicking error on wasm. Thus multi-window policy cannot leak into the shared pane tree, serialization, or view.
+A browser session owns exactly one document/canvas-backed GPUI window. `MullionView` renders every pane and workspace inside that root; it never opens a window while rendering or mutating the model. The same rule is the portable default on desktop. Detached OS windows are an optional, host-owned desktop extension through `DetachedWindowService`. `WindowCapabilities::for_service(...)` reports the capability actually installed by the host; the portable default and `UnavailableDetachedWindows` report unavailable without panicking on wasm. Desktop hosts can use `NativeDetachedWindowService` (see `cargo run --example detached-window`). Thus multi-window policy cannot leak into the shared pane tree, serialization, or view.
 
 ## Demo
 
@@ -96,6 +98,8 @@ cargo test --all-targets
 cargo check --all-targets
 cargo clippy --all-targets -- -D warnings
 cargo +nightly check --manifest-path examples/web/Cargo.toml --target wasm32-unknown-unknown
+cargo +nightly clippy --manifest-path examples/web/Cargo.toml --target wasm32-unknown-unknown -- -D warnings
+(cd examples/web && trunk build --release)
 ```
 
 CI runs native gates on Ubuntu, macOS, and Windows, checks the shared view for `wasm32-unknown-unknown`, and performs a Trunk browser-demo build on Ubuntu. Native MSRV is Rust 1.95; the current GPUI web stack requires nightly for `wasm32-unknown-unknown`.

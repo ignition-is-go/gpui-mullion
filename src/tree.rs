@@ -103,10 +103,8 @@ impl DropEdge {
 
 /// Trait bound alias for consumer-defined pane data.
 ///
-/// `Send + Sync` is required because per-leaf reactive slices are stored in
-/// Leptos `Signal<D>` (which uses `SyncStorage`). Nearly all consumer data
-/// types already satisfy this — any plain data struct without thread-hostile
-/// contents (raw pointers, `Rc`, etc.) will compile.
+/// `Send + Sync` keeps pane snapshots and host callbacks safe to move between
+/// GPUI executors. Plain owned application data normally satisfies these bounds.
 pub trait PaneData:
     Clone + PartialEq + Serialize + for<'de> Deserialize<'de> + Send + Sync + 'static
 {
