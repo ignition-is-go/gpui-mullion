@@ -157,6 +157,12 @@ impl<D: PaneData> MullionModel<D> {
         }
         let ids = self.tree.leaf_ids();
         let at = ids.iter().position(|id| id == pane)?;
+        // Match Mullion's traversal semantics: prefer the pane that followed
+        // the closed pane, falling back to its predecessor only at the end.
+        let preferred_focus = ids
+            .get(at + 1)
+            .or_else(|| at.checked_sub(1).and_then(|previous| ids.get(previous)))
+            .cloned();
         let data = self.tree.close(pane)?;
         self.events.push(PaneEvent::Closed {
             id: pane.clone(),
@@ -169,9 +175,11 @@ impl<D: PaneData> MullionModel<D> {
             self.events.push(PaneEvent::ZoomChanged { pane: None });
         }
         if self.focused.as_ref() == Some(pane) {
-            let left = at.saturating_sub(1).min(self.tree.leaf_ids().len() - 1);
-            let next = self.tree.leaf_ids()[left].clone();
-            self.focus(&next);
+            // A successful close always has a successor because the final pane
+            // cannot be closed and `preferred_focus` was chosen beforehand.
+            if let Some(next) = preferred_focus {
+                self.focus(&next);
+            }
         }
         self.changed();
         Some(data)
@@ -307,90 +315,180 @@ impl<D: PaneData> MullionModel<D> {
         F: FnMut(&PaneId, SplitDirection, &D) -> Option<(PaneId, D)>,
     {
         use PaneCommand::*;
-        let focused = || self.focused.clone().ok_or(PaneCommandError::NoFocusedPane);
-        let ok = match command {
-            Focus(d) => self.focus_neighbor(d),
-            FocusNext => self.cycle_focus(1),
-            FocusPrevious => self.cycle_focus(-1),
-            FocusFirst => self.focus_index(0),
+
+        match command {
+            Focus(direction) => {
+                self.focused
+                    .as_ref()
+                    .ok_or(PaneCommandError::NoFocusedPane)?;
+                self.focus_neighbor(direction)
+                    .then_some(())
+                    .ok_or(PaneCommandError::NoNeighbor)
+            }
+            FocusNext => {
+                self.focused
+                    .as_ref()
+                    .ok_or(PaneCommandError::NoFocusedPane)?;
+                self.cycle_focus(1)
+                    .then_some(())
+                    .ok_or(PaneCommandError::NoFocusedPane)
+            }
+            FocusPrevious => {
+                self.focused
+                    .as_ref()
+                    .ok_or(PaneCommandError::NoFocusedPane)?;
+                self.cycle_focus(-1)
+                    .then_some(())
+                    .ok_or(PaneCommandError::NoFocusedPane)
+            }
+            FocusFirst => self
+                .focus_index(0)
+                .then_some(())
+                .ok_or(PaneCommandError::InvalidPaneIndex),
             FocusLast => self
                 .tree
                 .leaf_ids()
                 .len()
                 .checked_sub(1)
-                .is_some_and(|i| self.focus_index(i)),
-            FocusIndex(i) => self.focus_index(i),
-            Split(d) => {
-                let p = focused()?;
-                let data = match self.tree.find(&p) {
+                .ok_or(PaneCommandError::NoFocusedPane)
+                .and_then(|index| {
+                    self.focus_index(index)
+                        .then_some(())
+                        .ok_or(PaneCommandError::InvalidPaneIndex)
+                }),
+            FocusIndex(index) => self
+                .focus_index(index)
+                .then_some(())
+                .ok_or(PaneCommandError::InvalidPaneIndex),
+            Split(direction) => {
+                let focused = self
+                    .focused
+                    .clone()
+                    .ok_or(PaneCommandError::NoFocusedPane)?;
+                let data = match self.tree.find(&focused) {
                     Some(PaneNode::Leaf { data, .. }) => data.clone(),
-                    _ => return Err(PaneCommandError::PaneNotFound),
+                    _ => return Err(PaneCommandError::NoFocusedPane),
                 };
-                let Some((id, data)) = split_factory(&p, d, &data) else {
-                    return Err(PaneCommandError::SplitRefused);
-                };
-                self.split(&p, d, id, data)
+                let (new_id, new_data) = split_factory(&focused, direction, &data)
+                    .ok_or(PaneCommandError::SplitRefused)?;
+                self.split(&focused, direction, new_id, new_data)
+                    .then_some(())
+                    .ok_or(PaneCommandError::SplitRefused)
             }
             Close => {
-                let p = focused()?;
-                if self.tree.leaf_ids().len() == 1 {
+                if self.tree.leaf_ids().len() <= 1 {
                     return Err(PaneCommandError::CannotCloseLastPane);
                 }
-                self.close(&p).is_some()
+                let focused = self
+                    .focused
+                    .clone()
+                    .ok_or(PaneCommandError::NoFocusedPane)?;
+                self.close(&focused)
+                    .map(|_| ())
+                    .ok_or(PaneCommandError::NotApplicable)
             }
-            Move(d) => {
-                let p = focused()?;
-                let n = directional_neighbor(&self.tree, &p, d, |k| {
-                    find_ratio(&self.tree, k).unwrap_or(0.5)
-                });
-                n.is_some_and(|n| self.move_pane(&p, &n, d.drop_edge()))
+            Move(direction) => {
+                let focused = self
+                    .focused
+                    .clone()
+                    .ok_or(PaneCommandError::NoFocusedPane)?;
+                let neighbor = directional_neighbor(&self.tree, &focused, direction, |key| {
+                    find_ratio(&self.tree, key).unwrap_or(0.5)
+                })
+                .ok_or(PaneCommandError::NoNeighbor)?;
+                self.move_pane(&focused, &neighbor, direction.drop_edge())
+                    .then_some(())
+                    .ok_or(PaneCommandError::NotApplicable)
             }
-            Swap(d) => {
-                let p = focused()?;
-                let n = directional_neighbor(&self.tree, &p, d, |k| {
-                    find_ratio(&self.tree, k).unwrap_or(0.5)
-                });
-                n.is_some_and(|n| self.swap(&p, &n))
+            Swap(direction) => {
+                let focused = self
+                    .focused
+                    .clone()
+                    .ok_or(PaneCommandError::NoFocusedPane)?;
+                let neighbor = directional_neighbor(&self.tree, &focused, direction, |key| {
+                    find_ratio(&self.tree, key).unwrap_or(0.5)
+                })
+                .ok_or(PaneCommandError::NoNeighbor)?;
+                self.swap(&focused, &neighbor)
+                    .then_some(())
+                    .ok_or(PaneCommandError::NotApplicable)
             }
             SwapNext | SwapPrevious => {
-                let p = focused()?;
+                let focused = self
+                    .focused
+                    .clone()
+                    .ok_or(PaneCommandError::NoFocusedPane)?;
                 let ids = self.tree.leaf_ids();
-                let at = ids.iter().position(|x| x == &p).unwrap();
-                let n = if matches!(command, SwapNext) {
+                if ids.len() < 2 {
+                    return Err(PaneCommandError::NoNeighbor);
+                }
+                let at = ids
+                    .iter()
+                    .position(|pane| pane == &focused)
+                    .ok_or(PaneCommandError::NoFocusedPane)?;
+                let neighbor = if matches!(command, SwapNext) {
                     (at + 1) % ids.len()
                 } else {
                     (at + ids.len() - 1) % ids.len()
                 };
-                self.swap(&p, &ids[n])
+                self.swap(&focused, &ids[neighbor])
+                    .then_some(())
+                    .ok_or(PaneCommandError::NotApplicable)
             }
-            Resize(d) => self.resize_focused(d, 0.05),
-            SetParentSplitDirection(d) => {
-                let p = focused()?;
-                self.set_direction(&p, d)
+            Resize(direction) => {
+                self.focused
+                    .as_ref()
+                    .ok_or(PaneCommandError::NoFocusedPane)?;
+                self.resize_focused(direction, 0.05)
+                    .then_some(())
+                    .ok_or(PaneCommandError::NotApplicable)
+            }
+            SetParentSplitDirection(direction) => {
+                let focused = self
+                    .focused
+                    .clone()
+                    .ok_or(PaneCommandError::NoFocusedPane)?;
+                self.set_direction(&focused, direction)
+                    .then_some(())
+                    .ok_or(PaneCommandError::NotApplicable)
             }
             ToggleParentSplitDirection => {
-                let p = focused()?;
-                let Some(d) = self.tree.parent_split_direction(&p) else {
-                    return Err(PaneCommandError::InvalidOperation);
+                let focused = self
+                    .focused
+                    .clone()
+                    .ok_or(PaneCommandError::NoFocusedPane)?;
+                let direction = self
+                    .tree
+                    .parent_split_direction(&focused)
+                    .ok_or(PaneCommandError::NotApplicable)?;
+                let toggled = match direction {
+                    SplitDirection::Horizontal => SplitDirection::Vertical,
+                    SplitDirection::Vertical => SplitDirection::Horizontal,
                 };
-                self.set_direction(
-                    &p,
-                    if d == SplitDirection::Horizontal {
-                        SplitDirection::Vertical
-                    } else {
-                        SplitDirection::Horizontal
-                    },
-                )
+                self.set_direction(&focused, toggled)
+                    .then_some(())
+                    .ok_or(PaneCommandError::NotApplicable)
             }
-            Balance => self.balance(),
-            Rotate(r) => self.rotate(r),
-            ApplyLayout(l) => self.apply_layout(l),
-            ToggleZoom => self.toggle_zoom(),
-        };
-        if ok {
-            Ok(())
-        } else {
-            Err(PaneCommandError::InvalidOperation)
+            Balance => self
+                .balance()
+                .then_some(())
+                .ok_or(PaneCommandError::NotApplicable),
+            Rotate(rotation) => self
+                .rotate(rotation)
+                .then_some(())
+                .ok_or(PaneCommandError::NotApplicable),
+            ApplyLayout(layout) => self
+                .apply_layout(layout)
+                .then_some(())
+                .ok_or(PaneCommandError::NotApplicable),
+            ToggleZoom => {
+                self.focused
+                    .as_ref()
+                    .ok_or(PaneCommandError::NoFocusedPane)?;
+                self.toggle_zoom()
+                    .then_some(())
+                    .ok_or(PaneCommandError::NoFocusedPane)
+            }
         }
     }
 }
