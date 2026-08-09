@@ -69,5 +69,44 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: trunk@0.21.14
+      - name: Install Google Chrome stable
+        id: setup-chrome
+        uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: stable
+      - name: Install virtual browser display
+        run: sudo apt-get update && sudo apt-get install -y xvfb
       - name: Build browser demo
         run: cd examples/web && env -u NO_COLOR trunk build --release
+      - name: Execute built WASM in Google Chrome under Xvfb
+        shell: bash
+        run: |
+          python3 .github/scripts/serve_dist.py examples/web/dist > /tmp/mullion-server.log 2>&1 &
+          server=$!
+          trap 'kill "$server" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 90); do
+            if curl -fsS -D /tmp/headers http://127.0.0.1:8181/ -o /tmp/index.html; then
+              break
+            fi
+            if ! kill -0 "$server" 2>/dev/null; then
+              cat /tmp/mullion-server.log
+              exit 1
+            fi
+            sleep 1
+          done
+          test -s /tmp/index.html || { cat /tmp/mullion-server.log; exit 1; }
+          grep -qi '^cross-origin-opener-policy: same-origin' /tmp/headers
+          grep -qi '^cross-origin-embedder-policy: require-corp' /tmp/headers
+          setsid xvfb-run -a "${{ steps.setup-chrome.outputs.chrome-path }}" \
+            --no-sandbox --no-first-run --no-default-browser-check \
+            --disable-dev-shm-usage --enable-unsafe-webgpu \
+            --enable-unsafe-swiftshader --use-angle=swiftshader \
+            --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 \
+            --user-data-dir=/tmp/mullion-chrome http://127.0.0.1:8181/ \
+            > /tmp/mullion-chrome.log 2>&1 &
+          chrome=$!
+          trap 'kill -TERM -- -"$chrome" 2>/dev/null || true; kill "$server" 2>/dev/null || true' EXIT
+          if ! timeout 75 node .github/scripts/check_browser.mjs http://127.0.0.1:8181/; then
+            cat /tmp/mullion-chrome.log
+            exit 1
+          fi
