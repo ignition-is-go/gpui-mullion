@@ -7,14 +7,16 @@ This repository is the GPUI successor to the Leptos `mullion` library and is int
 ## Current implementation baseline
 
 > [!IMPORTANT]
-> This is not yet a feature-complete replacement for the reference Mullion. See the
-> [parity audit](docs/PARITY_AUDIT.md) for the exact gaps and acceptance criteria.
+> The audited Leptos behavior now has GPUI-native implementations and focused tests. Exact-head
+> CI for `cb1d1aa` is still pending; see the [parity audit](docs/PARITY_AUDIT.md) for evidence and
+> release gates. Native pane detachment is an additive, explicit non-goal—not reference parity.
 
-- Portable, serde-compatible binary `PaneNode<D>` with stable string pane/activity/category IDs.
-- Split, close, move, swap, resize, rotate, balance, five standard layouts, stable split keys, geometric directional navigation, boundary calculations, and extensive inherited model tests.
-- Toolkit-independent `MullionModel`: durable focus, zoom, pane data/activity updates, commands, host-created splits, and typed mutation plus snapshot events.
-- Shared GPUI `MullionView`: recursive layout, basic activity content, headers, focus chrome, zoom, center-only pane docking, click-step resize, the full portable command action set, and customizable default bindings.
-- Serializable named workspaces switched inside the shared view, plus native/browser baseline demos.
+- Portable, validated, serde-compatible `PaneNode<D>` with stable string pane/activity/category IDs and reference command/event semantics.
+- Split, close, move, swap, proportional resize, rotate, balance, five standard layouts, geometric navigation, five-zone pane docking, and activity-to-new-pane docking.
+- Stateful per-`(workspace, pane, activity)` GPUI entities with optional headers, update hooks, stable topology lifecycle, and deterministic disposal.
+- Recursive activity catalogs with primary/trailing groups, typed icons/chrome, four-edge pinned/hidden/auto-hide rails, configurable hover intent, and host slots.
+- Complete command metadata/actions and direct/prefix keymaps, configurable focus/presentation, validated mounted workspaces, root overlays, palette/accessibility adapters, and typed light/dark/system styling.
+- Rendered GPUI interaction coverage plus an executed Chrome/WASM canvas smoke in CI; the exact-head run remains pending.
 
 ## Quick start
 
@@ -73,7 +75,7 @@ Subscribe to `PaneEvent<D>` for pane/model changes. `MullionView::new_with_works
 
 ## Window architecture
 
-A browser session owns exactly one document/canvas-backed GPUI window. `MullionView` renders every pane and workspace inside that root; it never opens a window while rendering or mutating the model. The same rule is the portable default on desktop. Detached OS windows are an optional, host-owned desktop extension through `DetachedWindowService`. `WindowCapabilities::for_service(...)` reports the capability actually installed by the host; the portable default and `UnavailableDetachedWindows` report unavailable without panicking on wasm. Desktop hosts can use `NativeDetachedWindowService` (see `cargo run --example detached-window`). Thus multi-window policy cannot leak into the shared pane tree, serialization, or view.
+A browser session owns exactly one document/canvas-backed GPUI window. `MullionView` renders every pane and workspace inside that root; it never opens a window while rendering or mutating the model. The same rule is the portable default on desktop. Detached OS windows are an optional, host-owned desktop extension through `DetachedWindowService`. `WindowCapabilities::for_service(...)` reports the capability actually installed by the host; the portable default and `UnavailableDetachedWindows` report unavailable without panicking on wasm. Desktop hosts can use `NativeDetachedWindowService` (see `cargo run --example detached-window`) to open a host-owned window. This scaffold does **not** detach, render, synchronize, or reattach a Mullion pane and must not be described as pane detachment. Native detached panes are absent from the Leptos reference and are an explicit additive non-goal for parity. Thus multi-window policy cannot leak into the shared pane tree, serialization, or view.
 
 ## Demo
 
@@ -89,9 +91,10 @@ cd examples/web && trunk serve
 Demo controls:
 
 - click the Rship/Browser tabs to switch internal workspaces;
-- click a pane to focus it;
-- drag a pane onto another pane to relocate it;
-- left/right-click a separator to adjust its ratio;
+- hover a pane to focus it with the default policy;
+- drag a pane's explicit handle to any of another pane's five docking zones;
+- drag a separator proportionally; use its splitter-local keyboard actions for stepping/cancel;
+- select or drag activities from the recursive activity rail;
 - `Alt+Arrow`, `Alt+PageUp/PageDown` navigate;
 - `Ctrl+Shift+Enter` zooms; `Ctrl+Shift+Backspace` closes;
 - `Ctrl+Alt+=` balances splits.
@@ -107,27 +110,22 @@ PaneNode::Split { direction, ratio, first, second }
 
 IDs remain one-field string tuple structs and enum tagging remains serde's external default. Compatibility is guarded by JSON golden tests. UI configuration and render callbacks are intentionally *not* serialized. Use `snapshot()` / `TreeChanged` for persistence, or let an owning `MullionView` keep its `WorkspaceSet` synchronized, and reconstruct native activity renderers at startup. While zoomed, focus navigation coherently moves the zoom viewport to the newly focused pane; zoom and focus therefore never diverge.
 
-## Migration / parity roadmap
+## Migration / parity status
 
-The new repository stands alone; future work lands here rather than maintaining a browser adapter.
+The Leptos reference's audited behavior has a GPUI-native implementation. The exact APIs and tests for every original parity item are recorded in [the re-audit](docs/PARITY_AUDIT.md).
 
 | Area | Status |
 |---|---|
-| persisted tree, geometry, and layout algorithms | parity baseline complete |
-| command IDs/errors/focus policy and event traces | partial; compatibility fixes required |
-| native recursive view, zoom, and basic activity content | implemented baseline |
-| center-only pane docking and click-step resize | implemented baseline |
-| stateful per-pane activity/header lifecycle | implemented with lazy stable entities and deterministic disposal |
-| proportional pointer-drag resize with keyboard accessibility | missing |
-| five-edge drop target overlay and activity-to-create drag | missing |
-| visual nested category expansion; primary/trailing groups | missing |
-| activity rails on all four edges; hide/auto-hide/hover intent | missing |
-| host accessories, native icon/asset abstraction, overlays | missing |
-| full actions/keymaps, settings, and palette integration | partial/missing |
-| real pane detachment into desktop windows | scaffold only |
-| rendered interaction and browser runtime tests | missing |
+| persisted tree, validation, geometry, commands, errors, and event traces | implemented and compatibility-tested |
+| stateful activity/header lifecycle and recursive activity catalogs | implemented and rendered-tested |
+| proportional resize and five-zone pane/activity docking | implemented and rendered-tested |
+| four-edge activity rails, nested/trailing groups, hide/auto-hide/hover intent | implemented and rendered-tested |
+| complete actions/keymaps, focus settings, workspaces, palette/accessibility | implemented and rendered-tested |
+| host chrome slots, typed styles/themes, and root overlays | implemented and rendered-tested |
+| browser/WASM canvas interactions | implemented in CI; exact-head `cb1d1aa` run pending |
+| native pane detachment | explicit additive non-goal; host window-opening scaffold only |
 
-DOM/CSS concepts (`web_sys`, portals, HTML drag transfer, CSS class/URL icons) are intentionally not API compatibility goals. They will receive GPUI-native replacements.
+DOM/CSS concepts (`web_sys`, portals, HTML drag transfer, CSS classes, and CSS/URL/SVG icon mechanisms) are intentionally not API-compatibility goals. GPUI bounds/actions/root overlays, ARIA roles, typed style tokens, and host-rendered `ActivityIcon`s are their native equivalents. Cross-platform pixel snapshots are also not a stable parity oracle; tests assert exact geometry, state, events, accessibility metadata, and rendered interactions instead.
 
 ## Development
 
