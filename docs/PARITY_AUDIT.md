@@ -2,14 +2,14 @@
 
 **Re-audit date:** 2026-08-09
 **Reference:** `../mullion` at `09a8b8cbe88521f5c975e42bc0d3104af5afa448` (`feat/activity-bar-hover-delay`)
-**Port inspected:** `gpui-mullion` through `cb1d1aa28deaed087a08e78953643bc00c84bd03`
-**Exact-head CI:** **pending** — [run 31339423234](https://github.com/ignition-is-go/gpui-mullion/actions/runs/31339423234) was still in progress at this audit. This document does not claim that `cb1d1aa` passed CI.
+**Port inspected and validated:** `gpui-mullion` through `b25111177628e43b6f2f91c93ef0e8036ee043f0`
+**Validation:** [CI run 31340159314](https://github.com/ignition-is-go/gpui-mullion/actions/runs/31340159314) passed Windows, macOS, Linux, native Wayland runtime, WASM/Trunk, and rendered Chrome interactions.
 
 ## Verdict and scope
 
 All user-visible behavior and durable contracts identified in the original audit now have a GPUI-native implementation and focused tests. The only deliberately unimplemented item is **native pane detachment**: it is additive desktop functionality which does not exist in the Leptos reference, so it is an explicit parity non-goal. `NativeDetachedWindowService` remains honestly scoped as a host window-opening scaffold and is not counted as pane parity.
 
-The implementation re-audit found no substantive reference behavior hidden behind a closed Levi task. The remaining release gate is evidence, not known product behavior: the exact-head multi-platform/browser CI run is pending. Pixel-perfect DOM/CSS reproduction is also out of scope; typed GPUI styles and deterministic rendered/state assertions replace DOM classes and browser pixel snapshots.
+The implementation re-audit found no substantive reference behavior hidden behind a closed Levi task. Pixel-perfect DOM/CSS reproduction is out of scope; typed GPUI styles and deterministic rendered/state assertions replace DOM classes and browser pixel snapshots.
 
 Parity here means behavior and durable contracts, not a literal translation of Leptos signals, DOM events, portals, `HtmlElement`, `DomRect`, CSS classes, or URL/SVG rendering mechanisms. GPUI entities, bounds, actions, overlays, ARIA semantics, and host-rendered `ActivityIcon`s are the scoped native equivalents.
 
@@ -34,7 +34,7 @@ Parity here means behavior and durable contracts, not a literal translation of L
 | Theming and chrome extensibility | **Implemented** | `MullionStyles`, light/dark/system `MullionThemeMode`, activity/category icons and headers, app/leading/trailing/accessory slots, pane border callback; style/theme/catalog rendered tests. |
 | Overlay escape hatch | **Implemented** | window-root `OverlayStack`, controlled source, modal/toast/drag tiers, placement/size/backdrop/dismiss/click-through/accessibility policy; seven unit and five rendered overlay tests. |
 | Detached pane windows | **Explicit parity non-goal** | Absent from the Leptos reference. `DetachedWindowService`/`NativeDetachedWindowService` and `examples/detached_window.rs` only demonstrate a host-owned window; no detach/sync/reattach claim is made. |
-| Rendered interaction tests | **Implemented; exact-head CI pending** | 32 `#[gpui::test]` cases in `src/view.rs`; `.github/scripts/check_browser.mjs` drives real canvas hover/click, actions, zoom, workspace switching, and activity selection. CI run 31339423234 for `cb1d1aa` is pending. |
+| Rendered interaction tests | **Implemented and runtime-validated** | 32 `#[gpui::test]` cases in `src/view.rs`; `.github/scripts/check_browser.mjs` drives real canvas hover/click, actions, zoom, workspace switching, and activity selection. CI run 31340159314 passed at `b251111`. |
 
 ## Original P0 acceptance items
 
@@ -91,13 +91,13 @@ Serializable `PaneFocusBehavior::{Hover,Click}`, controlled/local `MullionSettin
 
 `WorkspaceSet` and mounted `MullionView` expose validated add/remove/rename/reorder/update/switch operations. Invalid changes are atomic; outgoing trees persist; typed `WorkspaceEvent::SnapshotChanged` and `WorkspaceChanged` ordering is tested. Focus and zoom are transient Mullion view state: they survive a switch only when their IDs exist in the incoming tree, otherwise reconcile without contaminating serialized workspaces. Evidence: seven workspace unit tests and six rendered workspace tests.
 
-### MUL-P1-008 — Rendered interaction tests — **Implemented; exact-head CI pending**
+### MUL-P1-008 — Rendered interaction tests — **Implemented and validated**
 
 - **Native GPUI test context:** 32 `#[gpui::test]` cases in `src/view.rs` exercise content lifecycle, selection/catalog, focus, close/tree repair, complete commands/keymaps, workspace mutation/switching, five-zone pane/activity docking, resize, overlays, styles, accessibility, and palette behavior.
 - **Browser runtime:** `.github/scripts/check_browser.mjs` connects to Chrome DevTools under Xvfb, requires a sustained live GPUI canvas/test bridge, then drives pointer focus, full-keymap focus/zoom, workspace tabs, and activity selection and asserts the portable tree/state.
-- **CI matrix:** native check/test/clippy on Ubuntu/macOS/Windows, Linux X11+Wayland feature verification, wasm check/clippy, Trunk build, and executed Chrome smoke.
+- **CI matrix:** native check/test/clippy on Ubuntu/macOS/Windows, executed native Wayland demo liveness, wasm check/clippy, Trunk build, and executed Chrome interactions.
 - **Scoped testing choice:** cross-platform GPUI pixel screenshots are not a stable parity oracle. Exact geometry/state/event assertions and rendered interaction tests are used instead; screenshots are retained as browser failure diagnostics.
-- **Gate:** run 31339423234 at exact head `cb1d1aa` is pending, so P1-008 and the umbrella should remain open until it succeeds. The CI does not currently launch a native Wayland compositor/window; that is a portability release-smoke gap, not missing Leptos behavior, and remains covered by P1-008 rather than being represented as completed evidence.
+- **Validation:** run 31340159314 passed at `b251111`, including a nested X11-backed Weston compositor with a real Wayland client/surface/seat path and a sustained rendered Chrome interaction sequence.
 
 ## Original P2 acceptance items
 
@@ -132,11 +132,11 @@ The Leptos reference has no native OS-window detachment. Therefore ownership tra
 7. **Implemented:** complete action/keymap catalog, direct/prefix customization, exact modifiers, editable policy, and serde.
 8. **Implemented:** hover/click, keyboard, zoom, close/tree repair, and workspace-switch focus policy.
 9. **Implemented:** workspace add/remove/rename/reorder/update/switch/persist/invalid-active behavior and transient view-state policy.
-10. **Implemented in CI definition; exact-head result pending:** native Windows/macOS/Linux gates, Linux X11+Wayland feature verification, wasm/Trunk, and executed Chrome interactions. A launched native Wayland runtime smoke is still absent and must not be claimed.
+10. **Implemented and validated:** native Windows/macOS/Linux gates, a 15-second native Wayland demo under nested Weston, wasm/Trunk, and executed Chrome interactions.
 
 ## Close recommendations
 
-- **MUL-P1-008 / `lv-5d80`:** keep open until exact-head run 31339423234 succeeds. If the release definition requires a launched native Wayland window rather than compiled Wayland support plus Linux Chrome runtime, keep it open and add that smoke before closing.
-- **MUL-P2-005 / `lv-3d13`:** keep open until the maintainer records native pane detachment as the explicit additive non-goal above; then close as a scope decision, without claiming a real detached-pane implementation.
-- **Umbrella / `lv-24d4`:** close only after P1-008's CI/runtime evidence and P2-005's scope decision are resolved.
-- **New follow-ups:** none filed. The re-audit found no substantive missing reference behavior; the only unresolved items already have the three open Levi tasks above.
+- **MUL-P1-008 / `lv-5d80`:** validation is complete; close at the validated implementation/documentation ancestry.
+- **MUL-P2-005 / `lv-3d13`:** closed as the explicit additive non-goal above, without claiming a real detached-pane implementation.
+- **Umbrella / `lv-24d4`:** all parity requirements are implemented, validated, or explicitly scoped; close after the final documentation head passes CI.
+- **New follow-ups:** none filed. The re-audit found no substantive missing reference behavior.

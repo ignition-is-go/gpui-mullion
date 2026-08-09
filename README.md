@@ -7,16 +7,16 @@ This repository is the GPUI successor to the Leptos `mullion` library and is int
 ## Current implementation baseline
 
 > [!IMPORTANT]
-> The audited Leptos behavior now has GPUI-native implementations and focused tests. Exact-head
-> CI for `cb1d1aa` is still pending; see the [parity audit](docs/PARITY_AUDIT.md) for evidence and
-> release gates. Native pane detachment is an additive, explicit non-goal—not reference parity.
+> The audited Leptos behavior now has GPUI-native implementations and focused tests. Full validation
+> passed at `b251111` in [CI run 31340159314](https://github.com/ignition-is-go/gpui-mullion/actions/runs/31340159314).
+> Native pane detachment is an additive, explicit non-goal—not reference parity.
 
 - Portable, validated, serde-compatible `PaneNode<D>` with stable string pane/activity/category IDs and reference command/event semantics.
 - Split, close, move, swap, proportional resize, rotate, balance, five standard layouts, geometric navigation, five-zone pane docking, and activity-to-new-pane docking.
 - Stateful per-`(workspace, pane, activity)` GPUI entities with optional headers, update hooks, stable topology lifecycle, and deterministic disposal.
 - Recursive activity catalogs with primary/trailing groups, typed icons/chrome, four-edge pinned/hidden/auto-hide rails, configurable hover intent, and host slots.
 - Complete command metadata/actions and direct/prefix keymaps, configurable focus/presentation, validated mounted workspaces, root overlays, palette/accessibility adapters, and typed light/dark/system styling.
-- Rendered GPUI interaction coverage plus an executed Chrome/WASM canvas smoke in CI; the exact-head run remains pending.
+- Rendered GPUI interactions plus executed Chrome/WASM canvas interactions and a 15-second native Wayland demo smoke in CI.
 
 ## Quick start
 
@@ -122,7 +122,7 @@ The Leptos reference's audited behavior has a GPUI-native implementation. The ex
 | four-edge activity rails, nested/trailing groups, hide/auto-hide/hover intent | implemented and rendered-tested |
 | complete actions/keymaps, focus settings, workspaces, palette/accessibility | implemented and rendered-tested |
 | host chrome slots, typed styles/themes, and root overlays | implemented and rendered-tested |
-| browser/WASM canvas interactions | implemented in CI; exact-head `cb1d1aa` run pending |
+| browser/WASM canvas interactions | validated in Chrome/Xvfb at `b251111` |
 | native pane detachment | explicit additive non-goal; host window-opening scaffold only |
 
 DOM/CSS concepts (`web_sys`, portals, HTML drag transfer, CSS classes, and CSS/URL/SVG icon mechanisms) are intentionally not API-compatibility goals. GPUI bounds/actions/root overlays, ARIA roles, typed style tokens, and host-rendered `ActivityIcon`s are their native equivalents. Cross-platform pixel snapshots are also not a stable parity oracle; tests assert exact geometry, state, events, accessibility metadata, and rendered interactions instead.
