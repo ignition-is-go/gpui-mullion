@@ -2,11 +2,11 @@ use crate::{
     Activity, ActivityBarEdge, ActivityBarHostConfig, ActivityBarHoverState, ActivityBarMode,
     ActivityCache, ActivityCacheKey, ActivityCatalog, ActivityCatalogValidationError,
     ActivityExpansionState, ActivityFactoryRegistry, ActivityId, ActivityNode, DockBounds,
-    DockDrag, DockHover, DockPayload, DropEdge, FocusPresentation, MullionModel, MullionSettings,
-    MullionStyles, MullionTheme, MullionThemeMode, PaneCommandExecutionOptions, PaneData,
-    PaneDirection, PaneEvent, PaneFocusBehavior, PaneId, PaneNode, PaneSplitFactory,
-    SplitDirection, VisibleActivityNode, WorkspaceChanged, WorkspaceEvent, WorkspaceId,
-    WorkspaceSet, WorkspaceSetError,
+    DockConfig, DockDrag, DockHover, DockPayload, DropEdge, FocusPresentation, MullionModel,
+    MullionSettings, MullionStyles, MullionTheme, MullionThemeMode, NewPaneFactory,
+    PaneCommandExecutionOptions, PaneData, PaneDirection, PaneEvent, PaneFocusBehavior, PaneId,
+    PaneNode, PaneSplitFactory, SplitDirection, VisibleActivityNode, WorkspaceChanged,
+    WorkspaceEvent, WorkspaceId, WorkspaceSet, WorkspaceSetError,
 };
 use gpui::{
     actions, div, prelude::*, px, relative, AnyElement, App, Bounds, Context, DragMoveEvent,
@@ -144,6 +144,7 @@ impl Render for DockDrag {
 /// Shared native/WebAssembly GPUI view over the portable model.
 pub struct MullionView<D: PaneData> {
     model: MullionModel<D>,
+    dock_config: DockConfig<D>,
     command_options: PaneCommandExecutionOptions<D>,
     catalog: ActivityCatalog<D>,
     theme: MullionTheme,
@@ -181,6 +182,7 @@ impl<D: PaneData> MullionView<D> {
             .detach();
         Self {
             model: MullionModel::new(tree),
+            dock_config: DockConfig::default(),
             command_options: PaneCommandExecutionOptions::default(),
             catalog: ActivityCatalog::new(activities),
             theme: MullionTheme::default(),
@@ -280,6 +282,43 @@ impl<D: PaneData> MullionView<D> {
     }
     pub fn activity_bar_host(&self) -> &ActivityBarHostConfig<D> {
         &self.host
+    }
+    /// Configure activity-to-new-pane docking.
+    pub fn with_dock_config(mut self, config: DockConfig<D>) -> Self {
+        self.dock_config = config;
+        self
+    }
+    /// Replace the activity docking configuration used by subsequent drags.
+    pub fn set_dock_config(&mut self, config: DockConfig<D>, cx: &mut Context<Self>) {
+        self.dock_config = config;
+        self.dock_hover = None;
+        cx.notify();
+    }
+    /// Return the activity docking configuration.
+    pub fn dock_config(&self) -> &DockConfig<D> {
+        &self.dock_config
+    }
+    /// Configure the host factory which mints panes for dropped activities.
+    pub fn with_new_pane_factory(
+        mut self,
+        factory: impl Fn(&ActivityId, &PaneId, DropEdge) -> Option<(PaneId, D)> + Send + Sync + 'static,
+    ) -> Self {
+        self.dock_config = self.dock_config.with_new_pane_factory(factory);
+        self
+    }
+    /// Replace the shared host factory used by activity docking.
+    pub fn set_new_pane_factory(
+        &mut self,
+        factory: Option<NewPaneFactory<D>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.dock_config.set_new_pane_factory(factory);
+        self.dock_hover = None;
+        cx.notify();
+    }
+    /// Return the host pane factory, if configured.
+    pub fn new_pane_factory(&self) -> Option<&NewPaneFactory<D>> {
+        self.dock_config.new_pane_factory()
     }
     /// Install live focus settings. The callbacks are read on every render and
     /// pointer interaction, so host-controlled changes do not require rebuilding the view.
@@ -989,7 +1028,10 @@ impl<D: PaneData> MullionView<D> {
         cx: &mut Context<Self>,
     ) {
         let drag = event.drag(cx);
-        let can_drop = matches!(&drag.payload, DockPayload::Pane(source) if source != destination);
+        let can_drop = match &drag.payload {
+            DockPayload::Pane(source) => source != destination,
+            DockPayload::NewActivity(_) => self.dock_config.can_create_panes(),
+        };
         let hover = (can_drop && event.bounds.contains(&event.event.position))
             .then(|| {
                 let point = crate::DockPoint::new(
@@ -1037,8 +1079,10 @@ impl<D: PaneData> MullionView<D> {
             DockPayload::Pane(source) => {
                 self.model.move_pane(source, destination, hover.edge);
             }
-            // Activity creation is deliberately a later host-factory feature.
-            DockPayload::NewActivity(_) => {}
+            DockPayload::NewActivity(activity) => {
+                self.dock_config
+                    .drop_activity(&mut self.model, activity, destination, hover.edge);
+            }
         }
         self.finish(cx);
     }
@@ -1064,6 +1108,8 @@ impl<D: PaneData> MullionView<D> {
                     let active = selected == Some(&activity.id);
                     let pane_id = pane.clone();
                     let activity_id = activity.id.clone();
+                    let drag_activity_id = activity.id.clone();
+                    let can_drag_activity = self.dock_config.can_create_panes();
                     let icon = self
                         .catalog
                         .activity_chrome(&activity.id)
@@ -1084,7 +1130,12 @@ impl<D: PaneData> MullionView<D> {
                             let activity = activity.id.clone();
                             move || format!("activity:{}:{}", pane.0, activity.0)
                         })
-                        .aria_label(format!("{} activity", activity.name))
+                        .role(gpui::Role::Button)
+                        .aria_label(if can_drag_activity {
+                            format!("{} activity, drag to create pane", activity.name)
+                        } else {
+                            format!("{} activity", activity.name)
+                        })
                         .cursor_pointer()
                         .flex()
                         .items_center()
@@ -1109,6 +1160,12 @@ impl<D: PaneData> MullionView<D> {
                             this.model.set_activity(&pane_id, Some(activity_id.clone()));
                             this.finish(cx);
                         }))
+                        .when(can_drag_activity, |item| {
+                            item.cursor_copy().on_drag(
+                                DockDrag::new_activity(drag_activity_id),
+                                |drag, _, _, cx| cx.new(|_| drag.clone()),
+                            )
+                        })
                         .child(
                             div()
                                 .size(styles.activity_bar.icon_size)
@@ -1226,6 +1283,7 @@ impl<D: PaneData> MullionView<D> {
         let id_drag_header = id.clone();
         let id_drag_activity = id.clone();
         let id_close = id.clone();
+        let can_create_panes = self.dock_config.can_create_panes();
         let activities = self.all_activities(data);
         let selected = active
             .and_then(|a| activities.iter().find(|x| &x.id == a).cloned())
@@ -1570,8 +1628,9 @@ impl<D: PaneData> MullionView<D> {
                 move |value, _, _| {
                     value
                         .downcast_ref::<DockDrag>()
-                        .is_some_and(|drag| {
-                            matches!(&drag.payload, DockPayload::Pane(source) if source != &destination)
+                        .is_some_and(|drag| match &drag.payload {
+                            DockPayload::Pane(source) => source != &destination,
+                            DockPayload::NewActivity(_) => can_create_panes,
                         })
                 }
             })
@@ -1594,7 +1653,9 @@ impl<D: PaneData> MullionView<D> {
                     .flex()
                     .flex_col()
                     .when_some(header, |content, header| content.child(header))
-                    .when_some(pane_accessory, |content, accessory| content.child(accessory))
+                    .when_some(pane_accessory, |content, accessory| {
+                        content.child(accessory)
+                    })
                     .child(div().flex_1().min_h_0().overflow_hidden().child(body));
                 let visual = div()
                     .id(SharedString::from(format!("pane-visual:{}", id.0)))
@@ -1632,9 +1693,13 @@ impl<D: PaneData> MullionView<D> {
                     .when(!horizontal, |visual| visual.flex_row())
                     .opacity(unfocused_opacity);
                 if self.host.activity_bar.edge.is_trailing() {
-                    visual.child(content).when_some(bar, |visual, bar| visual.child(bar))
+                    visual
+                        .child(content)
+                        .when_some(bar, |visual, bar| visual.child(bar))
                 } else {
-                    visual.when_some(bar, |visual, bar| visual.child(bar)).child(content)
+                    visual
+                        .when_some(bar, |visual, bar| visual.child(bar))
+                        .child(content)
                 }
             })
             .when_some(
@@ -2285,6 +2350,152 @@ mod tests {
 
     fn leaf(id: &str) -> PaneNode<String> {
         PaneNode::leaf(PaneId::new(id), id.to_string())
+    }
+
+    #[gpui::test]
+    fn typed_nested_and_trailing_activity_drags_create_panes_in_all_five_zones(
+        cx: &mut TestAppContext,
+    ) {
+        let nested = rendered_activity("nested-drag", show_activity);
+        let trailing = rendered_activity("trailing-drag", show_activity);
+        let catalog = ActivityCatalog::new(vec![ActivityNode::Category(crate::ActivityCategory {
+            id: crate::CategoryId::new("drag-category"),
+            name: "Drag category".into(),
+            color: gpui::rgb(0x112233).into(),
+            children: vec![ActivityNode::Activity(nested)],
+        })])
+        .with_trailing(vec![ActivityNode::Activity(trailing)]);
+        let base = split(
+            SplitDirection::Horizontal,
+            0.5,
+            PaneNode::leaf_with_activity(
+                PaneId::new("a"),
+                ActivityId::new("nested-drag"),
+                "a".to_owned(),
+            ),
+            leaf("b"),
+        );
+        let factory_calls = Arc::new(AtomicU8::new(0));
+        let calls = factory_calls.clone();
+        let (view, cx) = cx.add_window_view({
+            let base = base.clone();
+            move |_, cx| {
+                MullionView::try_new_with_catalog(base, catalog, cx)
+                    .unwrap()
+                    .with_new_pane_factory(move |_, _, _| {
+                        let n = calls.fetch_add(1, Ordering::SeqCst) + 1;
+                        Some((PaneId::new(format!("created-{n}")), format!("created-{n}")))
+                    })
+            }
+        });
+        cx.simulate_resize(gpui::size(px(1000.), px(700.)));
+        cx.run_until_parked();
+        let events = Rc::new(RefCell::new(Vec::<PaneEvent<String>>::new()));
+        let event_log = events.clone();
+        let observed = view.clone();
+        view.update(cx, move |_, cx| {
+            cx.subscribe(&observed, move |_, _, event: &PaneEvent<String>, _| {
+                event_log.borrow_mut().push(event.clone());
+            })
+            .detach();
+        });
+
+        for (index, (edge, x, y)) in [
+            (DropEdge::Left, 0.1, 0.5),
+            (DropEdge::Right, 0.9, 0.5),
+            (DropEdge::Top, 0.5, 0.1),
+            (DropEdge::Bottom, 0.5, 0.9),
+            (DropEdge::Center, 0.5, 0.5),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let reset = base.clone();
+            view.update(cx, |view, cx| {
+                view.update_model(cx, |model| model.replace_tree(reset))
+            });
+            cx.run_until_parked();
+            events.borrow_mut().clear();
+            cx.update(|_, _| {});
+            cx.run_until_parked();
+            events.borrow_mut().clear();
+            let activity = if index % 2 == 0 {
+                "nested-drag"
+            } else {
+                "trailing-drag"
+            };
+            let activity_selector = if index % 2 == 0 {
+                "activity:a:nested-drag"
+            } else {
+                "activity:a:trailing-drag"
+            };
+            let start = cx.debug_bounds(activity_selector).unwrap().center();
+            let destination_pane = if edge == DropEdge::Center { "a" } else { "b" };
+            let target = if destination_pane == "a" {
+                cx.debug_bounds("pane:a").unwrap()
+            } else {
+                cx.debug_bounds("pane:b").unwrap()
+            };
+            let destination = gpui::point(
+                target.left() + target.size.width * x,
+                target.top() + target.size.height * y,
+            );
+            cx.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::none());
+            cx.simulate_mouse_move(
+                gpui::point(start.x + px(4.), start.y),
+                Some(MouseButton::Left),
+                gpui::Modifiers::none(),
+            );
+            cx.simulate_mouse_move(
+                destination,
+                Some(MouseButton::Left),
+                gpui::Modifiers::none(),
+            );
+            cx.run_until_parked();
+            let indicator_selector = match edge {
+                DropEdge::Left => "dock-indicator:b:Left",
+                DropEdge::Right => "dock-indicator:b:Right",
+                DropEdge::Top => "dock-indicator:b:Top",
+                DropEdge::Bottom => "dock-indicator:b:Bottom",
+                DropEdge::Center => "dock-indicator:a:Center",
+            };
+            assert!(cx.debug_bounds(indicator_selector).is_some());
+            cx.simulate_mouse_up(destination, MouseButton::Left, gpui::Modifiers::none());
+            cx.run_until_parked();
+
+            let new_id = PaneId::new(format!("created-{}", index + 1));
+            let mut expected = base.clone();
+            assert!(expected.insert_leaf(
+                &PaneId::new(destination_pane),
+                edge,
+                new_id.clone(),
+                format!("created-{}", index + 1),
+                Some(ActivityId::new(activity)),
+            ));
+            view.read_with(cx, |view, _| {
+                assert_eq!(view.model().tree(), &expected);
+                assert_eq!(view.model().focused(), Some(&new_id));
+            });
+            let mut expected_events = Vec::new();
+            if index > 0 {
+                expected_events.push(PaneEvent::FocusChanged {
+                    pane: Some(PaneId::new("a")),
+                });
+            }
+            expected_events.extend([
+                PaneEvent::ActivityDropped {
+                    activity: ActivityId::new(activity),
+                    destination: PaneId::new(destination_pane),
+                    edge,
+                    new_id: new_id.clone(),
+                    new_data: format!("created-{}", index + 1),
+                },
+                PaneEvent::TreeChanged { tree: expected },
+                PaneEvent::FocusChanged { pane: Some(new_id) },
+            ]);
+            assert_eq!(&*events.borrow(), &expected_events);
+        }
+        assert_eq!(factory_calls.load(Ordering::SeqCst), 5);
     }
 
     fn ratio(

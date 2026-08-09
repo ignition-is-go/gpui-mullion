@@ -267,6 +267,10 @@ impl<D: PaneData> DockConfig<D> {
         self.new_pane_factory.as_ref()
     }
 
+    pub fn set_new_pane_factory(&mut self, factory: Option<NewPaneFactory<D>>) {
+        self.new_pane_factory = factory;
+    }
+
     pub fn can_create_panes(&self) -> bool {
         self.new_pane_factory.is_some()
     }
