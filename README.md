@@ -7,9 +7,11 @@ This repository is the GPUI successor to the Leptos `mullion` library and is int
 ## Current implementation baseline
 
 > [!IMPORTANT]
-> The audited Leptos behavior now has GPUI-native implementations and focused tests. Full validation
-> passed at `b251111` in [CI run 31340159314](https://github.com/ignition-is-go/gpui-mullion/actions/runs/31340159314).
-> Native pane detachment is an additive, explicit non-goal—not reference parity.
+> The model and interaction contracts have broad GPUI-native coverage, but the port is **not yet
+> feature-complete or pixel-compatible** with the Leptos reference. Visible split controls,
+> activity-to-pane affordances in the shared demo, activity-label flyouts, and the remaining exact
+> chrome/layout reproduction are active blockers. Native pane detachment remains an additive,
+> explicit non-goal—not reference parity.
 
 - Portable, validated, serde-compatible `PaneNode<D>` with stable string pane/activity/category IDs and reference command/event semantics.
 - Split, close, move, swap, proportional resize, rotate, balance, five standard layouts, geometric navigation, five-zone pane docking, and activity-to-new-pane docking.
@@ -112,20 +114,20 @@ IDs remain one-field string tuple structs and enum tagging remains serde's exter
 
 ## Migration / parity status
 
-The Leptos reference's audited behavior has a GPUI-native implementation. The exact APIs and tests for every original parity item are recorded in [the re-audit](docs/PARITY_AUDIT.md).
+The model/interaction core has GPUI-native implementations, but pixel-for-pixel reference parity is still in progress. Behavioral evidence and the reopened visual gaps are recorded in [the re-audit](docs/PARITY_AUDIT.md).
 
 | Area | Status |
 |---|---|
 | persisted tree, validation, geometry, commands, errors, and event traces | implemented and compatibility-tested |
 | stateful activity/header lifecycle and recursive activity catalogs | implemented and rendered-tested |
-| proportional resize and five-zone pane/activity docking | implemented and rendered-tested |
-| four-edge activity rails, nested/trailing groups, hide/auto-hide/hover intent | implemented and rendered-tested |
-| complete actions/keymaps, focus settings, workspaces, palette/accessibility | implemented and rendered-tested |
-| host chrome slots, typed styles/themes, and root overlays | implemented and rendered-tested |
-| browser/WASM canvas interactions | validated in Chrome/Xvfb at `b251111` |
+| proportional resize and five-zone pane/activity docking | interaction core tested; visible affordances still incomplete |
+| four-edge activity rails, nested/trailing groups, hide/auto-hide/hover intent | structural core only; label/category flyouts and pixel parity open |
+| complete actions/keymaps, focus settings, workspaces, palette/accessibility | model/action core tested; visible split controls open |
+| host chrome slots, typed styles/themes, and root overlays | APIs exist; pixel-exact chrome rebuild open |
+| browser/WASM canvas interactions | behavioral path validated; screenshot parity open |
 | native pane detachment | explicit additive non-goal; host window-opening scaffold only |
 
-DOM/CSS concepts (`web_sys`, portals, HTML drag transfer, CSS classes, and CSS/URL/SVG icon mechanisms) are intentionally not API-compatibility goals. GPUI bounds/actions/root overlays, ARIA roles, typed style tokens, and host-rendered `ActivityIcon`s are their native equivalents. Cross-platform pixel snapshots are also not a stable parity oracle; tests assert exact geometry, state, events, accessibility metadata, and rendered interactions instead.
+DOM mechanisms remain implementation details, but their rendered result is a compatibility target: GPUI bounds/actions/root overlays, ARIA roles, typed styles, and host-rendered icons must reproduce the reference surface pixel-for-pixel. Fixed-viewport reference-versus-GPUI screenshot diffs complement exact geometry, state, event, accessibility, and interaction assertions.
 
 ## Development
 

@@ -7,11 +7,18 @@
 
 ## Verdict and scope
 
-All user-visible behavior and durable contracts identified in the original audit now have a GPUI-native implementation and focused tests. The only deliberately unimplemented item is **native pane detachment**: it is additive desktop functionality which does not exist in the Leptos reference, so it is an explicit parity non-goal. `NativeDetachedWindowService` remains honestly scoped as a host window-opening scaffold and is not counted as pane parity.
+`gpui-mullion` is **not feature-complete or pixel-compatible yet**. The model, persistence, lifecycle, commands, and low-level interactions have broad parity coverage, but the mounted product surface still omits or visually diverges from reference affordances—including visible split controls, an enabled activity-to-new-pane flow in the shared demo, and activity-bar label/category flyouts. The prior completion verdict was incorrect and has been reopened.
 
-The implementation re-audit found no substantive reference behavior hidden behind a closed Levi task. Pixel-perfect DOM/CSS reproduction is out of scope; typed GPUI styles and deterministic rendered/state assertions replace DOM classes and browser pixel snapshots.
+Parity now includes a pixel-for-pixel rendered rebuild at canonical viewports/themes, while still allowing GPUI-native mechanisms in place of Leptos signals, DOM events, portals, and HTML drag plumbing. Geometry, typography, icons, labels, controls, colors, stacking, hover/flyout behavior, and interaction transitions must match reference screenshots rather than merely exposing equivalent host hooks.
 
-Parity here means behavior and durable contracts, not a literal translation of Leptos signals, DOM events, portals, `HtmlElement`, `DomRect`, CSS classes, or URL/SVG rendering mechanisms. GPUI entities, bounds, actions, overlays, ARIA semantics, and host-rendered `ActivityIcon`s are the scoped native equivalents.
+Native pane detachment is the sole explicit non-goal: it is additive desktop functionality absent from the Leptos reference. `NativeDetachedWindowService` remains a host window-opening scaffold and is not counted as pane parity.
+
+### Reopened visual blockers
+
+- `lv-7514`: pixel-exact activity bar, flyouts, categories, controls, and edge modes.
+- `lv-6feb`: pixel-exact root/pane/header/split/drop/workspace/overlay chrome.
+- `lv-23eb`: shared native/WASM demo must enable and show every reference affordance.
+- `lv-8546`: fixed-viewport reference-versus-GPUI screenshot regression coverage.
 
 ## Status summary (re-audited original rows)
 
@@ -23,18 +30,18 @@ Parity here means behavior and durable contracts, not a literal translation of L
 | Headless model commands | **Implemented** | `MullionModel::{try_new,execute_with_options,...}`, exact error/focus semantics; `tests/command_compatibility.rs` and model tests. |
 | Activity body rendering | **Implemented** | `ActivityFactoryRegistry`, `ActivityInstance`, stable `(workspace,pane,activity)` cache, update/header/dispose hooks; activity cache tests and `rendered_stateful_activity_is_lazy_stable_updated_and_filtered`. |
 | Activity definitions and categories | **Implemented** | `ActivityCatalog`, recursive `ActivityProjection`, typed activity/category chrome and validation; `src/activity_catalog.rs` tests and `rendered_catalog_composes_recursive_chrome_slots_activation_and_trailing_cache`. |
-| Activity bar | **Implemented** | `ActivityBarConfig` with four edges, pinned/hidden/auto-hide, configurable open-only hover intent, nested categories, primary/trailing groups, icons and host slots; `src/activity_bar.rs` and rendered rail tests. |
+| Activity bar | **Incomplete visual parity** | `ActivityBarConfig` with four edges, pinned/hidden/auto-hide, configurable open-only hover intent, nested categories, primary/trailing groups, icons and host slots; `src/activity_bar.rs` and rendered rail tests. |
 | Split resizing | **Implemented** | proportional pointer tracking against parent bounds, clamp/cancel, splitter actions and cursor context in `MullionView`; `horizontal_split_drag_is_proportional_clamped_exact_and_released` and `nested_vertical_drag_uses_its_parent_bounds_and_cancels`. |
 | Pane docking | **Implemented** | `DockDrag`, `DockHover`, `DropEdge`, explicit pane handle, five-zone feedback/self-drop/cancel; portable drag tests and two rendered pane-drag tests. |
-| Activity-to-new-pane drag | **Implemented** | `DockConfig::with_new_pane_factory`, `MullionView::{with_new_pane_factory,set_new_pane_factory}`, `PaneEvent::ActivityDropped`; model/event tests and `typed_nested_and_trailing_activity_drags_create_panes_in_all_five_zones`. |
+| Activity-to-new-pane drag | **Core implemented; shared affordance incomplete** | `DockConfig::with_new_pane_factory`, `MullionView::{with_new_pane_factory,set_new_pane_factory}`, `PaneEvent::ActivityDropped`; model/event tests and `typed_nested_and_trailing_activity_drags_create_panes_in_all_five_zones`. |
 | Focus/zoom | **Implemented** | `PaneFocusBehavior`, controlled/local `MullionSettings`, `FocusPresentation`, coherent focus/zoom repair; settings/focus/model tests and four rendered policy/transition tests. |
-| Full command/action/keymap | **Implemented** | 37 static `PaneCommand`s, dynamic `FocusPane`, exhaustive GPUI action conversion, `PaneCommandExecutionOptions`, direct and prefix keymaps, editable-target policy; command/action/keymap and rendered dispatch tests. |
+| Full command/action/keymap | **Core implemented; visible split controls incomplete** | 37 static `PaneCommand`s, dynamic `FocusPane`, exhaustive GPUI action conversion, `PaneCommandExecutionOptions`, direct and prefix keymaps, editable-target policy; command/action/keymap and rendered dispatch tests. |
 | Command palette/catalog | **Implemented** | `PaletteEntry`, `PaletteInvocation`, full metadata, focus submenu, activity projection/search and `MullionView::{palette_entries,search_palette,invoke_palette}`; palette unit tests and `live_palette_projects_searches_and_executes_typed_invocations`. |
 | Workspaces | **Implemented** | validated `WorkspaceSet::{add,remove,rename,reorder,update_tree,try_switch}`, mounted view operations, typed snapshots, defined focus/zoom scope; workspace and six rendered workspace tests. |
-| Theming and chrome extensibility | **Implemented** | `MullionStyles`, light/dark/system `MullionThemeMode`, activity/category icons and headers, app/leading/trailing/accessory slots, pane border callback; style/theme/catalog rendered tests. |
+| Theming and chrome extensibility | **API implemented; pixel parity incomplete** | `MullionStyles`, light/dark/system `MullionThemeMode`, activity/category icons and headers, app/leading/trailing/accessory slots, pane border callback; style/theme/catalog rendered tests. |
 | Overlay escape hatch | **Implemented** | window-root `OverlayStack`, controlled source, modal/toast/drag tiers, placement/size/backdrop/dismiss/click-through/accessibility policy; seven unit and five rendered overlay tests. |
 | Detached pane windows | **Explicit parity non-goal** | Absent from the Leptos reference. `DetachedWindowService`/`NativeDetachedWindowService` and `examples/detached_window.rs` only demonstrate a host-owned window; no detach/sync/reattach claim is made. |
-| Rendered interaction tests | **Implemented and runtime-validated** | 32 `#[gpui::test]` cases in `src/view.rs`; `.github/scripts/check_browser.mjs` drives real canvas hover/click, actions, zoom, workspace switching, and activity selection. CI run 31340159314 passed at `b251111`. |
+| Rendered interaction tests | **Behavior validated; screenshot parity incomplete** | 32 `#[gpui::test]` cases in `src/view.rs`; `.github/scripts/check_browser.mjs` drives real canvas hover/click, actions, zoom, workspace switching, and activity selection. CI run 31340159314 passed at `b251111`. |
 
 ## Original P0 acceptance items
 
