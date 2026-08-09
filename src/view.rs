@@ -1,14 +1,14 @@
 use crate::{
     Activity, ActivityCache, ActivityCacheKey, ActivityFactoryRegistry, ActivityId, ActivityNode,
-    DropEdge, FocusPresentation, MullionModel, MullionSettings, MullionTheme,
-    PaneCommandExecutionOptions, PaneData, PaneDirection, PaneEvent, PaneFocusBehavior, PaneId,
-    PaneNode, PaneSplitFactory, SplitDirection, WorkspaceChanged, WorkspaceEvent, WorkspaceId,
-    WorkspaceSet, WorkspaceSetError,
+    DockBounds, DockDrag, DockHover, DockPayload, DropEdge, FocusPresentation, MullionModel,
+    MullionSettings, MullionStyles, MullionTheme, PaneCommandExecutionOptions, PaneData,
+    PaneDirection, PaneEvent, PaneFocusBehavior, PaneId, PaneNode, PaneSplitFactory,
+    SplitDirection, WorkspaceChanged, WorkspaceEvent, WorkspaceId, WorkspaceSet, WorkspaceSetError,
 };
 use gpui::{
-    actions, div, prelude::*, px, relative, AnyElement, App, Bounds, Context, Element, ElementId,
-    EventEmitter, FocusHandle, GlobalElementId, Hsla, InspectorElementId, LayoutId, MouseButton,
-    Pixels, Point, SharedString, Window,
+    actions, div, prelude::*, px, relative, AnyElement, App, Bounds, Context, DragMoveEvent,
+    Element, ElementId, EventEmitter, FocusHandle, GlobalElementId, Hsla, InspectorElementId,
+    LayoutId, MouseButton, Pixels, Point, SharedString, Window,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -123,19 +123,19 @@ impl Render for SplitDragPreview {
     }
 }
 
-#[derive(Clone)]
-struct PaneDrag {
-    id: PaneId,
-}
-impl Render for PaneDrag {
+impl Render for DockDrag {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let label = match &self.payload {
+            DockPayload::Pane(id) => id.0.clone(),
+            DockPayload::NewActivity(id) => id.0.clone(),
+        };
         div()
             .px_3()
             .py_1()
             .rounded_md()
             .bg(gpui::blue().opacity(0.75))
             .text_color(gpui::white())
-            .child(self.id.0.clone())
+            .child(label)
     }
 }
 
@@ -157,6 +157,7 @@ pub struct MullionView<D: PaneData> {
     split_starts: Rc<RefCell<HashMap<PaneId, Point<Pixels>>>>,
     active_split: ActiveSplit,
     keyboard_split: Option<PaneId>,
+    dock_hover: Option<DockHover>,
     #[cfg(test)]
     routed_commands: Vec<crate::PaneCommand>,
 }
@@ -190,6 +191,7 @@ impl<D: PaneData> MullionView<D> {
             split_starts: Rc::default(),
             active_split: Rc::default(),
             keyboard_split: None,
+            dock_hover: None,
             #[cfg(test)]
             routed_commands: Vec::new(),
         }
@@ -573,12 +575,16 @@ impl<D: PaneData> MullionView<D> {
         }
     }
     fn cancel_split_resize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((key, start_ratio)) = self.active_split.borrow_mut().take() else {
+        let split = self.active_split.borrow_mut().take();
+        if !cx.stop_active_drag(window) {
             return;
-        };
-        if cx.stop_active_drag(window) {
+        }
+        self.dock_hover = None;
+        if let Some((key, start_ratio)) = split {
             self.model.resize(&key, start_ratio);
             self.finish(cx);
+        } else {
+            cx.notify();
         }
     }
     fn all_activities(&self, data: &D) -> Vec<Activity<D>> {
@@ -917,6 +923,67 @@ impl<D: PaneData> MullionView<D> {
             }
         }
     }
+    fn handle_dock_move(
+        &mut self,
+        destination: &PaneId,
+        event: &DragMoveEvent<DockDrag>,
+        cx: &mut Context<Self>,
+    ) {
+        let drag = event.drag(cx);
+        let can_drop = matches!(&drag.payload, DockPayload::Pane(source) if source != destination);
+        let hover = (can_drop && event.bounds.contains(&event.event.position))
+            .then(|| {
+                let point = crate::DockPoint::new(
+                    event.event.position.x.into(),
+                    event.event.position.y.into(),
+                );
+                let bounds = DockBounds::new(
+                    event.bounds.left().into(),
+                    event.bounds.top().into(),
+                    event.bounds.size.width.into(),
+                    event.bounds.size.height.into(),
+                );
+                DockHover::from_point(destination.clone(), point, bounds)
+                    .filter(|hover| hover.accepts(drag))
+            })
+            .flatten();
+        if let Some(hover) = hover {
+            if self.dock_hover.as_ref() != Some(&hover) {
+                self.dock_hover = Some(hover);
+                cx.notify();
+            }
+        } else if self
+            .dock_hover
+            .as_ref()
+            .is_some_and(|hover| &hover.destination == destination)
+        {
+            self.dock_hover = None;
+            cx.notify();
+        }
+    }
+
+    fn handle_dock_drop(&mut self, drag: &DockDrag, destination: &PaneId, cx: &mut Context<Self>) {
+        let hover = self
+            .dock_hover
+            .take()
+            .filter(|hover| &hover.destination == destination);
+        let Some(hover) = hover.filter(|hover| hover.accepts(drag)) else {
+            cx.notify();
+            return;
+        };
+        match &drag.payload {
+            DockPayload::Pane(source) if hover.edge == DropEdge::Center => {
+                self.model.swap(source, destination);
+            }
+            DockPayload::Pane(source) => {
+                self.model.move_pane(source, destination, hover.edge);
+            }
+            // Activity creation is deliberately a later host-factory feature.
+            DockPayload::NewActivity(_) => {}
+        }
+        self.finish(cx);
+    }
+
     fn render_leaf(
         &mut self,
         id: &PaneId,
@@ -933,7 +1000,9 @@ impl<D: PaneData> MullionView<D> {
         let click_focus_handle = self.focus_handle.clone();
         let hover_focus_handle = self.focus_handle.clone();
         let id_drop = id.clone();
-        let id_drag = id.clone();
+        let id_move = id.clone();
+        let id_drag_header = id.clone();
+        let id_drag_activity = id.clone();
         let id_close = id.clone();
         let activities = self.all_activities(data);
         let selected = active
@@ -1023,6 +1092,21 @@ impl<D: PaneData> MullionView<D> {
                         .items_center()
                         .gap_2()
                         .child(
+                            div()
+                                .id(SharedString::from(format!("pane-drag-handle:{}", id.0)))
+                                .debug_selector({
+                                    let id = id.clone();
+                                    move || format!("pane-drag-handle:{}", id.0)
+                                })
+                                .aria_label(format!("Move pane {}", id.0))
+                                .cursor_move()
+                                .px_1()
+                                .on_drag(DockDrag::pane(id_drag_header), |drag, _, _, cx| {
+                                    cx.new(|_| drag.clone())
+                                })
+                                .child("⠿"),
+                        )
+                        .child(
                             selected
                                 .as_ref()
                                 .map(|a| a.name.clone())
@@ -1107,14 +1191,21 @@ impl<D: PaneData> MullionView<D> {
                     }
                 }),
             )
-            .on_drag(PaneDrag { id: id_drag }, |drag, _, _, cx| {
-                cx.new(|_| drag.clone())
-            })
-            .on_drop(cx.listener(move |this, drag: &PaneDrag, _, cx| {
-                if drag.id != id_drop {
-                    this.model.move_pane(&drag.id, &id_drop, DropEdge::Center);
-                    this.finish(cx)
+            .can_drop({
+                let destination = id_drop.clone();
+                move |value, _, _| {
+                    value
+                        .downcast_ref::<DockDrag>()
+                        .is_some_and(|drag| {
+                            matches!(&drag.payload, DockPayload::Pane(source) if source != &destination)
+                        })
                 }
+            })
+            .on_drag_move::<DockDrag>(cx.listener(move |this, event, _, cx| {
+                this.handle_dock_move(&id_move, event, cx);
+            }))
+            .on_drop(cx.listener(move |this, drag: &DockDrag, _, cx| {
+                this.handle_dock_drop(drag, &id_drop, cx);
             }))
             .child(
                 div()
@@ -1138,6 +1229,30 @@ impl<D: PaneData> MullionView<D> {
                             .py_1()
                             .border_r_1()
                             .border_color(theme.border)
+                            .when(!self.show_headers, |bar| {
+                                bar.child(
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "activity-drag-handle:{}",
+                                            id.0
+                                        )))
+                                        .debug_selector({
+                                            let id = id.clone();
+                                            move || format!("activity-drag-handle:{}", id.0)
+                                        })
+                                        .aria_label(format!("Move pane {}", id.0))
+                                        .cursor_move()
+                                        .size(px(24.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .on_drag(
+                                            DockDrag::pane(id_drag_activity),
+                                            |drag, _, _, cx| cx.new(|_| drag.clone()),
+                                        )
+                                        .child("⠿"),
+                                )
+                            })
                             .children(tabs),
                     )
                     .child(
@@ -1151,6 +1266,30 @@ impl<D: PaneData> MullionView<D> {
                             .child(div().flex_1().min_h_0().overflow_hidden().child(body)),
                     ),
             )
+            .when_some(
+                self.dock_hover
+                    .as_ref()
+                    .filter(|hover| &hover.destination == id)
+                    .map(|hover| hover.edge.normalized_indicator()),
+                |pane, indicator| {
+                    pane.child(
+                        div()
+                            .debug_selector({
+                                let id = id.clone();
+                                let edge = self.dock_hover.as_ref().unwrap().edge;
+                                move || format!("dock-indicator:{}:{edge:?}", id.0)
+                            })
+                            .absolute()
+                            .left(relative(indicator.left as f32))
+                            .top(relative(indicator.top as f32))
+                            .w(relative(indicator.width as f32))
+                            .h(relative(indicator.height as f32))
+                            .bg(MullionStyles::from_theme(theme)
+                                .drop_overlay
+                                .indicator_color),
+                    )
+                },
+            )
             .children(focus_edges)
             .into_any_element()
     }
@@ -1158,6 +1297,9 @@ impl<D: PaneData> MullionView<D> {
 
 impl<D: PaneData> Render for MullionView<D> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !cx.has_active_drag() {
+            self.dock_hover = None;
+        }
         self.sync_activity_cache(window, cx);
         let tree = self
             .model
@@ -1779,6 +1921,188 @@ mod tests {
         view.read_with(cx, |view, _| {
             crate::tree::find_ratio(view.model().tree(), &PaneId::new(key)).unwrap()
         })
+    }
+
+    #[gpui::test]
+    fn typed_pane_drag_drives_all_five_zones_with_exact_events_and_indicators(
+        cx: &mut TestAppContext,
+    ) {
+        let base = split(SplitDirection::Horizontal, 0.5, leaf("a"), leaf("b"));
+        let (view, cx) = cx.add_window_view({
+            let base = base.clone();
+            move |_, cx| {
+                MullionView::new(base, vec![], cx).with_focus_behavior(PaneFocusBehavior::Click)
+            }
+        });
+        cx.simulate_resize(gpui::size(px(1000.), px(700.)));
+        cx.run_until_parked();
+        let events = Rc::new(RefCell::new(Vec::<PaneEvent<String>>::new()));
+        let event_log = events.clone();
+        let observed = view.clone();
+        view.update(cx, move |_, cx| {
+            cx.subscribe(&observed, move |_, _, event: &PaneEvent<String>, _| {
+                event_log.borrow_mut().push(event.clone());
+            })
+            .detach();
+        });
+
+        let cases = [
+            (DropEdge::Left, 0.1, 0.1),
+            (DropEdge::Right, 0.9, 0.1),
+            (DropEdge::Top, 0.5, 0.1),
+            (DropEdge::Bottom, 0.5, 0.9),
+            (DropEdge::Center, 0.5, 0.5),
+        ];
+        for (edge, x, y) in cases {
+            let selector = match edge {
+                DropEdge::Left => "dock-indicator:b:Left",
+                DropEdge::Right => "dock-indicator:b:Right",
+                DropEdge::Top => "dock-indicator:b:Top",
+                DropEdge::Bottom => "dock-indicator:b:Bottom",
+                DropEdge::Center => "dock-indicator:b:Center",
+            };
+            let reset = base.clone();
+            view.update(cx, |view, cx| {
+                view.update_model(cx, |model| model.replace_tree(reset));
+            });
+            cx.run_until_parked();
+            events.borrow_mut().clear();
+
+            let start = cx.debug_bounds("pane-drag-handle:a").unwrap().center();
+            let target = cx.debug_bounds("pane:b").unwrap();
+            let destination = gpui::point(
+                target.left() + target.size.width * x,
+                target.top() + target.size.height * y,
+            );
+            cx.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::none());
+            cx.simulate_mouse_move(
+                gpui::point(start.x + px(4.), start.y),
+                Some(MouseButton::Left),
+                gpui::Modifiers::none(),
+            );
+            cx.simulate_mouse_move(
+                destination,
+                Some(MouseButton::Left),
+                gpui::Modifiers::none(),
+            );
+            cx.run_until_parked();
+            let indicator = cx.debug_bounds(selector).unwrap();
+            let expected_indicator = edge
+                .indicator_in(DockBounds::new(
+                    target.left().into(),
+                    target.top().into(),
+                    target.size.width.into(),
+                    target.size.height.into(),
+                ))
+                .unwrap();
+            assert!((f64::from(indicator.left()) - expected_indicator.left).abs() <= 1.0);
+            assert!((f64::from(indicator.top()) - expected_indicator.top).abs() <= 1.0);
+            assert!((f64::from(indicator.size.width) - expected_indicator.width).abs() <= 2.0);
+            assert!((f64::from(indicator.size.height) - expected_indicator.height).abs() <= 2.0);
+
+            cx.simulate_mouse_up(destination, MouseButton::Left, gpui::Modifiers::none());
+            cx.run_until_parked();
+            assert!(cx.debug_bounds(selector).is_none());
+            let expected_tree = match edge {
+                DropEdge::Left => split(SplitDirection::Horizontal, 0.5, leaf("a"), leaf("b")),
+                DropEdge::Right | DropEdge::Center => {
+                    split(SplitDirection::Horizontal, 0.5, leaf("b"), leaf("a"))
+                }
+                DropEdge::Top => split(SplitDirection::Vertical, 0.5, leaf("a"), leaf("b")),
+                DropEdge::Bottom => split(SplitDirection::Vertical, 0.5, leaf("b"), leaf("a")),
+            };
+            view.read_with(cx, |view, _| {
+                assert_eq!(view.model().tree(), &expected_tree)
+            });
+            let expected_events = if edge == DropEdge::Center {
+                vec![PaneEvent::TreeChanged {
+                    tree: expected_tree,
+                }]
+            } else {
+                vec![
+                    PaneEvent::Moved {
+                        source: PaneId::new("a"),
+                        destination: PaneId::new("b"),
+                        edge,
+                    },
+                    PaneEvent::TreeChanged {
+                        tree: expected_tree,
+                    },
+                ]
+            };
+            assert_eq!(&*events.borrow(), &expected_events);
+        }
+    }
+
+    #[gpui::test]
+    fn dock_drag_self_right_click_nested_cancel_and_release_are_no_ops_until_valid_drop(
+        cx: &mut TestAppContext,
+    ) {
+        let nested = split(SplitDirection::Vertical, 0.5, leaf("b"), leaf("c"));
+        let base = split(SplitDirection::Horizontal, 0.4, leaf("a"), nested);
+        let (view, cx) = cx.add_window_view({
+            let base = base.clone();
+            move |_, cx| {
+                MullionView::new(base, vec![], cx).with_focus_behavior(PaneFocusBehavior::Click)
+            }
+        });
+        cx.simulate_resize(gpui::size(px(1000.), px(700.)));
+        cx.run_until_parked();
+        let start = cx.debug_bounds("pane-drag-handle:a").unwrap().center();
+        let a = cx.debug_bounds("pane:a").unwrap().center();
+        let c_bounds = cx.debug_bounds("pane:c").unwrap();
+        let c = gpui::point(
+            c_bounds.left() + c_bounds.size.width * 0.5,
+            c_bounds.top() + c_bounds.size.height * 0.9,
+        );
+
+        cx.simulate_mouse_down(start, MouseButton::Right, gpui::Modifiers::none());
+        cx.simulate_mouse_move(c, Some(MouseButton::Right), gpui::Modifiers::none());
+        cx.simulate_mouse_up(c, MouseButton::Right, gpui::Modifiers::none());
+        assert!(cx.debug_bounds("dock-indicator:c:Bottom").is_none());
+
+        cx.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_move(
+            gpui::point(start.x + px(4.), start.y),
+            Some(MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_move(a, Some(MouseButton::Left), gpui::Modifiers::none());
+        assert!(cx.debug_bounds("dock-indicator:a:Center").is_none());
+        cx.simulate_mouse_up(a, MouseButton::Left, gpui::Modifiers::none());
+        view.read_with(cx, |view, _| assert_eq!(view.model().tree(), &base));
+
+        let start = cx.debug_bounds("pane-drag-handle:a").unwrap().center();
+        cx.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_move(
+            gpui::point(start.x + px(4.), start.y),
+            Some(MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_move(c, Some(MouseButton::Left), gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("dock-indicator:c:Bottom").is_some());
+        cx.dispatch_action(CancelSplitResize);
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("dock-indicator:c:Bottom").is_none());
+        cx.simulate_mouse_up(c, MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_move(c, None, gpui::Modifiers::none());
+        view.read_with(cx, |view, _| assert_eq!(view.model().tree(), &base));
+
+        let start = cx.debug_bounds("pane-drag-handle:a").unwrap().center();
+        cx.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_move(
+            gpui::point(start.x + px(4.), start.y),
+            Some(MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_move(c, Some(MouseButton::Left), gpui::Modifiers::none());
+        cx.simulate_mouse_up(c, MouseButton::Left, gpui::Modifiers::none());
+        cx.run_until_parked();
+        let mut expected = base.clone();
+        assert!(expected.move_pane(&PaneId::new("a"), &PaneId::new("c"), DropEdge::Bottom));
+        view.read_with(cx, |view, _| assert_eq!(view.model().tree(), &expected));
+        assert!(cx.debug_bounds("dock-indicator:c:Bottom").is_none());
     }
 
     #[gpui::test]
