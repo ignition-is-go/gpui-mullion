@@ -91,6 +91,26 @@ async function click(x, y) {
     type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1,
   });
 }
+async function drag(from, to) {
+  await move(from.x, from.y);
+  await command("Input.dispatchMouseEvent", {
+    type: "mousePressed", x: from.x, y: from.y, button: "left", buttons: 1, clickCount: 1,
+  });
+  const steps = 24;
+  for (let step = 1; step <= steps; step += 1) {
+    const progress = step / steps;
+    const x = from.x + (to.x - from.x) * progress;
+    const y = from.y + (to.y - from.y) * progress;
+    await command("Input.dispatchMouseEvent", {
+      type: "mouseMoved", x, y, button: "left", buttons: 1,
+    });
+    await sleep(20);
+  }
+  await sleep(150);
+  await command("Input.dispatchMouseEvent", {
+    type: "mouseReleased", x: to.x, y: to.y, button: "left", buttons: 0, clickCount: 1,
+  });
+}
 async function key({ key, code, keyCode, modifiers }) {
   const common = {
     key,
@@ -102,8 +122,11 @@ async function key({ key, code, keyCode, modifiers }) {
   await command("Input.dispatchKeyEvent", { type: "keyDown", ...common });
   await command("Input.dispatchKeyEvent", { type: "keyUp", ...common });
 }
+function paneState(state, pane) {
+  return state.activeActivities.find((entry) => entry.pane === pane);
+}
 function activity(state, pane) {
-  return state.activeActivities.find((entry) => entry.pane === pane)?.activity;
+  return paneState(state, pane)?.activity;
 }
 function treeContains(state, pane) {
   return JSON.stringify(state.tree).includes(`"${pane}"`);
@@ -162,6 +185,46 @@ try {
   await click(editor.x, editor.y);
   state = await waitFor("canvas pane click focus", (next) => next.focused === "editor");
 
+  // The enabled split controls are the two compact buttons immediately above
+  // Close at the bottom of the pinned rail. Stay clear of Close and scan only
+  // that bounded strip so viewport height and font rasterization do not matter.
+  const splitControlX = left + 14;
+  for (let y = top + height - 96; y <= top + height - 60 && !treeContains(state, "split-1"); y += 4) {
+    await click(splitControlX, y);
+    await sleep(60);
+    state = await testState();
+  }
+  if (!treeContains(state, "split-1") || !paneState(state, "split-1")?.project.startsWith("Split 1 from Rship")) {
+    throw new Error(`visible split control did not create distinct split-1: ${JSON.stringify(state)}`);
+  }
+
+  // Select the real Logs activity item and drag that rendered DockDrag onto a
+  // real pane zone. All input below is CDP pointer input; the bridge is read-only.
+  const activityX = left + 14;
+  const activityScanEnd = Math.min(top + height * 0.48, top + workspaceHeight + 150);
+  let logsDragOrigin;
+  for (let y = top + workspaceHeight + 6; y <= activityScanEnd; y += 6) {
+    await click(activityX, y);
+    await sleep(60);
+    state = await testState();
+    if (state.focused === "editor" && activity(state, "editor") === "logs") {
+      logsDragOrigin = { x: activityX, y };
+      break;
+    }
+  }
+  if (!logsDragOrigin) {
+    throw new Error(`logs activity control was not found: ${JSON.stringify(state)}`);
+  }
+  const terminalZone = {
+    x: left + width * 0.72,
+    y: top + workspaceHeight + (height - workspaceHeight) * 0.25,
+  };
+  await drag(logsDragOrigin, terminalZone);
+  state = await waitFor("activity DockDrag drop", (next) =>
+    treeContains(next, "drop-1")
+      && activity(next, "drop-1") === "logs"
+      && paneState(next, "drop-1")?.project === "Dropped logs #1 beside terminal");
+
   // Exercise registered Mullion actions through browser keyboard input, not a state hook.
   await key({ key: "End", code: "End", keyCode: 35, modifiers: 1 }); // Alt+End: FocusLast
   state = await waitFor("full-keymap focus action", (next) => next.focused === "logs");
@@ -181,11 +244,11 @@ try {
   // Drive the real pinned-left activity rail. Browser/driver viewport geometry
   // varies (including very wide, short Xvfb canvases), so scan the narrow rail
   // rather than encoding one font/line-height-dependent y coordinate.
-  const activityX = left + 14;
-  const activityScanEnd = Math.min(top + height * 0.48, top + workspaceHeight + 150);
+  const browserActivityX = left + 14;
+  const browserActivityScanEnd = Math.min(top + height * 0.48, top + workspaceHeight + 150);
   let selectedTerminal = false;
-  for (let y = top + workspaceHeight + 6; y <= activityScanEnd; y += 6) {
-    await click(activityX, y);
+  for (let y = top + workspaceHeight + 6; y <= browserActivityScanEnd; y += 6) {
+    await click(browserActivityX, y);
     await sleep(75);
     state = await testState();
     if (state.focused === "browser-main" && activity(state, "browser-main") === "terminal") {

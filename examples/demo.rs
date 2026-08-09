@@ -7,7 +7,10 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(target_family = "wasm")]
 use gpui::Entity;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct PaneData {
@@ -30,6 +33,7 @@ struct BrowserTestState {
 struct BrowserActiveActivity {
     pane: PaneId,
     activity: Option<ActivityId>,
+    project: String,
 }
 
 fn activity(id: &str, name: &str, color: u32) -> ActivityNode<PaneData> {
@@ -56,6 +60,33 @@ fn activity(id: &str, name: &str, color: u32) -> ActivityNode<PaneData> {
                 .child("Left/right-click a separator to resize")
                 .into_any_element()
         }),
+    })
+}
+
+fn split_factory(counter: Arc<AtomicU64>) -> gpui_mullion::PaneSplitFactory<PaneData> {
+    Arc::new(move |source, _, data| {
+        let sequence = counter.fetch_add(1, Ordering::Relaxed) + 1;
+        Some((
+            PaneId::new(format!("split-{sequence}")),
+            PaneData {
+                project: format!("Split {sequence} from {} ({})", data.project, source.0),
+            },
+        ))
+    })
+}
+
+fn new_pane_factory(counter: Arc<AtomicU64>) -> gpui_mullion::NewPaneFactory<PaneData> {
+    Arc::new(move |activity, destination, _| {
+        let sequence = counter.fetch_add(1, Ordering::Relaxed) + 1;
+        Some((
+            PaneId::new(format!("drop-{sequence}")),
+            PaneData {
+                project: format!(
+                    "Dropped {} #{sequence} beside {}",
+                    activity.0, destination.0
+                ),
+            },
+        ))
     })
 }
 
@@ -139,8 +170,15 @@ fn launch(cx: &mut App) {
         },
         move |window, cx| {
             let view = cx.new(|cx| {
+                let split_counter = Arc::new(AtomicU64::new(0));
+                let drop_counter = Arc::new(AtomicU64::new(0));
+                let new_pane = new_pane_factory(drop_counter);
                 MullionView::new_with_workspaces(workspaces, activities, cx)
                     .expect("demo workspace set has a valid active workspace")
+                    .with_split_factory(split_factory(split_counter))
+                    .with_new_pane_factory(move |activity, destination, edge| {
+                        new_pane.as_ref()(activity, destination, edge)
+                    })
             });
             view.read(cx).focus_handle().clone().focus(window, cx);
             #[cfg(target_family = "wasm")]
@@ -186,13 +224,19 @@ fn browser_test_state() -> String {
                     .leaf_ids()
                     .into_iter()
                     .map(|pane| {
-                        let activity = match tree.find(&pane) {
+                        let (activity, project) = match tree.find(&pane) {
                             Some(PaneNode::Leaf {
-                                active_activity, ..
-                            }) => active_activity.clone(),
-                            _ => None,
+                                active_activity,
+                                data,
+                                ..
+                            }) => (active_activity.clone(), data.project.clone()),
+                            _ => unreachable!("leaf_ids only returns leaves"),
                         };
-                        BrowserActiveActivity { pane, activity }
+                        BrowserActiveActivity {
+                            pane,
+                            activity,
+                            project,
+                        }
                     })
                     .collect();
                 let state = BrowserTestState {
