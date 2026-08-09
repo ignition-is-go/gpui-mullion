@@ -1,7 +1,8 @@
 use crate::{
     Activity, ActivityCache, ActivityCacheKey, ActivityFactoryRegistry, ActivityId, ActivityNode,
-    DropEdge, MullionModel, MullionTheme, PaneData, PaneDirection, PaneEvent, PaneId, PaneNode,
-    SplitDirection, WorkspaceChanged, WorkspaceId, WorkspaceSet,
+    DropEdge, FocusPresentation, MullionModel, MullionSettings, MullionTheme, PaneData,
+    PaneDirection, PaneEvent, PaneFocusBehavior, PaneId, PaneNode, SplitDirection,
+    WorkspaceChanged, WorkspaceId, WorkspaceSet,
 };
 use gpui::{
     actions, div, prelude::*, px, relative, AnyElement, App, Bounds, Context, Element, ElementId,
@@ -35,6 +36,14 @@ actions!(
 const SPLIT_HIT_TARGET: f32 = 8.0;
 const SPLIT_BAR_WIDTH: f32 = 1.0;
 const KEYBOARD_RESIZE_STEP: f64 = 0.05;
+
+#[derive(Clone, Copy, Default)]
+struct InternalEdges {
+    top: bool,
+    right: bool,
+    bottom: bool,
+    left: bool,
+}
 
 type SplitBounds = Rc<RefCell<HashMap<PaneId, Bounds<Pixels>>>>;
 type ActiveSplit = Rc<RefCell<Option<(PaneId, f64)>>>;
@@ -132,6 +141,8 @@ pub struct MullionView<D: PaneData> {
     model: MullionModel<D>,
     activities: Vec<ActivityNode<D>>,
     theme: MullionTheme,
+    settings: MullionSettings,
+    focus_presentation: FocusPresentation,
     activity_bar_width: gpui::Pixels,
     show_headers: bool,
     focus_handle: FocusHandle,
@@ -159,6 +170,8 @@ impl<D: PaneData> MullionView<D> {
             model: MullionModel::new(tree),
             activities,
             theme: MullionTheme::default(),
+            settings: MullionSettings::default(),
+            focus_presentation: FocusPresentation::default(),
             activity_bar_width: px(42.),
             show_headers: true,
             focus_handle: cx.focus_handle(),
@@ -187,6 +200,50 @@ impl<D: PaneData> MullionView<D> {
     pub fn with_theme(mut self, theme: MullionTheme) -> Self {
         self.theme = theme;
         self
+    }
+    /// Install live focus settings. The callbacks are read on every render and
+    /// pointer interaction, so host-controlled changes do not require rebuilding the view.
+    pub fn with_settings(mut self, settings: MullionSettings) -> Self {
+        self.settings = settings;
+        self
+    }
+    /// Return the live settings handle used by this view.
+    pub fn settings(&self) -> &MullionSettings {
+        &self.settings
+    }
+    pub fn with_focus_behavior(mut self, behavior: PaneFocusBehavior) -> Self {
+        self.settings = MullionSettings::local(behavior);
+        self
+    }
+    pub fn focus_behavior(&self) -> PaneFocusBehavior {
+        self.settings.focus_behavior()
+    }
+    pub fn set_focus_behavior(&mut self, behavior: PaneFocusBehavior, cx: &mut Context<Self>) {
+        self.settings.set_focus_behavior(behavior);
+        cx.notify();
+    }
+    /// Configure opt-in focus chrome and inactive-pane treatment.
+    pub fn with_focus_presentation(mut self, presentation: FocusPresentation) -> Self {
+        self.focus_presentation = presentation;
+        self
+    }
+    /// Compatibility alias for hosts that call the visual configuration simply presentation.
+    pub fn with_presentation(self, presentation: FocusPresentation) -> Self {
+        self.with_focus_presentation(presentation)
+    }
+    pub const fn focus_presentation(&self) -> FocusPresentation {
+        self.focus_presentation
+    }
+    pub const fn presentation(&self) -> FocusPresentation {
+        self.focus_presentation()
+    }
+    pub fn set_focus_presentation(
+        &mut self,
+        presentation: FocusPresentation,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus_presentation = presentation;
+        cx.notify();
     }
     pub fn with_headers(mut self, visible: bool) -> Self {
         self.show_headers = visible;
@@ -382,6 +439,7 @@ impl<D: PaneData> MullionView<D> {
     fn render_node(
         &mut self,
         node: &PaneNode<D>,
+        edges: InternalEdges,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -390,7 +448,7 @@ impl<D: PaneData> MullionView<D> {
                 id,
                 active_activity,
                 data,
-            } => self.render_leaf(id, active_activity.as_ref(), data, window, cx),
+            } => self.render_leaf(id, active_activity.as_ref(), data, edges, window, cx),
             PaneNode::Split {
                 direction,
                 ratio,
@@ -400,8 +458,38 @@ impl<D: PaneData> MullionView<D> {
                 // The first leaf of the second subtree is a collision-free key that
                 // survives ratio changes and rerenders.
                 let key = second.leftmost_leaf_id().clone();
-                let first_el = self.render_node(first, window, cx);
-                let second_el = self.render_node(second, window, cx);
+                let (first_edges, second_edges) = match direction {
+                    SplitDirection::Horizontal => (
+                        InternalEdges {
+                            top: edges.top,
+                            right: true,
+                            bottom: edges.bottom,
+                            left: edges.left,
+                        },
+                        InternalEdges {
+                            top: edges.top,
+                            right: edges.right,
+                            bottom: edges.bottom,
+                            left: true,
+                        },
+                    ),
+                    SplitDirection::Vertical => (
+                        InternalEdges {
+                            top: edges.top,
+                            right: edges.right,
+                            bottom: true,
+                            left: edges.left,
+                        },
+                        InternalEdges {
+                            top: true,
+                            right: edges.right,
+                            bottom: edges.bottom,
+                            left: edges.left,
+                        },
+                    ),
+                };
+                let first_el = self.render_node(first, first_edges, window, cx);
+                let second_el = self.render_node(second, second_edges, window, cx);
                 let handle_color = self.theme.border;
                 let focused_color = self.theme.focused;
                 let drag_bounds = self.split_bounds.clone();
@@ -626,13 +714,16 @@ impl<D: PaneData> MullionView<D> {
         id: &PaneId,
         active: Option<&ActivityId>,
         data: &D,
+        edges: InternalEdges,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let focused = self.model.focused() == Some(id);
         let theme = self.theme;
-        let id_focus = id.clone();
-        let focus_handle = self.focus_handle.clone();
+        let id_focus_click = id.clone();
+        let id_focus_hover = id.clone();
+        let click_focus_handle = self.focus_handle.clone();
+        let hover_focus_handle = self.focus_handle.clone();
         let id_drop = id.clone();
         let id_drag = id.clone();
         let id_close = id.clone();
@@ -746,8 +837,43 @@ impl<D: PaneData> MullionView<D> {
                         .child("×"),
                 )
         });
+        let unfocused_opacity = if focused {
+            1.0
+        } else {
+            self.focus_presentation.unfocused_pane_opacity() as f32
+        };
+        let mut focus_edges = Vec::new();
+        if focused && self.focus_presentation.show_focus_indicator() {
+            let edge = |name: &'static str| {
+                div()
+                    .id(SharedString::from(format!("focus-edge:{}:{name}", id.0)))
+                    .debug_selector({
+                        let id = id.clone();
+                        move || format!("focus-edge:{}:{name}", id.0)
+                    })
+                    .absolute()
+                    .bg(theme.focused)
+            };
+            if edges.top {
+                focus_edges.push(edge("top").top_0().left_0().right_0().h(px(1.)));
+            }
+            if edges.right {
+                focus_edges.push(edge("right").top_0().right_0().bottom_0().w(px(1.)));
+            }
+            if edges.bottom {
+                focus_edges.push(edge("bottom").bottom_0().left_0().right_0().h(px(1.)));
+            }
+            if edges.left {
+                focus_edges.push(edge("left").top_0().bottom_0().left_0().w(px(1.)));
+            }
+        }
         div()
             .id(SharedString::from(format!("pane:{}", id.0)))
+            .debug_selector({
+                let id = id.clone();
+                move || format!("pane:{}", id.0)
+            })
+            .relative()
             .size_full()
             .min_w_0()
             .min_h_0()
@@ -755,13 +881,22 @@ impl<D: PaneData> MullionView<D> {
             .bg(theme.surface)
             .text_color(theme.text)
             .border_1()
-            .border_color(if focused { theme.focused } else { theme.border })
+            .border_color(theme.border)
+            .on_hover(cx.listener(move |this, hovered, window, cx| {
+                if *hovered && this.settings.focus_behavior() == PaneFocusBehavior::Hover {
+                    hover_focus_handle.focus(window, cx);
+                    this.model.focus(&id_focus_hover);
+                    this.finish(cx);
+                }
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, window, cx| {
-                    focus_handle.focus(window, cx);
-                    this.model.focus(&id_focus);
-                    this.finish(cx)
+                    if this.settings.focus_behavior() == PaneFocusBehavior::Click {
+                        click_focus_handle.focus(window, cx);
+                        this.model.focus(&id_focus_click);
+                        this.finish(cx);
+                    }
                 }),
             )
             .on_drag(PaneDrag { id: id_drag }, |drag, _, _, cx| {
@@ -775,28 +910,40 @@ impl<D: PaneData> MullionView<D> {
             }))
             .child(
                 div()
-                    .w(self.activity_bar_width)
-                    .h_full()
-                    .flex_shrink_0()
+                    .id(SharedString::from(format!("pane-visual:{}", id.0)))
+                    .debug_selector({
+                        let id = id.clone();
+                        move || format!("pane-visual:{}", id.0)
+                    })
+                    .size_full()
                     .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap_1()
-                    .py_1()
-                    .border_r_1()
-                    .border_color(theme.border)
-                    .children(tabs),
+                    .opacity(unfocused_opacity)
+                    .child(
+                        div()
+                            .w(self.activity_bar_width)
+                            .h_full()
+                            .flex_shrink_0()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap_1()
+                            .py_1()
+                            .border_r_1()
+                            .border_color(theme.border)
+                            .children(tabs),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .flex()
+                            .flex_col()
+                            .when_some(header, |e, h| e.child(h))
+                            .child(div().flex_1().min_h_0().overflow_hidden().child(body)),
+                    ),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .min_h_0()
-                    .flex()
-                    .flex_col()
-                    .when_some(header, |e, h| e.child(h))
-                    .child(div().flex_1().min_h_0().overflow_hidden().child(body)),
-            )
+            .children(focus_edges)
             .into_any_element()
     }
 }
@@ -908,13 +1055,12 @@ impl<D: PaneData> Render for MullionView<D> {
                         .children(tabs),
                 )
             })
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .min_h_0()
-                    .child(self.render_node(&tree, window, cx)),
-            )
+            .child(div().flex_1().min_w_0().min_h_0().child(self.render_node(
+                &tree,
+                InternalEdges::default(),
+                window,
+                cx,
+            )))
     }
 }
 
@@ -940,7 +1086,14 @@ pub fn register_key_bindings(cx: &mut App) {
 mod tests {
     use super::*;
     use gpui::{div, TestAppContext};
-    use std::{cell::Cell, rc::Rc, sync::Arc};
+    use std::{
+        cell::Cell,
+        rc::Rc,
+        sync::{
+            atomic::{AtomicU8, Ordering},
+            Arc,
+        },
+    };
 
     struct StatefulBody;
 
@@ -1224,6 +1377,190 @@ mod tests {
             gpui::Modifiers::none(),
         );
         assert_eq!(ratio(&view, "c", cx), 0.5);
+    }
+
+    fn focused(
+        view: &gpui::Entity<MullionView<String>>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> Option<PaneId> {
+        view.read_with(cx, |view, _| view.model().focused().cloned())
+    }
+
+    #[gpui::test]
+    fn default_hover_and_click_only_left_press_follow_reference_policy(cx: &mut TestAppContext) {
+        let tree = split(SplitDirection::Horizontal, 0.5, leaf("a"), leaf("b"));
+        let (view, cx) = cx.add_window_view(move |_, cx| MullionView::new(tree, vec![], cx));
+        cx.run_until_parked();
+        assert_eq!(
+            view.read_with(cx, |view, _| view.focus_behavior()),
+            PaneFocusBehavior::Hover
+        );
+
+        let b = cx.debug_bounds("pane:b").unwrap().center();
+        cx.simulate_mouse_move(b, None, gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(focused(&view, cx), Some(PaneId::new("b")));
+
+        view.update(cx, |view, cx| {
+            view.set_focus_behavior(PaneFocusBehavior::Click, cx)
+        });
+        cx.run_until_parked();
+        let a = cx.debug_bounds("pane:a").unwrap().center();
+        cx.simulate_mouse_move(a, None, gpui::Modifiers::none());
+        assert_eq!(focused(&view, cx), Some(PaneId::new("b")));
+        cx.simulate_mouse_down(a, MouseButton::Right, gpui::Modifiers::none());
+        cx.simulate_mouse_up(a, MouseButton::Right, gpui::Modifiers::none());
+        assert_eq!(focused(&view, cx), Some(PaneId::new("b")));
+        cx.simulate_mouse_down(a, MouseButton::Left, gpui::Modifiers::none());
+        assert_eq!(focused(&view, cx), Some(PaneId::new("a")));
+    }
+
+    #[gpui::test]
+    fn controlled_focus_setting_is_read_live(cx: &mut TestAppContext) {
+        let host = Arc::new(AtomicU8::new(0));
+        let reader = host.clone();
+        let writer = host.clone();
+        let settings = MullionSettings::controlled(
+            move || {
+                if reader.load(Ordering::SeqCst) == 0 {
+                    PaneFocusBehavior::Hover
+                } else {
+                    PaneFocusBehavior::Click
+                }
+            },
+            move |behavior| {
+                writer.store(
+                    u8::from(behavior == PaneFocusBehavior::Click),
+                    Ordering::SeqCst,
+                )
+            },
+        );
+        let tree = split(SplitDirection::Horizontal, 0.5, leaf("a"), leaf("b"));
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::new(tree, vec![], cx).with_settings(settings)
+        });
+        cx.run_until_parked();
+        let b = cx.debug_bounds("pane:b").unwrap().center();
+        cx.simulate_mouse_move(b, None, gpui::Modifiers::none());
+        assert_eq!(focused(&view, cx), Some(PaneId::new("b")));
+
+        host.store(1, Ordering::SeqCst);
+        view.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        let a = cx.debug_bounds("pane:a").unwrap().center();
+        cx.simulate_mouse_move(a, None, gpui::Modifiers::none());
+        assert_eq!(focused(&view, cx), Some(PaneId::new("b")));
+        cx.simulate_mouse_down(a, MouseButton::Left, gpui::Modifiers::none());
+        assert_eq!(focused(&view, cx), Some(PaneId::new("a")));
+    }
+
+    #[gpui::test]
+    fn focus_presentation_is_opt_in_internal_and_keeps_washed_panes_interactive(
+        cx: &mut TestAppContext,
+    ) {
+        let left = split(SplitDirection::Vertical, 0.5, leaf("a"), leaf("c"));
+        let tree = split(SplitDirection::Horizontal, 0.5, left, leaf("b"));
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::new(tree, vec![], cx).with_focus_behavior(PaneFocusBehavior::Click)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            view.read_with(cx, |view, _| view.focus_presentation()),
+            FocusPresentation::default()
+        );
+        assert!(cx.debug_bounds("focus-edge:a:right").is_none());
+
+        view.update(cx, |view, cx| {
+            view.set_focus_presentation(
+                FocusPresentation::new()
+                    .with_focus_indicator(true)
+                    .with_unfocused_pane_opacity(-4.0),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            view.read_with(cx, |view, _| view.presentation().unfocused_pane_opacity()),
+            0.0
+        );
+        assert!(cx.debug_bounds("focus-edge:a:right").is_some());
+        assert!(cx.debug_bounds("focus-edge:a:bottom").is_some());
+        assert!(cx.debug_bounds("focus-edge:a:left").is_none());
+        assert!(cx.debug_bounds("focus-edge:a:top").is_none());
+        assert!(cx.debug_bounds("pane-visual:b").is_some());
+
+        let b = cx.debug_bounds("pane-visual:b").unwrap().center();
+        cx.simulate_mouse_down(b, MouseButton::Left, gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(focused(&view, cx), Some(PaneId::new("b")));
+        assert!(cx.debug_bounds("focus-edge:b:left").is_some());
+        assert!(cx.debug_bounds("focus-edge:b:right").is_none());
+        assert!(cx.debug_bounds("focus-edge:b:top").is_none());
+        assert!(cx.debug_bounds("focus-edge:b:bottom").is_none());
+    }
+
+    #[gpui::test]
+    fn keyboard_focus_zoom_close_and_tree_replacement_stay_coherent(cx: &mut TestAppContext) {
+        let tree = split(SplitDirection::Horizontal, 0.5, leaf("a"), leaf("b"));
+        let (view, cx) = cx.add_window_view(move |_, cx| MullionView::new(tree, vec![], cx));
+        cx.run_until_parked();
+        let a = cx.debug_bounds("pane:a").unwrap().center();
+        cx.simulate_mouse_move(a, None, gpui::Modifiers::none());
+        cx.dispatch_action(ToggleZoom);
+        cx.dispatch_action(FocusNext);
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.model().focused(), Some(&PaneId::new("b")));
+            assert_eq!(view.model().zoomed(), view.model().focused());
+        });
+        cx.dispatch_action(ClosePane);
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.model().focused(), Some(&PaneId::new("a")));
+            assert_eq!(view.model().zoomed(), None);
+        });
+
+        view.update(cx, |view, cx| {
+            view.update_model(cx, |model| {
+                model.replace_tree(split(SplitDirection::Vertical, 0.5, leaf("c"), leaf("d")));
+            });
+        });
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.model().focused(), Some(&PaneId::new("c")));
+            assert_eq!(view.model().zoomed(), None);
+        });
+    }
+
+    #[gpui::test]
+    fn workspace_switch_reconciles_focus_and_zoom(cx: &mut TestAppContext) {
+        let workspaces = WorkspaceSet::try_new(
+            WorkspaceId("one".into()),
+            vec![
+                crate::Workspace {
+                    id: WorkspaceId("one".into()),
+                    name: "One".into(),
+                    tree: split(SplitDirection::Horizontal, 0.5, leaf("a"), leaf("b")),
+                },
+                crate::Workspace {
+                    id: WorkspaceId("two".into()),
+                    name: "Two".into(),
+                    tree: leaf("c"),
+                },
+            ],
+        )
+        .unwrap();
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::new_with_workspaces(workspaces, vec![], cx).unwrap()
+        });
+        view.update(cx, |view, cx| {
+            view.update_model(cx, |model| {
+                model.focus(&PaneId::new("b"));
+                model.toggle_zoom();
+            });
+            assert!(view.switch_workspace(&WorkspaceId("two".into()), cx));
+        });
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.model().focused(), Some(&PaneId::new("c")));
+            assert_eq!(view.model().zoomed(), None);
+        });
     }
 
     #[test]
