@@ -1,0 +1,54 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-x11-dev libfontconfig1-dev libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Check
+        run: cargo check --all-targets
+      - name: Test
+        run: cargo test --all-targets
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  web:
+    name: wasm32 and browser bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Check shared view and browser host
+        run: cd examples/web && cargo check --target wasm32-unknown-unknown
+      - name: Install Trunk
+        run: cargo install trunk --version 0.21.14 --locked
+      - name: Build browser demo
+        run: cd examples/web && env -u NO_COLOR trunk build --release
