@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fmt;
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub struct PaneId(pub String);
@@ -114,6 +116,93 @@ impl<T> PaneData for T where
     T: Clone + PartialEq + Serialize + for<'de> Deserialize<'de> + Send + Sync + 'static
 {
 }
+
+/// One step from a split node to one of its children.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PaneNodeBranch {
+    First,
+    Second,
+}
+
+/// A stable structural location in a [`PaneNode`] tree.
+///
+/// An empty path names the root. Each branch identifies the child selected at
+/// the corresponding split, making validation errors actionable even when a
+/// pane id itself is duplicated.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct PaneNodePath(pub Vec<PaneNodeBranch>);
+
+impl fmt::Display for PaneNodePath {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("root")?;
+        for branch in &self.0 {
+            match branch {
+                PaneNodeBranch::First => formatter.write_str(".first")?,
+                PaneNodeBranch::Second => formatter.write_str(".second")?,
+            }
+        }
+        Ok(())
+    }
+}
+
+/// An invariant violation in a pane tree intended for persistence.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PaneValidationError {
+    /// Two leaf nodes use the same pane id.
+    DuplicatePaneId {
+        pane_id: PaneId,
+        first_path: PaneNodePath,
+        duplicate_path: PaneNodePath,
+    },
+    /// A split ratio is NaN or positive/negative infinity.
+    NonFiniteSplitRatio {
+        split_key: PaneId,
+        path: PaneNodePath,
+        ratio: f64,
+    },
+    /// A finite split ratio is outside the supported inclusive range.
+    SplitRatioOutOfRange {
+        split_key: PaneId,
+        path: PaneNodePath,
+        ratio: f64,
+    },
+}
+
+impl fmt::Display for PaneValidationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PaneValidationError::DuplicatePaneId {
+                pane_id,
+                first_path,
+                duplicate_path,
+            } => write!(
+                formatter,
+                "duplicate pane id {:?} at {duplicate_path} (first seen at {first_path})",
+                pane_id.0
+            ),
+            PaneValidationError::NonFiniteSplitRatio {
+                split_key,
+                path,
+                ratio,
+            } => write!(
+                formatter,
+                "split keyed by {:?} at {path} has non-finite ratio {ratio}",
+                split_key.0
+            ),
+            PaneValidationError::SplitRatioOutOfRange {
+                split_key,
+                path,
+                ratio,
+            } => write!(
+                formatter,
+                "split keyed by {:?} at {path} has ratio {ratio} outside 0.1..=0.9",
+                split_key.0
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PaneValidationError {}
 
 /// A node in the pane tree — either a leaf pane or a split containing two children.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -389,6 +478,68 @@ impl<D: PaneData> PaneNode<D> {
     /// Check if this subtree contains a pane with the given id.
     pub fn contains(&self, target: &PaneId) -> bool {
         self.find(target).is_some()
+    }
+
+    /// Validate the invariants required to safely persist and restore this tree.
+    ///
+    /// Pane ids must be unique, and every split ratio must be finite and in
+    /// the inclusive `0.1..=0.9` range used by pane resizing. The error
+    /// includes structural paths and, for splits, the same key used by the
+    /// renderer and resize APIs.
+    pub fn validate(&self) -> Result<(), PaneValidationError> {
+        fn walk<D: PaneData>(
+            node: &PaneNode<D>,
+            path: &mut Vec<PaneNodeBranch>,
+            pane_paths: &mut HashMap<PaneId, PaneNodePath>,
+        ) -> Result<(), PaneValidationError> {
+            match node {
+                PaneNode::Leaf { id, .. } => {
+                    let current_path = PaneNodePath(path.clone());
+                    if let Some(first_path) = pane_paths.get(id) {
+                        return Err(PaneValidationError::DuplicatePaneId {
+                            pane_id: id.clone(),
+                            first_path: first_path.clone(),
+                            duplicate_path: current_path,
+                        });
+                    }
+                    pane_paths.insert(id.clone(), current_path);
+                    Ok(())
+                }
+                PaneNode::Split {
+                    ratio,
+                    first,
+                    second,
+                    ..
+                } => {
+                    let split_key = second.leftmost_leaf_id().clone();
+                    let split_path = PaneNodePath(path.clone());
+                    if !ratio.is_finite() {
+                        return Err(PaneValidationError::NonFiniteSplitRatio {
+                            split_key,
+                            path: split_path,
+                            ratio: *ratio,
+                        });
+                    }
+                    if !(0.1..=0.9).contains(ratio) {
+                        return Err(PaneValidationError::SplitRatioOutOfRange {
+                            split_key,
+                            path: split_path,
+                            ratio: *ratio,
+                        });
+                    }
+
+                    path.push(PaneNodeBranch::First);
+                    walk(first, path, pane_paths)?;
+                    path.pop();
+                    path.push(PaneNodeBranch::Second);
+                    let result = walk(second, path, pane_paths);
+                    path.pop();
+                    result
+                }
+            }
+        }
+
+        walk(self, &mut Vec::new(), &mut HashMap::new())
     }
 
     /// Collect all leaf PaneIds.
@@ -731,6 +882,136 @@ mod tests {
             first: Box::new(PaneNode::leaf(PaneId::new("a"), D(1))),
             second: Box::new(PaneNode::leaf(PaneId::new("b"), D(2))),
         }
+    }
+
+    #[test]
+    fn validation_accepts_single_and_nested_valid_layouts() {
+        assert_eq!(PaneNode::leaf(PaneId::new("only"), D(1)).validate(), Ok(()));
+
+        let tree = PaneNode::Split {
+            direction: SplitDirection::Horizontal,
+            ratio: 0.1,
+            first: Box::new(PaneNode::leaf(PaneId::new("pane/雪?x=1&y=two"), D(1))),
+            second: Box::new(PaneNode::Split {
+                direction: SplitDirection::Vertical,
+                ratio: 0.9,
+                first: Box::new(PaneNode::leaf(PaneId::new("spaces and \"quotes\""), D(2))),
+                second: Box::new(PaneNode::leaf(PaneId::new("emoji-🚀\nnewline"), D(3))),
+            }),
+        };
+        assert_eq!(tree.validate(), Ok(()));
+
+        let json = serde_json::to_string(&tree).expect("valid special ids serialize");
+        let restored: PaneNode<D> = serde_json::from_str(&json).expect("valid special ids restore");
+        assert_eq!(restored, tree);
+        assert_eq!(restored.validate(), Ok(()));
+    }
+
+    #[test]
+    fn validation_reports_nested_duplicate_with_both_locations() {
+        let json = r#"{
+            "Split": {
+                "direction": "Horizontal",
+                "ratio": 0.5,
+                "first": { "Split": {
+                    "direction": "Vertical",
+                    "ratio": 0.4,
+                    "first": { "Leaf": {
+                        "id": "unique", "active_activity": null, "data": 1
+                    } },
+                    "second": { "Leaf": {
+                        "id": "duplicate/雪", "active_activity": null, "data": 2
+                    } }
+                } },
+                "second": { "Leaf": {
+                    "id": "duplicate/雪", "active_activity": null, "data": 3
+                } }
+            }
+        }"#;
+        let tree: PaneNode<D> =
+            serde_json::from_str(json).expect("hostile tree still deserializes");
+
+        assert_eq!(
+            tree.validate(),
+            Err(PaneValidationError::DuplicatePaneId {
+                pane_id: PaneId::new("duplicate/雪"),
+                first_path: PaneNodePath(vec![PaneNodeBranch::First, PaneNodeBranch::Second,]),
+                duplicate_path: PaneNodePath(vec![PaneNodeBranch::Second]),
+            })
+        );
+    }
+
+    #[test]
+    fn validation_rejects_every_non_finite_ratio() {
+        for ratio in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut tree = sample();
+            let PaneNode::Split {
+                ratio: tree_ratio, ..
+            } = &mut tree
+            else {
+                unreachable!()
+            };
+            *tree_ratio = ratio;
+
+            match tree.validate() {
+                Err(PaneValidationError::NonFiniteSplitRatio {
+                    split_key,
+                    path,
+                    ratio: reported,
+                }) => {
+                    assert_eq!(split_key, PaneId::new("b"));
+                    assert_eq!(path, PaneNodePath::default());
+                    if ratio.is_nan() {
+                        assert!(reported.is_nan());
+                    } else {
+                        assert_eq!(reported, ratio);
+                    }
+                }
+                other => panic!("unexpected validation result: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn validation_rejects_ratios_outside_inclusive_limits() {
+        for ratio in [-1.0, 0.0, 0.1 - f64::EPSILON, 0.9 + f64::EPSILON, 1.0, 2.0] {
+            let json = format!(
+                r#"{{"Split":{{"direction":"Horizontal","ratio":{ratio},"first":{{"Leaf":{{"id":"a","active_activity":null,"data":1}}}},"second":{{"Leaf":{{"id":"split-key","active_activity":null,"data":2}}}}}}}}"#
+            );
+            let tree: PaneNode<D> =
+                serde_json::from_str(&json).expect("finite hostile ratio deserializes");
+            assert_eq!(
+                tree.validate(),
+                Err(PaneValidationError::SplitRatioOutOfRange {
+                    split_key: PaneId::new("split-key"),
+                    path: PaneNodePath::default(),
+                    ratio,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn validation_reports_nested_ratio_location_and_split_key() {
+        let tree = PaneNode::Split {
+            direction: SplitDirection::Horizontal,
+            ratio: 0.5,
+            first: Box::new(PaneNode::leaf(PaneId::new("a"), D(1))),
+            second: Box::new(PaneNode::Split {
+                direction: SplitDirection::Vertical,
+                ratio: 0.91,
+                first: Box::new(PaneNode::leaf(PaneId::new("b"), D(2))),
+                second: Box::new(PaneNode::leaf(PaneId::new("nested-key"), D(3))),
+            }),
+        };
+        assert_eq!(
+            tree.validate(),
+            Err(PaneValidationError::SplitRatioOutOfRange {
+                split_key: PaneId::new("nested-key"),
+                path: PaneNodePath(vec![PaneNodeBranch::Second]),
+                ratio: 0.91,
+            })
+        );
     }
 
     // These tests verify the *structural* view that the renderer subscribes
