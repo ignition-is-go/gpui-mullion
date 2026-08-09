@@ -1,4 +1,4 @@
-use crate::tree::{directional_neighbor, find_ratio, resize_boundary};
+use crate::tree::{collect_split_ratios, directional_neighbor, find_ratio, resize_boundary};
 use crate::{
     ActivityId, DropEdge, PaneCommand, PaneCommandError, PaneCommandResult, PaneData,
     PaneDirection, PaneEvent, PaneId, PaneLayout, PaneNode, PaneRotation, PaneValidationError,
@@ -53,8 +53,11 @@ impl<D: PaneData> MullionModel<D> {
             tree: self.tree.clone(),
         });
     }
-    /// Replace the tree after validating it, preserving coherent focus/zoom.
-    pub fn try_replace_tree(&mut self, tree: PaneNode<D>) -> Result<(), PaneValidationError> {
+    fn try_replace_tree_inner(
+        &mut self,
+        tree: PaneNode<D>,
+        emit_tree_changed: bool,
+    ) -> Result<(), PaneValidationError> {
         tree.validate()?;
         let previous_focus = self.focused.clone();
         let previous_zoom = self.zoomed.clone();
@@ -89,11 +92,33 @@ impl<D: PaneData> MullionModel<D> {
                 pane: self.zoomed.clone(),
             });
         }
-        self.changed();
+        if emit_tree_changed {
+            self.changed();
+        }
         Ok(())
     }
 
-    /// Replace the tree when it has already been trusted by the caller.
+    /// Apply a validated upstream tree without echoing `TreeChanged`.
+    ///
+    /// Focus and zoom are reconciled and their transient events are still
+    /// emitted. Use this path for snapshots received from persistence or a
+    /// remote owner, where echoing the snapshot could create a feedback loop.
+    pub fn try_set_tree(&mut self, tree: PaneNode<D>) -> Result<(), PaneValidationError> {
+        self.try_replace_tree_inner(tree, false)
+    }
+
+    /// Apply an upstream tree trusted by the caller without echoing it.
+    pub fn set_tree(&mut self, tree: PaneNode<D>) {
+        self.try_set_tree(tree)
+            .expect("MullionModel::set_tree requires a valid pane tree");
+    }
+
+    /// Replace the tree as a local mutation, emitting `TreeChanged`.
+    pub fn try_replace_tree(&mut self, tree: PaneNode<D>) -> Result<(), PaneValidationError> {
+        self.try_replace_tree_inner(tree, true)
+    }
+
+    /// Replace the tree as a trusted local mutation, emitting `TreeChanged`.
     pub fn replace_tree(&mut self, tree: PaneNode<D>) {
         self.try_replace_tree(tree)
             .expect("MullionModel::replace_tree requires a valid pane tree");
@@ -245,6 +270,41 @@ impl<D: PaneData> MullionModel<D> {
         self.changed();
         true
     }
+    /// Insert a pane minted by the host for a dropped activity.
+    ///
+    /// The host owns id/data creation. On success this emits
+    /// `ActivityDropped`, `TreeChanged`, then the transient `FocusChanged`.
+    pub fn drop_activity(
+        &mut self,
+        activity: &ActivityId,
+        destination: &PaneId,
+        edge: DropEdge,
+        new_id: PaneId,
+        new_data: D,
+    ) -> bool {
+        if self.tree.contains(&new_id)
+            || !self.tree.insert_leaf(
+                destination,
+                edge,
+                new_id.clone(),
+                new_data.clone(),
+                Some(activity.clone()),
+            )
+        {
+            return false;
+        }
+        self.events.push(PaneEvent::ActivityDropped {
+            activity: activity.clone(),
+            destination: destination.clone(),
+            edge,
+            new_id: new_id.clone(),
+            new_data,
+        });
+        self.changed();
+        self.focus(&new_id);
+        true
+    }
+
     pub fn swap(&mut self, a: &PaneId, b: &PaneId) -> bool {
         if !self.tree.swap_panes(a, b) {
             false
@@ -266,11 +326,17 @@ impl<D: PaneData> MullionModel<D> {
     }
     pub fn balance(&mut self) -> bool {
         if self.tree.balance_splits() == 0 {
-            false
-        } else {
-            self.changed();
-            true
+            return false;
         }
+        let mut splits = Vec::new();
+        collect_split_ratios(&self.tree, &mut splits);
+        self.events.extend(
+            splits
+                .into_iter()
+                .map(|(split_key, ratio)| PaneEvent::Resized { split_key, ratio }),
+        );
+        self.changed();
+        true
     }
     pub fn rotate(&mut self, rotation: PaneRotation) -> bool {
         if !self.tree.rotate_panes(rotation) {
