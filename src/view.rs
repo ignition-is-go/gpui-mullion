@@ -1,10 +1,10 @@
 use crate::{
     Activity, ActivityBarEdge, ActivityBarHostConfig, ActivityBarHoverState, ActivityBarMode,
     ActivityCache, ActivityCacheKey, ActivityCatalog, ActivityCatalogValidationError,
-    ActivityExpansionState, ActivityFactoryRegistry, ActivityId, ActivityNode, DockBounds,
-    DockConfig, DockDrag, DockHover, DockPayload, DropEdge, FocusPresentation, MullionModel,
-    MullionOverlay, MullionSettings, MullionStyles, MullionTheme, MullionThemeMode, NewPaneFactory,
-    OverlayAlignment, OverlayError, OverlayHostConfig, OverlayLength, PaletteEntry,
+    ActivityExpansionState, ActivityFactoryRegistry, ActivityId, ActivityNode, ActivityProjection,
+    DockBounds, DockConfig, DockDrag, DockHover, DockPayload, DropEdge, FocusPresentation,
+    MullionModel, MullionOverlay, MullionSettings, MullionStyles, MullionTheme, MullionThemeMode,
+    NewPaneFactory, OverlayAlignment, OverlayError, OverlayHostConfig, OverlayLength, PaletteEntry,
     PaletteInvocation, PaletteInvocationError, PaletteSearchResult, PaneCommandExecutionOptions,
     PaneControl, PaneData, PaneDirection, PaneEvent, PaneFocusBehavior, PaneId, PaneNode,
     PaneSplitFactory, SplitDirection, VisibleActivityNode, WorkspaceChanged, WorkspaceEvent,
@@ -13,7 +13,7 @@ use crate::{
 use gpui::{
     actions, div, prelude::*, px, relative, AnyElement, App, Bounds, Context, DragMoveEvent,
     Element, ElementId, EventEmitter, FocusHandle, GlobalElementId, Hsla, InspectorElementId,
-    LayoutId, MouseButton, Pixels, Point, SharedString, Window,
+    LayoutId, MouseButton, Pixels, Point, SharedString, StyleRefinement, Window,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -51,6 +51,15 @@ struct InternalEdges {
     bottom: bool,
     left: bool,
 }
+
+#[derive(Clone, Copy)]
+struct PaneRenderPosition<'a> {
+    pane_ids: &'a [PaneId],
+    edges: InternalEdges,
+}
+
+type PaneActivityKey = (Option<WorkspaceId>, PaneId);
+type PaneActivitySource<D> = (Option<ActivityId>, D);
 
 #[derive(Clone, Copy)]
 struct PaneControlRenderStyle {
@@ -136,6 +145,24 @@ impl Render for SplitDragPreview {
     }
 }
 
+struct LegacyActivityBody<D: PaneData> {
+    pane: PaneId,
+    data: D,
+    render: crate::ActivityRenderer<D>,
+}
+
+impl<D: PaneData> Render for LegacyActivityBody<D> {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        (self.render)(&self.pane, &self.data)
+    }
+}
+
+#[derive(Clone)]
+struct PaneActivityRenderData<D: PaneData> {
+    activities: Vec<Activity<D>>,
+    projection: ActivityProjection<D>,
+}
+
 impl Render for DockDrag {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let label = match &self.payload {
@@ -170,6 +197,8 @@ pub struct MullionView<D: PaneData> {
     workspaces: Option<WorkspaceSet<D>>,
     activity_factories: ActivityFactoryRegistry<D>,
     activity_cache: ActivityCache<D>,
+    activity_render_cache: HashMap<(Option<WorkspaceId>, PaneId), PaneActivityRenderData<D>>,
+    activity_cache_dirty: bool,
     split_bounds: SplitBounds,
     split_starts: Rc<RefCell<HashMap<PaneId, Point<Pixels>>>>,
     active_split: ActiveSplit,
@@ -179,6 +208,12 @@ pub struct MullionView<D: PaneData> {
     last_overlay_error: Option<OverlayError>,
     #[cfg(test)]
     routed_commands: Vec<crate::PaneCommand>,
+    #[cfg(test)]
+    activity_cache_syncs: usize,
+    #[cfg(test)]
+    split_move_mutations: usize,
+    #[cfg(test)]
+    notifications: usize,
 }
 
 impl<D: PaneData> EventEmitter<PaneEvent<D>> for MullionView<D> {}
@@ -210,6 +245,8 @@ impl<D: PaneData> MullionView<D> {
             workspaces: None,
             activity_factories: ActivityFactoryRegistry::new(),
             activity_cache: ActivityCache::default(),
+            activity_render_cache: HashMap::new(),
+            activity_cache_dirty: true,
             split_bounds: Rc::default(),
             split_starts: Rc::default(),
             active_split: Rc::default(),
@@ -219,6 +256,12 @@ impl<D: PaneData> MullionView<D> {
             last_overlay_error: None,
             #[cfg(test)]
             routed_commands: Vec::new(),
+            #[cfg(test)]
+            activity_cache_syncs: 0,
+            #[cfg(test)]
+            split_move_mutations: 0,
+            #[cfg(test)]
+            notifications: 0,
         }
     }
 
@@ -577,6 +620,7 @@ impl<D: PaneData> MullionView<D> {
     ) -> Result<usize, WorkspaceSetError> {
         let workspaces = self.workspaces.as_mut().ok_or(WorkspaceSetError::Empty)?;
         let index = workspaces.add(workspace)?;
+        self.activity_cache_dirty = true;
         self.emit_workspace_snapshot(cx);
         cx.notify();
         Ok(index)
@@ -590,6 +634,7 @@ impl<D: PaneData> MullionView<D> {
     ) -> Result<crate::Workspace<D>, WorkspaceSetError> {
         let workspaces = self.workspaces.as_mut().ok_or(WorkspaceSetError::Empty)?;
         let removed = workspaces.remove(id)?;
+        self.activity_cache_dirty = true;
         for instance in self
             .activity_cache
             .remove_invalid(|key| key.workspace.as_ref() != Some(id))
@@ -638,6 +683,7 @@ impl<D: PaneData> MullionView<D> {
     ) -> Result<PaneNode<D>, WorkspaceSetError> {
         let workspaces = self.workspaces.as_mut().ok_or(WorkspaceSetError::Empty)?;
         let old = workspaces.update_tree(id, tree.clone())?;
+        self.activity_cache_dirty = true;
         if &workspaces.active == id {
             self.model.set_tree(tree);
             for event in self.model.take_events() {
@@ -674,6 +720,7 @@ impl<D: PaneData> MullionView<D> {
 
         self.model.set_tree(tree);
         self.workspaces = Some(staged);
+        self.activity_cache_dirty = true;
         for event in self.model.take_events() {
             cx.emit(event);
         }
@@ -718,18 +765,36 @@ impl<D: PaneData> MullionView<D> {
     }
     fn finish(&mut self, cx: &mut Context<Self>) {
         let events = self.model.take_events();
-        if events
+        let tree_changed = events
             .iter()
-            .any(|event| matches!(event, PaneEvent::TreeChanged { .. }))
-        {
+            .any(|event| matches!(event, PaneEvent::TreeChanged { .. }));
+        let ratio_only = !events.is_empty()
+            && events.len().is_multiple_of(2)
+            && events.chunks_exact(2).all(|pair| {
+                matches!(
+                    pair,
+                    [PaneEvent::Resized { .. }, PaneEvent::TreeChanged { .. }]
+                )
+            });
+        if tree_changed {
+            if !ratio_only {
+                self.activity_cache_dirty = true;
+            }
             if let Some(workspaces) = &mut self.workspaces {
                 workspaces.persist_active(self.model.snapshot());
             }
         }
+        let notify = !events.is_empty();
         for event in events {
             cx.emit(event)
         }
-        cx.notify();
+        if notify {
+            #[cfg(test)]
+            {
+                self.notifications += 1;
+            }
+            cx.notify();
+        }
     }
     /// Execute a command through the view, forwarding events and repainting.
     /// The factory is consulted only for [`crate::PaneCommand::Split`].
@@ -791,11 +856,18 @@ impl<D: PaneData> MullionView<D> {
     fn collect_panes(
         node: &PaneNode<D>,
         workspace: Option<WorkspaceId>,
-        out: &mut HashMap<(Option<WorkspaceId>, PaneId), D>,
+        out: &mut HashMap<PaneActivityKey, PaneActivitySource<D>>,
     ) {
         match node {
-            PaneNode::Leaf { id, data, .. } => {
-                out.insert((workspace, id.clone()), data.clone());
+            PaneNode::Leaf {
+                id,
+                active_activity,
+                data,
+            } => {
+                out.insert(
+                    (workspace, id.clone()),
+                    (active_activity.clone(), data.clone()),
+                );
             }
             PaneNode::Split { first, second, .. } => {
                 Self::collect_panes(first, workspace.clone(), out);
@@ -804,7 +876,15 @@ impl<D: PaneData> MullionView<D> {
         }
     }
     fn sync_activity_cache(&mut self, window: &mut Window, cx: &mut App) {
-        let mut pane_data = HashMap::new();
+        if !self.activity_cache_dirty {
+            return;
+        }
+        self.activity_cache_dirty = false;
+        #[cfg(test)]
+        {
+            self.activity_cache_syncs += 1;
+        }
+        let mut panes = HashMap::new();
         if let Some(workspaces) = &self.workspaces {
             for workspace in &workspaces.workspaces {
                 let tree = if workspace.id == workspaces.active {
@@ -812,19 +892,32 @@ impl<D: PaneData> MullionView<D> {
                 } else {
                     &workspace.tree
                 };
-                Self::collect_panes(tree, Some(workspace.id.clone()), &mut pane_data);
+                Self::collect_panes(tree, Some(workspace.id.clone()), &mut panes);
             }
         } else {
-            Self::collect_panes(self.model.tree(), None, &mut pane_data);
+            Self::collect_panes(self.model.tree(), None, &mut panes);
         }
-        let valid = pane_data
-            .iter()
-            .flat_map(|((workspace, pane), data)| {
-                self.all_activities(data).into_iter().map(move |activity| {
-                    ActivityCacheKey::new(workspace.clone(), pane.clone(), activity.id)
-                })
-            })
-            .collect::<HashSet<_>>();
+
+        let mut render_cache = HashMap::with_capacity(panes.len());
+        let mut valid = HashSet::new();
+        let mut pane_data = HashMap::with_capacity(panes.len());
+        for ((workspace, pane), (active, data)) in &panes {
+            let activities = self.all_activities(data);
+            valid.extend(activities.iter().map(|activity| {
+                ActivityCacheKey::new(workspace.clone(), pane.clone(), activity.id.clone())
+            }));
+            let projection = self.catalog.visible(data, active.as_ref());
+            render_cache.insert(
+                (workspace.clone(), pane.clone()),
+                PaneActivityRenderData {
+                    activities,
+                    projection,
+                },
+            );
+            pane_data.insert((workspace.clone(), pane.clone()), data.clone());
+        }
+        self.activity_render_cache = render_cache;
+
         for instance in self
             .activity_cache
             .remove_invalid(|key| valid.contains(key))
@@ -839,9 +932,11 @@ impl<D: PaneData> MullionView<D> {
             update(&data, window, cx);
         }
     }
+
     fn render_node(
         &mut self,
         node: &PaneNode<D>,
+        pane_ids: &[PaneId],
         edges: InternalEdges,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -854,7 +949,14 @@ impl<D: PaneData> MullionView<D> {
                 id,
                 active_activity,
                 data,
-            } => self.render_leaf(id, active_activity.as_ref(), data, edges, window, cx),
+            } => self.render_leaf(
+                id,
+                active_activity.as_ref(),
+                data,
+                PaneRenderPosition { pane_ids, edges },
+                window,
+                cx,
+            ),
             PaneNode::Split {
                 direction,
                 ratio,
@@ -894,8 +996,8 @@ impl<D: PaneData> MullionView<D> {
                         },
                     ),
                 };
-                let first_el = self.render_node(first, first_edges, window, cx);
-                let second_el = self.render_node(second, second_edges, window, cx);
+                let first_el = self.render_node(first, pane_ids, first_edges, window, cx);
+                let second_el = self.render_node(second, pane_ids, second_edges, window, cx);
                 let handle_color = styles.split_handle.color;
                 let focused_color = styles.split_handle.hover_color;
                 let handle_thickness = styles.split_handle.thickness;
@@ -1058,6 +1160,7 @@ impl<D: PaneData> MullionView<D> {
                     );
 
                 let active_on_drop = self.active_split.clone();
+                let move_handler_key = key.clone();
                 let parent = div()
                     .id(SharedString::from(format!("split-container:{}", key.0)))
                     .debug_selector({
@@ -1073,6 +1176,11 @@ impl<D: PaneData> MullionView<D> {
                     .on_drag_move::<SplitDrag>(cx.listener(
                         move |this, event: &gpui::DragMoveEvent<SplitDrag>, _, cx| {
                             let drag = event.drag(cx);
+                            // Drag-move bubbles through every ancestor split container. Only
+                            // the physical splitter that created this drag may mutate it.
+                            if drag.split_key != move_handler_key {
+                                return;
+                            }
                             let Some(start) = drag.start_cursor.get() else {
                                 return;
                             };
@@ -1085,11 +1193,16 @@ impl<D: PaneData> MullionView<D> {
                                     (event.event.position.y - start.y, bounds.size.height)
                                 }
                             };
-                            if extent > px(0.) {
-                                this.model.resize(
+                            if extent > px(0.)
+                                && this.model.resize(
                                     &drag.split_key,
                                     drag.start_ratio + f64::from(delta / extent),
-                                );
+                                )
+                            {
+                                #[cfg(test)]
+                                {
+                                    this.split_move_mutations += 1;
+                                }
                                 this.finish(cx);
                             }
                         },
@@ -1598,18 +1711,28 @@ impl<D: PaneData> MullionView<D> {
         id: &PaneId,
         active: Option<&ActivityId>,
         data: &D,
-        edges: InternalEdges,
+        position: PaneRenderPosition<'_>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let pane_ids = position.pane_ids;
+        let edges = position.edges;
         let focused = self.model.focused() == Some(id);
-        let pane_ids = self.model.tree().leaf_ids();
         let pane_index = pane_ids.iter().position(|pane| pane == id).unwrap_or(0);
+        let render_data = self
+            .activity_render_cache
+            .get(&(self.workspace_namespace(), id.clone()))
+            .cloned()
+            .unwrap_or_else(|| PaneActivityRenderData {
+                activities: Vec::new(),
+                projection: self.catalog.visible(data, active),
+            });
         let active_name = active.and_then(|active| {
-            self.all_activities(data)
-                .into_iter()
+            render_data
+                .activities
+                .iter()
                 .find(|activity| &activity.id == active)
-                .map(|activity| activity.name)
+                .map(|activity| activity.name.clone())
         });
         let pane_accessibility = crate::MullionAccessibilityNode::pane(
             id,
@@ -1636,13 +1759,16 @@ impl<D: PaneData> MullionView<D> {
         let id_drop = id.clone();
         let id_move = id.clone();
         let can_create_panes = self.dock_config.can_create_panes();
-        let activities = self.all_activities(data);
         let selected = active
-            .and_then(|a| activities.iter().find(|x| &x.id == a).cloned())
-            .or_else(|| activities.first().cloned());
-        let projection = self
-            .catalog
-            .visible(data, selected.as_ref().map(|activity| &activity.id));
+            .and_then(|a| {
+                render_data
+                    .activities
+                    .iter()
+                    .find(|activity| &activity.id == a)
+                    .cloned()
+            })
+            .or_else(|| render_data.activities.first().cloned());
+        let projection = render_data.projection;
         self.expansion
             .entry(id.clone())
             .or_default()
@@ -1658,11 +1784,27 @@ impl<D: PaneData> MullionView<D> {
         let bar_visible = mode == ActivityBarMode::Pinned
             || (mode == ActivityBarMode::AutoHide && hover_expanded);
         let cached = selected.as_ref().and_then(|activity| {
-            let factory = self.activity_factories.get(&activity.id)?.clone();
             let key =
                 ActivityCacheKey::new(self.workspace_namespace(), id.clone(), activity.id.clone());
             if self.activity_cache.get(&key).is_none() {
-                let instance = factory(id, data, window, cx);
+                let instance = if let Some(factory) = self.activity_factories.get(&activity.id) {
+                    factory(id, data, window, cx)
+                } else {
+                    let body = cx.new(|_| LegacyActivityBody {
+                        pane: id.clone(),
+                        data: data.clone(),
+                        render: activity.render.clone(),
+                    });
+                    let update_body = body.clone();
+                    crate::ActivityInstance::new(body).with_update(move |data: &D, _, cx| {
+                        update_body.update(cx, |body, cx| {
+                            if body.data != *data {
+                                body.data = data.clone();
+                                cx.notify();
+                            }
+                        });
+                    })
+                };
                 self.activity_cache
                     .insert(key.clone(), instance, data.clone());
             }
@@ -1672,11 +1814,10 @@ impl<D: PaneData> MullionView<D> {
         });
         let body = cached
             .as_ref()
-            .map(|(body, _)| body.clone().into_any_element())
-            .or_else(|| {
-                selected
-                    .as_ref()
-                    .map(|activity| (activity.render)(id, data))
+            .map(|(body, _)| {
+                body.clone()
+                    .cached(StyleRefinement::default().size_full())
+                    .into_any_element()
             })
             .unwrap_or_else(|| {
                 div()
@@ -2377,6 +2518,7 @@ impl<D: PaneData> Render for MullionView<D> {
             .and_then(|id| self.model.tree().find(id))
             .unwrap_or(self.model.tree())
             .clone();
+        let pane_ids = tree.leaf_ids();
         let workspace_tabs = self.workspaces.as_ref().map(|set| {
             let active = set.active.clone();
             let count = set.workspaces.len();
@@ -2644,6 +2786,7 @@ impl<D: PaneData> Render for MullionView<D> {
             })
             .child(div().flex_1().min_w_0().min_h_0().child(self.render_node(
                 &tree,
+                &pane_ids,
                 InternalEdges::default(),
                 window,
                 cx,
@@ -2720,7 +2863,7 @@ mod tests {
         cell::Cell,
         rc::Rc,
         sync::{
-            atomic::{AtomicU8, Ordering},
+            atomic::{AtomicU8, AtomicUsize, Ordering},
             Arc,
         },
     };
@@ -3597,6 +3740,138 @@ mod tests {
         assert!(expected.move_pane(&PaneId::new("a"), &PaneId::new("c"), DropEdge::Bottom));
         view.read_with(cx, |view, _| assert_eq!(view.model().tree(), &expected));
         assert!(cx.debug_bounds("dock-indicator:c:Bottom").is_none());
+    }
+
+    static PERF_FILTER_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    fn counted_visible(_: &String) -> bool {
+        PERF_FILTER_CALLS.fetch_add(1, Ordering::SeqCst);
+        true
+    }
+
+    fn pane_fixture(start: usize, count: usize, depth: usize) -> PaneNode<String> {
+        if count == 1 {
+            return PaneNode::leaf_with_activity(
+                PaneId::new(format!("p{start}")),
+                ActivityId::new("perf"),
+                format!("data-{start}"),
+            );
+        }
+        let first_count = count / 2;
+        split(
+            if depth.is_multiple_of(2) {
+                SplitDirection::Horizontal
+            } else {
+                SplitDirection::Vertical
+            },
+            0.5,
+            pane_fixture(start, first_count, depth + 1),
+            pane_fixture(start + first_count, count - first_count, depth + 1),
+        )
+    }
+
+    #[gpui::test]
+    fn twenty_nine_pane_drag_has_constant_lifecycle_and_exact_event_budget(
+        cx: &mut TestAppContext,
+    ) {
+        PERF_FILTER_CALLS.store(0, Ordering::SeqCst);
+        let body_renders = Arc::new(AtomicUsize::new(0));
+        let renders = body_renders.clone();
+        let activity = Activity {
+            id: ActivityId::new("perf"),
+            name: "Performance".into(),
+            filter: counted_visible,
+            render: Arc::new(move |_, _| {
+                renders.fetch_add(1, Ordering::SeqCst);
+                div().child("stable").into_any_element()
+            }),
+        };
+        let tree = pane_fixture(0, 29, 0);
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::new(tree, vec![ActivityNode::Activity(activity)], cx)
+        });
+        cx.simulate_resize(gpui::size(px(1800.), px(1200.)));
+        cx.run_until_parked();
+
+        let initial_filters = PERF_FILTER_CALLS.load(Ordering::SeqCst);
+        let initial_bodies = body_renders.load(Ordering::SeqCst);
+        assert!((29..=29 * 3).contains(&initial_bodies));
+        assert_eq!(view.read_with(cx, |view, _| view.activity_cache_syncs), 1);
+        for _ in 0..4 {
+            view.update(cx, |_, cx| cx.notify());
+            cx.run_until_parked();
+        }
+        assert_eq!(PERF_FILTER_CALLS.load(Ordering::SeqCst), initial_filters);
+        assert_eq!(body_renders.load(Ordering::SeqCst), initial_bodies);
+        assert_eq!(view.read_with(cx, |view, _| view.activity_cache_syncs), 1);
+
+        // p28 keys the deepest right-hand split, so its drag event bubbles through
+        // several split containers and exercises the strict split-key guard.
+        let handle = cx.debug_bounds("split-hit-target:p28").unwrap();
+        let parent = cx.debug_bounds("split-container:p28").unwrap();
+        let start = handle.center();
+        let events = Rc::new(RefCell::new(Vec::<PaneEvent<String>>::new()));
+        let event_log = events.clone();
+        let observed = view.clone();
+        view.update(cx, move |_, cx| {
+            cx.subscribe(&observed, move |_, _, event: &PaneEvent<String>, _| {
+                event_log.borrow_mut().push(event.clone());
+            })
+            .detach();
+        });
+
+        cx.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_move(
+            gpui::point(start.x + px(4.), start.y),
+            Some(MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        events.borrow_mut().clear();
+        let (base_mutations, base_notifications) = view.read_with(cx, |view, _| {
+            (view.split_move_mutations, view.notifications)
+        });
+        for step in 1..=4 {
+            cx.simulate_mouse_move(
+                gpui::point(start.x + parent.size.width * (step as f32 * 0.05), start.y),
+                Some(MouseButton::Left),
+                gpui::Modifiers::none(),
+            );
+        }
+        cx.run_until_parked();
+
+        let logged = events.borrow();
+        assert_eq!(logged.len(), 8);
+        for pair in logged.chunks_exact(2) {
+            assert!(matches!(pair[0], PaneEvent::Resized { .. }));
+            assert!(matches!(pair[1], PaneEvent::TreeChanged { .. }));
+        }
+        drop(logged);
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.split_move_mutations - base_mutations, 4);
+            assert_eq!(view.notifications - base_notifications, 4);
+        });
+        assert_eq!(PERF_FILTER_CALLS.load(Ordering::SeqCst), initial_filters);
+        assert_eq!(view.read_with(cx, |view, _| view.activity_cache_syncs), 1);
+
+        // The first out-of-range move reaches the clamp; identical clamped moves
+        // are silent and cannot schedule extra root work.
+        events.borrow_mut().clear();
+        let (base_mutations, base_notifications) = view.read_with(cx, |view, _| {
+            (view.split_move_mutations, view.notifications)
+        });
+        let clamped = gpui::point(parent.right() + parent.size.width, start.y);
+        cx.simulate_mouse_move(clamped, Some(MouseButton::Left), gpui::Modifiers::none());
+        for _ in 0..4 {
+            cx.simulate_mouse_move(clamped, Some(MouseButton::Left), gpui::Modifiers::none());
+        }
+        cx.run_until_parked();
+        assert_eq!(events.borrow().len(), 2);
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.split_move_mutations - base_mutations, 1);
+            assert_eq!(view.notifications - base_notifications, 1);
+        });
+        assert_eq!(PERF_FILTER_CALLS.load(Ordering::SeqCst), initial_filters);
+        assert_eq!(view.read_with(cx, |view, _| view.activity_cache_syncs), 1);
     }
 
     #[gpui::test]

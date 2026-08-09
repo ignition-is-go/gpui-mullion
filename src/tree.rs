@@ -397,6 +397,9 @@ impl<D: PaneData> PaneNode<D> {
                 ..
             } => {
                 if second.leftmost_leaf_id() == split_key {
+                    if *ratio == clamped {
+                        return false;
+                    }
                     *ratio = clamped;
                     return true;
                 }

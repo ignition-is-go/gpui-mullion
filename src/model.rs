@@ -700,10 +700,19 @@ mod tests {
     #[test]
     fn resize_event_reports_the_stored_clamped_ratio() {
         let mut m = model();
-        assert!(m.resize(&PaneId::new("b"), 0.01));
+        let key = PaneId::new("b");
+        assert!(m.resize(&key, 0.01));
         let events = m.take_events();
-        assert!(matches!(events[0], PaneEvent::Resized { ratio, .. } if ratio == 0.1));
-        assert_eq!(find_ratio(m.tree(), &PaneId::new("b")), Some(0.1));
+        assert!(matches!(events.as_slice(), [
+            PaneEvent::Resized { split_key, ratio },
+            PaneEvent::TreeChanged { .. },
+        ] if split_key == &key && *ratio == 0.1));
+        assert_eq!(find_ratio(m.tree(), &key), Some(0.1));
+
+        // Both the stored ratio and any request which clamps back to it are no-ops.
+        assert!(!m.resize(&key, 0.1));
+        assert!(!m.resize(&key, -100.0));
+        assert!(m.take_events().is_empty());
     }
     #[test]
     fn try_new_rejects_invalid_persisted_layouts() {
