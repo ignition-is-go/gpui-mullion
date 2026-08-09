@@ -53,7 +53,7 @@ async function runtimeState() {
     const expectedWidth = rect && Math.floor(rect.width * devicePixelRatio);
     const expectedHeight = rect && Math.floor(rect.height * devicePixelRatio);
     return {
-      started: document.documentElement.dataset.trunkApplicationStarted === "true",
+      started: typeof globalThis.wasmBindings === "object",
       isolated: globalThis.crossOriginIsolated === true,
       bridge: typeof globalThis.__mullionTestState === "function",
       canvas: Boolean(canvas && canvas.isConnected && rect.width > 0 && rect.height > 0
