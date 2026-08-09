@@ -178,12 +178,24 @@ try {
       && treeContains(next, "browser-console")
       && next.zoomed === null);
 
-  // Pinned left activity bar: 8px padding, then 28px square items. Click its second item.
-  await click(left + 22, top + workspaceHeight + 50);
-  state = await waitFor("activity-bar item click", (next) =>
-    next.activeWorkspace === "browser"
-      && next.focused === "browser-main"
-      && activity(next, "browser-main") === "terminal");
+  // Drive the real pinned-left activity rail. Browser/driver viewport geometry
+  // varies (including very wide, short Xvfb canvases), so scan the narrow rail
+  // rather than encoding one font/line-height-dependent y coordinate.
+  const activityX = left + 14;
+  const activityScanEnd = Math.min(top + height * 0.48, top + workspaceHeight + 150);
+  let selectedTerminal = false;
+  for (let y = top + workspaceHeight + 6; y <= activityScanEnd; y += 6) {
+    await click(activityX, y);
+    await sleep(75);
+    state = await testState();
+    if (state.focused === "browser-main" && activity(state, "browser-main") === "terminal") {
+      selectedTerminal = true;
+      break;
+    }
+  }
+  if (!selectedTerminal) {
+    throw new Error(`activity-bar item click timed out; state=${JSON.stringify(state)}`);
+  }
 
   const liveSince = Date.now();
   while (Date.now() - liveSince < 2_000) {
