@@ -383,11 +383,20 @@ impl OverlayStack {
     pub fn from_overlays(
         overlays: impl IntoIterator<Item = MullionOverlay>,
     ) -> Result<Self, OverlayError> {
-        let stack = Self {
-            overlays: overlays.into_iter().collect(),
-        };
+        let stack = Self::from_unchecked(overlays);
         stack.validate()?;
         Ok(stack)
+    }
+
+    /// Build a controlled snapshot without validating it immediately.
+    ///
+    /// This is useful at application state boundaries: the root host validates every
+    /// snapshot and exposes any [`OverlayError`] instead of panicking or painting a
+    /// partially valid stack.
+    pub fn from_unchecked(overlays: impl IntoIterator<Item = MullionOverlay>) -> Self {
+        Self {
+            overlays: overlays.into_iter().collect(),
+        }
     }
 
     pub fn len(&self) -> usize {

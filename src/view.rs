@@ -3,10 +3,11 @@ use crate::{
     ActivityCache, ActivityCacheKey, ActivityCatalog, ActivityCatalogValidationError,
     ActivityExpansionState, ActivityFactoryRegistry, ActivityId, ActivityNode, DockBounds,
     DockConfig, DockDrag, DockHover, DockPayload, DropEdge, FocusPresentation, MullionModel,
-    MullionSettings, MullionStyles, MullionTheme, MullionThemeMode, NewPaneFactory,
-    PaneCommandExecutionOptions, PaneData, PaneDirection, PaneEvent, PaneFocusBehavior, PaneId,
-    PaneNode, PaneSplitFactory, SplitDirection, VisibleActivityNode, WorkspaceChanged,
-    WorkspaceEvent, WorkspaceId, WorkspaceSet, WorkspaceSetError,
+    MullionOverlay, MullionSettings, MullionStyles, MullionTheme, MullionThemeMode, NewPaneFactory,
+    OverlayAlignment, OverlayError, OverlayHostConfig, OverlayLength, PaneCommandExecutionOptions,
+    PaneData, PaneDirection, PaneEvent, PaneFocusBehavior, PaneId, PaneNode, PaneSplitFactory,
+    SplitDirection, VisibleActivityNode, WorkspaceChanged, WorkspaceEvent, WorkspaceId,
+    WorkspaceSet, WorkspaceSetError,
 };
 use gpui::{
     actions, div, prelude::*, px, relative, AnyElement, App, Bounds, Context, DragMoveEvent,
@@ -164,6 +165,8 @@ pub struct MullionView<D: PaneData> {
     active_split: ActiveSplit,
     keyboard_split: Option<PaneId>,
     dock_hover: Option<DockHover>,
+    overlay_host: Option<OverlayHostConfig>,
+    last_overlay_error: Option<OverlayError>,
     #[cfg(test)]
     routed_commands: Vec<crate::PaneCommand>,
 }
@@ -202,6 +205,8 @@ impl<D: PaneData> MullionView<D> {
             active_split: Rc::default(),
             keyboard_split: None,
             dock_hover: None,
+            overlay_host: None,
+            last_overlay_error: None,
             #[cfg(test)]
             routed_commands: Vec::new(),
         }
@@ -282,6 +287,26 @@ impl<D: PaneData> MullionView<D> {
     }
     pub fn activity_bar_host(&self) -> &ActivityBarHostConfig<D> {
         &self.host
+    }
+    /// Install a controlled window-level overlay host.
+    pub fn with_overlay_host(mut self, host: OverlayHostConfig) -> Self {
+        self.overlay_host = Some(host);
+        self.last_overlay_error = None;
+        self
+    }
+    /// Replace or remove the controlled overlay host.
+    pub fn set_overlay_host(&mut self, host: Option<OverlayHostConfig>, cx: &mut Context<Self>) {
+        self.overlay_host = host;
+        self.last_overlay_error = None;
+        cx.notify();
+    }
+    /// Return the current controlled overlay host.
+    pub fn overlay_host(&self) -> Option<&OverlayHostConfig> {
+        self.overlay_host.as_ref()
+    }
+    /// Return the validation error from the most recent overlay snapshot.
+    pub fn last_overlay_error(&self) -> Option<&OverlayError> {
+        self.last_overlay_error.as_ref()
     }
     /// Configure activity-to-new-pane docking.
     pub fn with_dock_config(mut self, config: DockConfig<D>) -> Self {
@@ -1727,6 +1752,169 @@ impl<D: PaneData> MullionView<D> {
             .children(focus_edges)
             .into_any_element()
     }
+
+    fn render_overlay(
+        overlay: MullionOverlay,
+        host: &OverlayHostConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let policy = overlay.policy().clone();
+        let id = policy.id.clone();
+        let content = overlay.render(window, cx);
+
+        let content = div()
+            .id(SharedString::from(format!(
+                "mullion-overlay-content:{}",
+                id
+            )))
+            .debug_selector({
+                let id = id.clone();
+                move || format!("mullion-overlay-content:{}", id)
+            })
+            .when(
+                matches!(policy.size.width, OverlayLength::Fill),
+                |element| element.w_full(),
+            )
+            .when_some(
+                match policy.size.width {
+                    OverlayLength::Pixels(value) => Some(px(value)),
+                    _ => None,
+                },
+                |element, width| element.w(width),
+            )
+            .when_some(
+                match policy.size.width {
+                    OverlayLength::Fraction(value) => Some(relative(value)),
+                    _ => None,
+                },
+                |element, width| element.w(width),
+            )
+            .when(
+                matches!(policy.size.height, OverlayLength::Fill),
+                |element| element.h_full(),
+            )
+            .when_some(
+                match policy.size.height {
+                    OverlayLength::Pixels(value) => Some(px(value)),
+                    _ => None,
+                },
+                |element, height| element.h(height),
+            )
+            .when_some(
+                match policy.size.height {
+                    OverlayLength::Fraction(value) => Some(relative(value)),
+                    _ => None,
+                },
+                |element, height| element.h(height),
+            )
+            .when(
+                policy.placement.horizontal == OverlayAlignment::Stretch,
+                |element| element.w_full(),
+            )
+            .when(
+                policy.placement.vertical == OverlayAlignment::Stretch,
+                |element| element.h_full(),
+            )
+            .when(!policy.click_through, |element| {
+                element
+                    .block_mouse_except_scroll()
+                    .on_click(|_, _, cx| cx.stop_propagation())
+            })
+            .when(policy.a11y_modal, |element| {
+                element.role(gpui::Role::Dialog)
+            })
+            .when_some(policy.a11y_label.clone(), |element, label| {
+                element.aria_label(label)
+            })
+            .accessibility_id(format!("mullion-overlay-{}", id))
+            .child(content);
+
+        let dismiss = host.on_dismiss().cloned();
+        let blocks_input = !policy.click_through
+            && (policy.tier == crate::OverlayTier::Modal || policy.backdrop.is_some());
+        div()
+            .id(SharedString::from(format!("mullion-overlay:{}", id)))
+            .debug_selector({
+                let id = id.clone();
+                move || format!("mullion-overlay:{}", id)
+            })
+            .absolute()
+            .inset_0()
+            .flex()
+            .when(
+                policy.placement.horizontal == OverlayAlignment::Start,
+                |element| element.justify_start(),
+            )
+            .when(
+                policy.placement.horizontal == OverlayAlignment::Center,
+                |element| element.justify_center(),
+            )
+            .when(
+                policy.placement.horizontal == OverlayAlignment::End,
+                |element| element.justify_end(),
+            )
+            .when(
+                policy.placement.vertical == OverlayAlignment::Start,
+                |element| element.items_start(),
+            )
+            .when(
+                policy.placement.vertical == OverlayAlignment::Center,
+                |element| element.items_center(),
+            )
+            .when(
+                policy.placement.vertical == OverlayAlignment::End,
+                |element| element.items_end(),
+            )
+            .when_some(policy.backdrop, |element, backdrop| {
+                element.bg(gpui::Rgba {
+                    r: backdrop.rgba[0],
+                    g: backdrop.rgba[1],
+                    b: backdrop.rgba[2],
+                    a: backdrop.rgba[3],
+                })
+            })
+            .when(blocks_input, |element| element.block_mouse_except_scroll())
+            .when(policy.backdrop.is_some(), |element| {
+                element.child(
+                    div()
+                        .debug_selector({
+                            let id = id.clone();
+                            move || format!("mullion-overlay-backdrop:{}", id)
+                        })
+                        .absolute()
+                        .inset_0(),
+                )
+            })
+            .when_some(policy.dismiss_on_backdrop.then_some(dismiss).flatten(), {
+                let id = id.clone();
+                move |element, dismiss| {
+                    element.on_click(move |_, window, cx| dismiss(&id, window, cx))
+                }
+            })
+            .child(content)
+            .into_any_element()
+    }
+
+    fn render_overlays(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let Some(host) = self.overlay_host.clone() else {
+            self.last_overlay_error = None;
+            return Vec::new();
+        };
+        match host.sorted_render_snapshot() {
+            Ok(snapshot) => {
+                self.last_overlay_error = None;
+                snapshot
+                    .into_iter()
+                    .map(|overlay| Self::render_overlay(overlay, &host, window, cx))
+                    .collect()
+            }
+            Err(error) => {
+                self.last_overlay_error = Some(error);
+                Vec::new()
+            }
+        }
+    }
 }
 
 impl<D: PaneData> Render for MullionView<D> {
@@ -1756,6 +1944,10 @@ impl<D: PaneData> Render for MullionView<D> {
                     let selected = id == active;
                     div()
                         .id(SharedString::from(format!("workspace:{}", id.0)))
+                        .debug_selector({
+                            let id = id.clone();
+                            move || format!("workspace:{}", id.0)
+                        })
                         .px(styles.workspace_switcher.horizontal_padding)
                         .py(styles.workspace_switcher.vertical_padding)
                         .rounded(styles.workspace_switcher.border_radius)
@@ -1779,6 +1971,7 @@ impl<D: PaneData> Render for MullionView<D> {
                 })
                 .collect::<Vec<_>>()
         });
+        let overlays = self.render_overlays(window, cx);
         let key_context = if self.keyboard_split.is_some() {
             "Mullion MullionSplitter"
         } else {
@@ -1788,6 +1981,7 @@ impl<D: PaneData> Render for MullionView<D> {
             .key_context(key_context)
             .track_focus(&self.focus_handle)
             .size_full()
+            .relative()
             .flex()
             .flex_col()
             .bg(styles.root.background)
@@ -1978,6 +2172,13 @@ impl<D: PaneData> Render for MullionView<D> {
                 window,
                 cx,
             )))
+            .child(
+                div()
+                    .debug_selector(|| "mullion-overlay-layer".to_owned())
+                    .absolute()
+                    .inset_0()
+                    .children(overlays),
+            )
     }
 }
 
@@ -2047,6 +2248,238 @@ mod tests {
             Arc,
         },
     };
+
+    fn test_overlay(id: &str, tier: crate::OverlayTier) -> MullionOverlay {
+        let selector = id.to_owned();
+        MullionOverlay::new(id, move |_, _| {
+            div()
+                .debug_selector({
+                    let selector = selector.clone();
+                    move || format!("overlay-renderer:{selector}")
+                })
+                .child(selector.clone())
+                .into_any_element()
+        })
+        .with_tier(tier)
+    }
+
+    #[gpui::test]
+    fn rendered_overlay_layer_escapes_panes_and_preserves_tier_order(cx: &mut TestAppContext) {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let stack = crate::OverlayStack::from_overlays([
+            {
+                let calls = calls.clone();
+                MullionOverlay::new("drag", move |_, _| {
+                    calls.borrow_mut().push("drag");
+                    div().into_any_element()
+                })
+                .with_tier(crate::OverlayTier::Drag)
+            },
+            {
+                let calls = calls.clone();
+                MullionOverlay::new("modal", move |_, _| {
+                    calls.borrow_mut().push("modal");
+                    div().into_any_element()
+                })
+            },
+            {
+                let calls = calls.clone();
+                MullionOverlay::new("toast", move |_, _| {
+                    calls.borrow_mut().push("toast");
+                    div().into_any_element()
+                })
+                .with_tier(crate::OverlayTier::Toast)
+            },
+        ])
+        .unwrap();
+        let (_, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::new(leaf("pane"), vec![], cx)
+                .with_overlay_host(OverlayHostConfig::controlled(move || stack.clone()))
+        });
+        cx.run_until_parked();
+
+        assert!(calls
+            .borrow()
+            .chunks_exact(3)
+            .all(|chunk| chunk == ["modal", "toast", "drag"]));
+        assert_eq!(
+            cx.debug_bounds("mullion-overlay-layer"),
+            cx.debug_bounds("pane:pane")
+                .map(|_| cx.debug_bounds("mullion-overlay-layer").unwrap())
+        );
+        for selector in [
+            "mullion-overlay:modal",
+            "mullion-overlay:toast",
+            "mullion-overlay:drag",
+        ] {
+            assert!(cx.debug_bounds(selector).is_some());
+        }
+    }
+
+    #[gpui::test]
+    fn rendered_overlay_supports_every_alignment_and_length(cx: &mut TestAppContext) {
+        let overlays = [
+            MullionOverlay::new("start-pixels", |_, _| div().into_any_element())
+                .with_tier(crate::OverlayTier::Toast)
+                .with_placement(crate::OverlayPlacement::new(
+                    OverlayAlignment::Start,
+                    OverlayAlignment::Start,
+                ))
+                .with_size(crate::OverlaySize::new(
+                    OverlayLength::Pixels(40.0),
+                    OverlayLength::Pixels(30.0),
+                )),
+            MullionOverlay::new("center-fraction", |_, _| div().into_any_element())
+                .with_tier(crate::OverlayTier::Toast)
+                .with_size(crate::OverlaySize::new(
+                    OverlayLength::Fraction(0.5),
+                    OverlayLength::Fraction(0.5),
+                )),
+            MullionOverlay::new("end-content", |_, _| {
+                div().w(px(25.0)).h(px(20.0)).into_any_element()
+            })
+            .with_tier(crate::OverlayTier::Toast)
+            .with_placement(crate::OverlayPlacement::new(
+                OverlayAlignment::End,
+                OverlayAlignment::End,
+            )),
+            MullionOverlay::new("stretch-content", |_, _| div().into_any_element())
+                .with_tier(crate::OverlayTier::Toast)
+                .with_placement(crate::OverlayPlacement::FILL),
+            MullionOverlay::new("start-fill", |_, _| div().into_any_element())
+                .with_tier(crate::OverlayTier::Toast)
+                .with_placement(crate::OverlayPlacement::new(
+                    OverlayAlignment::Start,
+                    OverlayAlignment::Start,
+                ))
+                .with_size(crate::OverlaySize::FILL),
+        ];
+        let stack = crate::OverlayStack::from_overlays(overlays).unwrap();
+        let (_, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::new(leaf("pane"), vec![], cx)
+                .with_overlay_host(OverlayHostConfig::controlled(move || stack.clone()))
+        });
+        cx.run_until_parked();
+
+        let layer = cx.debug_bounds("mullion-overlay-layer").unwrap();
+        let start = cx
+            .debug_bounds("mullion-overlay-content:start-pixels")
+            .unwrap();
+        assert_eq!(start.origin, layer.origin);
+        assert_eq!(start.size, gpui::size(px(40.0), px(30.0)));
+
+        let center = cx
+            .debug_bounds("mullion-overlay-content:center-fraction")
+            .unwrap();
+        assert_eq!(center.center(), layer.center());
+        assert_eq!(center.size.width, layer.size.width * 0.5);
+        assert_eq!(center.size.height, layer.size.height * 0.5);
+
+        let end = cx
+            .debug_bounds("mullion-overlay-content:end-content")
+            .unwrap();
+        assert_eq!(end.right(), layer.right());
+        assert_eq!(end.bottom(), layer.bottom());
+        assert_eq!(end.size, gpui::size(px(25.0), px(20.0)));
+
+        for selector in [
+            "mullion-overlay-content:stretch-content",
+            "mullion-overlay-content:start-fill",
+        ] {
+            assert_eq!(cx.debug_bounds(selector).unwrap(), layer);
+        }
+    }
+
+    #[gpui::test]
+    fn rendered_overlay_geometry_backdrop_and_true_outside_dismiss(cx: &mut TestAppContext) {
+        let dismissed = Rc::new(Cell::new(0));
+        let count = dismissed.clone();
+        let overlay = test_overlay("dialog", crate::OverlayTier::Modal)
+            .with_placement(crate::OverlayPlacement::CENTER)
+            .with_size(crate::OverlaySize::new(
+                OverlayLength::Pixels(120.0),
+                OverlayLength::Pixels(80.0),
+            ))
+            .with_backdrop(crate::OverlayBackdrop::default())
+            .dismiss_on_backdrop(true)
+            .a11y_modal(true)
+            .with_a11y_label("Dialog");
+        let stack = crate::OverlayStack::from_overlays([overlay]).unwrap();
+        let (_, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::new(leaf("pane"), vec![], cx).with_overlay_host(
+                OverlayHostConfig::controlled(move || stack.clone())
+                    .with_dismiss_handler(move |_, _, _| count.set(count.get() + 1)),
+            )
+        });
+        cx.run_until_parked();
+
+        let content = cx.debug_bounds("mullion-overlay-content:dialog").unwrap();
+        assert_eq!(content.size.width, px(120.0));
+        assert_eq!(content.size.height, px(80.0));
+        cx.simulate_click(content.center(), gpui::Modifiers::none());
+        assert_eq!(dismissed.get(), 0);
+        let layer = cx.debug_bounds("mullion-overlay-layer").unwrap();
+        cx.simulate_click(layer.origin, gpui::Modifiers::none());
+        assert_eq!(dismissed.get(), 1);
+    }
+
+    #[gpui::test]
+    fn click_through_overlay_preserves_workspace_input(cx: &mut TestAppContext) {
+        let overlay = MullionOverlay::new("pass-through", |_, _| div().into_any_element())
+            .with_tier(crate::OverlayTier::Drag)
+            .with_placement(crate::OverlayPlacement::FILL)
+            .with_size(crate::OverlaySize::FILL)
+            .click_through(true);
+        let stack = crate::OverlayStack::from_overlays([overlay]).unwrap();
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::new_with_workspaces(workspace_set(leaf("c")), vec![], cx)
+                .unwrap()
+                .with_overlay_host(OverlayHostConfig::controlled(move || stack.clone()))
+        });
+        cx.run_until_parked();
+
+        let tab = cx.debug_bounds("workspace:two").unwrap().center();
+        cx.simulate_click(tab, gpui::Modifiers::none());
+        view.read_with(cx, |view, _| {
+            assert_eq!(
+                view.active_workspace().unwrap().id,
+                WorkspaceId("two".into())
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn controlled_overlay_updates_and_invalid_snapshot_fails_safe(cx: &mut TestAppContext) {
+        let snapshot = Rc::new(RefCell::new(
+            crate::OverlayStack::from_overlays([test_overlay("first", crate::OverlayTier::Toast)])
+                .unwrap(),
+        ));
+        let source = snapshot.clone();
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::new(leaf("pane"), vec![], cx).with_overlay_host(
+                OverlayHostConfig::controlled(move || source.borrow().clone()),
+            )
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("mullion-overlay:first").is_some());
+
+        *snapshot.borrow_mut() =
+            crate::OverlayStack::from_unchecked([MullionOverlay::from_policy(
+                crate::OverlayPolicy::new("bad").with_size(crate::OverlaySize::new(
+                    OverlayLength::Fraction(2.0),
+                    OverlayLength::Content,
+                )),
+                |_, _| div().into_any_element(),
+            )]);
+        view.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("mullion-overlay:first").is_none());
+        assert!(cx.debug_bounds("mullion-overlay:bad").is_none());
+        assert!(matches!(
+            view.read_with(cx, |view, _| view.last_overlay_error().cloned()),
+            Some(OverlayError::InvalidDimension { .. })
+        ));
+    }
 
     #[gpui::test]
     fn every_gpui_command_action_routes_through_the_configured_dispatcher(cx: &mut TestAppContext) {
