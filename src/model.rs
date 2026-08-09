@@ -1,7 +1,8 @@
 use crate::tree::{directional_neighbor, find_ratio, resize_boundary};
 use crate::{
     ActivityId, DropEdge, PaneCommand, PaneCommandError, PaneCommandResult, PaneData,
-    PaneDirection, PaneEvent, PaneId, PaneLayout, PaneNode, PaneRotation, SplitDirection,
+    PaneDirection, PaneEvent, PaneId, PaneLayout, PaneNode, PaneRotation, PaneValidationError,
+    SplitDirection,
 };
 
 /// Toolkit-independent state machine. UI adapters translate input into these methods.
@@ -13,14 +14,24 @@ pub struct MullionModel<D: PaneData> {
 }
 
 impl<D: PaneData> MullionModel<D> {
-    pub fn new(tree: PaneNode<D>) -> Self {
+    /// Construct a model after validating layout invariants.
+    pub fn try_new(tree: PaneNode<D>) -> Result<Self, PaneValidationError> {
+        tree.validate()?;
         let focused = tree.leaf_ids().into_iter().next();
-        Self {
+        Ok(Self {
             tree,
             focused,
             zoomed: None,
             events: Vec::new(),
-        }
+        })
+    }
+
+    /// Construct a model from a layout already trusted by the caller.
+    ///
+    /// Invalid persisted input must use [`Self::try_new`] so it can report a
+    /// typed error rather than panic.
+    pub fn new(tree: PaneNode<D>) -> Self {
+        Self::try_new(tree).expect("MullionModel::new requires a valid pane tree")
     }
     pub fn tree(&self) -> &PaneNode<D> {
         &self.tree
@@ -42,7 +53,9 @@ impl<D: PaneData> MullionModel<D> {
             tree: self.tree.clone(),
         });
     }
-    pub fn replace_tree(&mut self, tree: PaneNode<D>) {
+    /// Replace the tree after validating it, preserving coherent focus/zoom.
+    pub fn try_replace_tree(&mut self, tree: PaneNode<D>) -> Result<(), PaneValidationError> {
+        tree.validate()?;
         let previous_focus = self.focused.clone();
         let previous_zoom = self.zoomed.clone();
         self.tree = tree;
@@ -77,7 +90,15 @@ impl<D: PaneData> MullionModel<D> {
             });
         }
         self.changed();
+        Ok(())
     }
+
+    /// Replace the tree when it has already been trusted by the caller.
+    pub fn replace_tree(&mut self, tree: PaneNode<D>) {
+        self.try_replace_tree(tree)
+            .expect("MullionModel::replace_tree requires a valid pane tree");
+    }
+
     pub fn focus(&mut self, pane: &PaneId) -> bool {
         if !self.tree.contains(pane) {
             return false;
@@ -587,6 +608,39 @@ mod tests {
         assert!(matches!(events[0], PaneEvent::Resized { ratio, .. } if ratio == 0.1));
         assert_eq!(find_ratio(m.tree(), &PaneId::new("b")), Some(0.1));
     }
+    #[test]
+    fn try_new_rejects_invalid_persisted_layouts() {
+        let invalid = PaneNode::Split {
+            direction: SplitDirection::Horizontal,
+            ratio: f64::NAN,
+            first: Box::new(PaneNode::leaf(PaneId::new("a"), D(1))),
+            second: Box::new(PaneNode::leaf(PaneId::new("b"), D(2))),
+        };
+        assert!(matches!(
+            MullionModel::try_new(invalid),
+            Err(PaneValidationError::NonFiniteSplitRatio { .. })
+        ));
+    }
+
+    #[test]
+    fn failed_validated_replacement_preserves_model_state_and_events() {
+        let mut model = model();
+        let original = model.snapshot();
+        let duplicate = PaneNode::Split {
+            direction: SplitDirection::Vertical,
+            ratio: 0.5,
+            first: Box::new(PaneNode::leaf(PaneId::new("duplicate"), D(1))),
+            second: Box::new(PaneNode::leaf(PaneId::new("duplicate"), D(2))),
+        };
+
+        assert!(matches!(
+            model.try_replace_tree(duplicate),
+            Err(PaneValidationError::DuplicatePaneId { .. })
+        ));
+        assert_eq!(model.snapshot(), original);
+        assert!(model.take_events().is_empty());
+    }
+
     #[test]
     fn command_split_uses_host_factory() {
         let mut m = model();
