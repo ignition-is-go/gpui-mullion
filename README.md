@@ -4,13 +4,17 @@ Native split panes and activity surfaces for GPUI, targeting browsers plus Windo
 
 This repository is the GPUI successor to the Leptos `mullion` library and is intended to become the canonical pane UI for Rship on desktop and the web. One shared `MullionView` implementation runs on every target; only the thin application host differs. The Leptos implementation remains migration/reference material rather than a separately maintained frontend. Persisted pane trees deliberately retain Mullion's serde representation so existing layouts migrate cleanly.
 
-## Current production foundation
+## Current implementation baseline
+
+> [!IMPORTANT]
+> This is not yet a feature-complete replacement for the reference Mullion. See the
+> [parity audit](docs/PARITY_AUDIT.md) for the exact gaps and acceptance criteria.
 
 - Portable, serde-compatible binary `PaneNode<D>` with stable string pane/activity/category IDs.
-- Split, close, move, swap, resize, rotate, balance, five standard layouts, stable split keys, geometric directional navigation, boundary calculations, and extensive inherited parity tests.
+- Split, close, move, swap, resize, rotate, balance, five standard layouts, stable split keys, geometric directional navigation, boundary calculations, and extensive inherited model tests.
 - Toolkit-independent `MullionModel`: durable focus, zoom, pane data/activity updates, commands, host-created splits, and typed mutation plus snapshot events.
-- Shared GPUI `MullionView`: recursive horizontal/vertical layout, activity rail and content renderers, headers, focus chrome, zoom, native pane drag/drop, clickable resize separators, theming, event emission, actions, and default key bindings.
-- Serializable named workspaces managed and switched inside the shared view, plus runnable native/browser demos with two workspaces.
+- Shared GPUI `MullionView`: recursive layout, basic activity content, headers, focus chrome, zoom, center-only pane docking, click-step resize, a partial action set, and default bindings.
+- Serializable named workspaces switched inside the shared view, plus native/browser baseline demos.
 
 ## Quick start
 
@@ -80,16 +84,19 @@ The new repository stands alone; future work lands here rather than maintaining 
 
 | Area | Status |
 |---|---|
-| persisted tree, geometry, layouts, commands, events | implemented |
-| native recursive view, focus, zoom, theming, activity content | implemented |
-| pane center drag/drop and resize interaction | implemented baseline |
-| proportional pointer-drag resize with keyboard accessibility | next |
-| five-edge drop target overlay and activity-to-create drag | next |
-| visual nested category expansion; primary/trailing groups | next |
-| activity rails on all four edges; hide/auto-hide/hover intent | next |
-| host accessories, native icon/asset abstraction, overlays | next |
-| settings/palette integration in the Rship host | host migration phase |
-| interaction/snapshot tests on all desktop backends | follow-up |
+| persisted tree, geometry, and layout algorithms | parity baseline complete |
+| command IDs/errors/focus policy and event traces | partial; compatibility fixes required |
+| native recursive view, zoom, and basic activity content | implemented baseline |
+| center-only pane docking and click-step resize | implemented baseline |
+| stateful per-pane activity/header lifecycle | design and tests required |
+| proportional pointer-drag resize with keyboard accessibility | missing |
+| five-edge drop target overlay and activity-to-create drag | missing |
+| visual nested category expansion; primary/trailing groups | missing |
+| activity rails on all four edges; hide/auto-hide/hover intent | missing |
+| host accessories, native icon/asset abstraction, overlays | missing |
+| full actions/keymaps, settings, and palette integration | partial/missing |
+| real pane detachment into desktop windows | scaffold only |
+| rendered interaction and browser runtime tests | missing |
 
 DOM/CSS concepts (`web_sys`, portals, HTML drag transfer, CSS class/URL icons) are intentionally not API compatibility goals. They will receive GPUI-native replacements.
 
