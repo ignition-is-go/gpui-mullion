@@ -1,8 +1,9 @@
 use crate::{
     Activity, ActivityCache, ActivityCacheKey, ActivityFactoryRegistry, ActivityId, ActivityNode,
-    DropEdge, FocusPresentation, MullionModel, MullionSettings, MullionTheme, PaneData,
-    PaneDirection, PaneEvent, PaneFocusBehavior, PaneId, PaneNode, SplitDirection,
-    WorkspaceChanged, WorkspaceEvent, WorkspaceId, WorkspaceSet, WorkspaceSetError,
+    DropEdge, FocusPresentation, MullionModel, MullionSettings, MullionTheme,
+    PaneCommandExecutionOptions, PaneData, PaneDirection, PaneEvent, PaneFocusBehavior, PaneId,
+    PaneNode, PaneSplitFactory, SplitDirection, WorkspaceChanged, WorkspaceEvent, WorkspaceId,
+    WorkspaceSet, WorkspaceSetError,
 };
 use gpui::{
     actions, div, prelude::*, px, relative, AnyElement, App, Bounds, Context, Element, ElementId,
@@ -36,6 +37,8 @@ actions!(
 const SPLIT_HIT_TARGET: f32 = 8.0;
 const SPLIT_BAR_WIDTH: f32 = 1.0;
 const KEYBOARD_RESIZE_STEP: f64 = 0.05;
+/// Key context activated after a splitter is directly selected.
+pub const MULLION_SPLITTER_KEY_CONTEXT: &str = "MullionSplitter";
 
 #[derive(Clone, Copy, Default)]
 struct InternalEdges {
@@ -139,6 +142,7 @@ impl Render for PaneDrag {
 /// Shared native/WebAssembly GPUI view over the portable model.
 pub struct MullionView<D: PaneData> {
     model: MullionModel<D>,
+    command_options: PaneCommandExecutionOptions<D>,
     activities: Vec<ActivityNode<D>>,
     theme: MullionTheme,
     settings: MullionSettings,
@@ -153,6 +157,8 @@ pub struct MullionView<D: PaneData> {
     split_starts: Rc<RefCell<HashMap<PaneId, Point<Pixels>>>>,
     active_split: ActiveSplit,
     keyboard_split: Option<PaneId>,
+    #[cfg(test)]
+    routed_commands: Vec<crate::PaneCommand>,
 }
 
 impl<D: PaneData> EventEmitter<PaneEvent<D>> for MullionView<D> {}
@@ -169,6 +175,7 @@ impl<D: PaneData> MullionView<D> {
             .detach();
         Self {
             model: MullionModel::new(tree),
+            command_options: PaneCommandExecutionOptions::default(),
             activities,
             theme: MullionTheme::default(),
             settings: MullionSettings::default(),
@@ -183,6 +190,8 @@ impl<D: PaneData> MullionView<D> {
             split_starts: Rc::default(),
             active_split: Rc::default(),
             keyboard_split: None,
+            #[cfg(test)]
+            routed_commands: Vec::new(),
         }
     }
 
@@ -225,6 +234,56 @@ impl<D: PaneData> MullionView<D> {
     /// Return the live settings handle used by this view.
     pub fn settings(&self) -> &MullionSettings {
         &self.settings
+    }
+    /// Configure the dispatcher used by all Mullion GPUI command actions.
+    pub fn with_command_execution_options(
+        mut self,
+        options: PaneCommandExecutionOptions<D>,
+    ) -> Self {
+        self.command_options = options;
+        self
+    }
+    /// Replace the dispatcher configuration used by subsequent actions.
+    pub fn set_command_execution_options(&mut self, options: PaneCommandExecutionOptions<D>) {
+        self.command_options = options;
+    }
+    /// Return the dispatcher configuration shared by every command action.
+    pub fn command_execution_options(&self) -> &PaneCommandExecutionOptions<D> {
+        &self.command_options
+    }
+    /// Configure the host callback used by split actions.
+    pub fn with_split_factory_fn(
+        mut self,
+        factory: impl Fn(&PaneId, SplitDirection, &D) -> Option<(PaneId, D)> + Send + Sync + 'static,
+    ) -> Self {
+        self.command_options = self.command_options.with_split_factory_fn(factory);
+        self
+    }
+    /// Configure a shared host callback used by split actions.
+    pub fn with_split_factory(mut self, factory: PaneSplitFactory<D>) -> Self {
+        self.command_options = self.command_options.with_split_factory(factory);
+        self
+    }
+    /// Replace the host callback used by split actions.
+    pub fn set_split_factory(&mut self, factory: Option<PaneSplitFactory<D>>) {
+        self.command_options.set_split_factory(factory);
+    }
+    /// Return the host callback used by split actions, if configured.
+    pub fn split_factory(&self) -> Option<&PaneSplitFactory<D>> {
+        self.command_options.split_factory()
+    }
+    /// Configure the proportional step used by command-level resize actions.
+    pub fn with_resize_step(mut self, step: f64) -> Self {
+        self.command_options = self.command_options.with_resize_step(step);
+        self
+    }
+    /// Replace the proportional step used by command-level resize actions.
+    pub fn set_resize_step(&mut self, step: f64) {
+        self.command_options.set_resize_step(step);
+    }
+    /// Return the proportional step used by command-level resize actions.
+    pub fn resize_step(&self) -> f64 {
+        self.command_options.resize_step()
     }
     pub fn with_focus_behavior(mut self, behavior: PaneFocusBehavior) -> Self {
         self.settings = MullionSettings::local(behavior);
@@ -497,7 +556,12 @@ impl<D: PaneData> MullionView<D> {
         result
     }
     fn command(&mut self, command: crate::PaneCommand, cx: &mut Context<Self>) {
-        let _ = self.execute(command, |_, _, _| None, cx);
+        #[cfg(test)]
+        self.routed_commands.push(command);
+        let _ = self
+            .model
+            .execute_with_options(command, &self.command_options);
+        self.finish(cx);
     }
     fn resize_keyboard_split(&mut self, delta: f64, cx: &mut Context<Self>) {
         let Some(key) = self.keyboard_split.clone() else {
@@ -1133,41 +1197,169 @@ impl<D: PaneData> Render for MullionView<D> {
                 })
                 .collect::<Vec<_>>()
         });
+        let key_context = if self.keyboard_split.is_some() {
+            "Mullion MullionSplitter"
+        } else {
+            crate::MULLION_KEY_CONTEXT
+        };
         div()
-            .key_context("Mullion")
+            .key_context(key_context)
             .track_focus(&self.focus_handle)
             .size_full()
             .flex()
             .flex_col()
             .bg(self.theme.background)
-            .on_action(cx.listener(|this, _: &FocusLeft, _, cx| {
+            .on_action(cx.listener(|this, _: &crate::FocusLeft, _, cx| {
                 this.command(crate::PaneCommand::Focus(PaneDirection::Left), cx)
             }))
-            .on_action(cx.listener(|this, _: &FocusRight, _, cx| {
+            .on_action(cx.listener(|this, _: &crate::FocusRight, _, cx| {
                 this.command(crate::PaneCommand::Focus(PaneDirection::Right), cx)
             }))
-            .on_action(cx.listener(|this, _: &FocusUp, _, cx| {
+            .on_action(cx.listener(|this, _: &crate::FocusUp, _, cx| {
                 this.command(crate::PaneCommand::Focus(PaneDirection::Up), cx)
             }))
-            .on_action(cx.listener(|this, _: &FocusDown, _, cx| {
+            .on_action(cx.listener(|this, _: &crate::FocusDown, _, cx| {
                 this.command(crate::PaneCommand::Focus(PaneDirection::Down), cx)
             }))
-            .on_action(cx.listener(|this, _: &FocusNext, _, cx| {
+            .on_action(cx.listener(|this, _: &crate::FocusNext, _, cx| {
                 this.command(crate::PaneCommand::FocusNext, cx)
             }))
-            .on_action(cx.listener(|this, _: &FocusPrevious, _, cx| {
+            .on_action(cx.listener(|this, _: &crate::FocusPrevious, _, cx| {
                 this.command(crate::PaneCommand::FocusPrevious, cx)
             }))
+            .on_action(cx.listener(|this, _: &crate::FocusFirst, _, cx| {
+                this.command(crate::PaneCommand::FocusFirst, cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::FocusLast, _, cx| {
+                this.command(crate::PaneCommand::FocusLast, cx)
+            }))
+            .on_action(cx.listener(|this, action: &crate::FocusPane, _, cx| {
+                this.command(crate::PaneCommand::FocusIndex(action.index), cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::SplitPaneHorizontal, _, cx| {
+                this.command(crate::PaneCommand::Split(SplitDirection::Horizontal), cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::SplitPaneVertical, _, cx| {
+                this.command(crate::PaneCommand::Split(SplitDirection::Vertical), cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::ClosePane, _, cx| {
+                this.command(crate::PaneCommand::Close, cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::MovePaneLeft, _, cx| {
+                this.command(crate::PaneCommand::Move(PaneDirection::Left), cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::MovePaneRight, _, cx| {
+                this.command(crate::PaneCommand::Move(PaneDirection::Right), cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::MovePaneUp, _, cx| {
+                this.command(crate::PaneCommand::Move(PaneDirection::Up), cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::MovePaneDown, _, cx| {
+                this.command(crate::PaneCommand::Move(PaneDirection::Down), cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::SwapPaneLeft, _, cx| {
+                this.command(crate::PaneCommand::Swap(PaneDirection::Left), cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::SwapPaneRight, _, cx| {
+                this.command(crate::PaneCommand::Swap(PaneDirection::Right), cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::SwapPaneUp, _, cx| {
+                this.command(crate::PaneCommand::Swap(PaneDirection::Up), cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::SwapPaneDown, _, cx| {
+                this.command(crate::PaneCommand::Swap(PaneDirection::Down), cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::SwapPaneNext, _, cx| {
+                this.command(crate::PaneCommand::SwapNext, cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::SwapPanePrevious, _, cx| {
+                this.command(crate::PaneCommand::SwapPrevious, cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::ResizePaneLeft, _, cx| {
+                this.command(crate::PaneCommand::Resize(PaneDirection::Left), cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::ResizePaneRight, _, cx| {
+                this.command(crate::PaneCommand::Resize(PaneDirection::Right), cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::ResizePaneUp, _, cx| {
+                this.command(crate::PaneCommand::Resize(PaneDirection::Up), cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::ResizePaneDown, _, cx| {
+                this.command(crate::PaneCommand::Resize(PaneDirection::Down), cx)
+            }))
             .on_action(
-                cx.listener(|this, _: &ClosePane, _, cx| {
-                    this.command(crate::PaneCommand::Close, cx)
+                cx.listener(|this, _: &crate::SetParentSplitHorizontal, _, cx| {
+                    this.command(
+                        crate::PaneCommand::SetParentSplitDirection(SplitDirection::Horizontal),
+                        cx,
+                    )
                 }),
             )
-            .on_action(cx.listener(|this, _: &ToggleZoom, _, cx| {
-                this.command(crate::PaneCommand::ToggleZoom, cx)
-            }))
-            .on_action(cx.listener(|this, _: &BalancePanes, _, cx| {
+            .on_action(
+                cx.listener(|this, _: &crate::SetParentSplitVertical, _, cx| {
+                    this.command(
+                        crate::PaneCommand::SetParentSplitDirection(SplitDirection::Vertical),
+                        cx,
+                    )
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::ToggleParentSplitDirection, _, cx| {
+                    this.command(crate::PaneCommand::ToggleParentSplitDirection, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &crate::BalancePanes, _, cx| {
                 this.command(crate::PaneCommand::Balance, cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::RotatePanesForward, _, cx| {
+                this.command(crate::PaneCommand::Rotate(crate::PaneRotation::Forward), cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::RotatePanesBackward, _, cx| {
+                this.command(
+                    crate::PaneCommand::Rotate(crate::PaneRotation::Backward),
+                    cx,
+                )
+            }))
+            .on_action(
+                cx.listener(|this, _: &crate::ApplyEvenHorizontalLayout, _, cx| {
+                    this.command(
+                        crate::PaneCommand::ApplyLayout(crate::PaneLayout::EvenHorizontal),
+                        cx,
+                    )
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::ApplyEvenVerticalLayout, _, cx| {
+                    this.command(
+                        crate::PaneCommand::ApplyLayout(crate::PaneLayout::EvenVertical),
+                        cx,
+                    )
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::ApplyMainHorizontalLayout, _, cx| {
+                    this.command(
+                        crate::PaneCommand::ApplyLayout(crate::PaneLayout::MainHorizontal),
+                        cx,
+                    )
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::ApplyMainVerticalLayout, _, cx| {
+                    this.command(
+                        crate::PaneCommand::ApplyLayout(crate::PaneLayout::MainVertical),
+                        cx,
+                    )
+                }),
+            )
+            .on_action(cx.listener(|this, _: &crate::ApplyTiledLayout, _, cx| {
+                this.command(
+                    crate::PaneCommand::ApplyLayout(crate::PaneLayout::Tiled),
+                    cx,
+                )
+            }))
+            .on_action(cx.listener(|this, _: &crate::ToggleZoom, _, cx| {
+                this.command(crate::PaneCommand::ToggleZoom, cx)
             }))
             .on_action(cx.listener(|this, _: &ResizeSplitDecrease, _, cx| {
                 this.resize_keyboard_split(-KEYBOARD_RESIZE_STEP, cx)
@@ -1208,21 +1400,57 @@ impl<D: PaneData> Render for MullionView<D> {
     }
 }
 
-/// Register the default, direct native key bindings. Hosts may override them later.
+/// Compile and register a custom Mullion keymap in the standard [`crate::MULLION_KEY_CONTEXT`].
+///
+/// By default, compiled bindings require `Mullion && !MullionEditable`. A host
+/// should add `MullionEditable` with `key_context` around text inputs or other
+/// editable descendants. This cooperative marker lets editing shortcuts win.
+/// Maps created with [`crate::MullionKeymap::capture_editable_targets`] opt into
+/// capture and are bound to `Mullion` without that suppression predicate.
+pub fn try_register_key_bindings(
+    cx: &mut App,
+    keymap: &crate::MullionKeymap,
+) -> Result<(), crate::KeymapCompileError> {
+    let bindings = crate::compile_keymap(keymap, crate::MULLION_KEY_CONTEXT)?;
+    cx.bind_keys(bindings);
+    Ok(())
+}
+
+/// Alias for [`try_register_key_bindings`] for hosts that name the custom map explicitly.
+pub fn register_keymap(
+    cx: &mut App,
+    keymap: &crate::MullionKeymap,
+) -> Result<(), crate::KeymapCompileError> {
+    try_register_key_bindings(cx, keymap)
+}
+
+/// Register the complete default [`crate::MullionKeymap`].
+///
+/// This compatibility entry point is infallible because the built-in map and
+/// context are crate-owned constants. Use [`try_register_key_bindings`] for
+/// user-provided maps so invalid keystrokes can be reported.
 pub fn register_key_bindings(cx: &mut App) {
+    try_register_key_bindings(cx, &crate::MullionKeymap::default())
+        .expect("the built-in Mullion keymap must compile");
+
+    // Splitter-local manipulation is intentionally not part of PaneCommand or
+    // MullionKeymap: these actions operate on the last directly manipulated bar.
     cx.bind_keys([
-        gpui::KeyBinding::new("alt-left", FocusLeft, None),
-        gpui::KeyBinding::new("alt-right", FocusRight, None),
-        gpui::KeyBinding::new("alt-up", FocusUp, None),
-        gpui::KeyBinding::new("alt-down", FocusDown, None),
-        gpui::KeyBinding::new("alt-pagedown", FocusNext, None),
-        gpui::KeyBinding::new("alt-pageup", FocusPrevious, None),
-        gpui::KeyBinding::new("ctrl-shift-backspace", ClosePane, None),
-        gpui::KeyBinding::new("ctrl-shift-enter", ToggleZoom, None),
-        gpui::KeyBinding::new("ctrl-alt-=", BalancePanes, None),
-        gpui::KeyBinding::new("ctrl-alt-[", ResizeSplitDecrease, Some("Mullion")),
-        gpui::KeyBinding::new("ctrl-alt-]", ResizeSplitIncrease, Some("Mullion")),
-        gpui::KeyBinding::new("escape", CancelSplitResize, Some("Mullion")),
+        gpui::KeyBinding::new(
+            "ctrl-alt-[",
+            ResizeSplitDecrease,
+            Some(MULLION_SPLITTER_KEY_CONTEXT),
+        ),
+        gpui::KeyBinding::new(
+            "ctrl-alt-]",
+            ResizeSplitIncrease,
+            Some(MULLION_SPLITTER_KEY_CONTEXT),
+        ),
+        gpui::KeyBinding::new(
+            "escape",
+            CancelSplitResize,
+            Some(MULLION_SPLITTER_KEY_CONTEXT),
+        ),
     ]);
 }
 
@@ -1238,6 +1466,148 @@ mod tests {
             Arc,
         },
     };
+
+    #[gpui::test]
+    fn every_gpui_command_action_routes_through_the_configured_dispatcher(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            MullionView::new(
+                PaneNode::leaf(PaneId::new("only"), "data".to_owned()),
+                vec![],
+                cx,
+            )
+        });
+        cx.run_until_parked();
+
+        cx.dispatch_action(crate::FocusLeft);
+        cx.dispatch_action(crate::FocusRight);
+        cx.dispatch_action(crate::FocusUp);
+        cx.dispatch_action(crate::FocusDown);
+        cx.dispatch_action(crate::FocusNext);
+        cx.dispatch_action(crate::FocusPrevious);
+        cx.dispatch_action(crate::FocusFirst);
+        cx.dispatch_action(crate::FocusLast);
+        cx.dispatch_action(crate::SplitPaneHorizontal);
+        cx.dispatch_action(crate::SplitPaneVertical);
+        cx.dispatch_action(crate::ClosePane);
+        cx.dispatch_action(crate::MovePaneLeft);
+        cx.dispatch_action(crate::MovePaneRight);
+        cx.dispatch_action(crate::MovePaneUp);
+        cx.dispatch_action(crate::MovePaneDown);
+        cx.dispatch_action(crate::SwapPaneLeft);
+        cx.dispatch_action(crate::SwapPaneRight);
+        cx.dispatch_action(crate::SwapPaneUp);
+        cx.dispatch_action(crate::SwapPaneDown);
+        cx.dispatch_action(crate::SwapPaneNext);
+        cx.dispatch_action(crate::SwapPanePrevious);
+        cx.dispatch_action(crate::ResizePaneLeft);
+        cx.dispatch_action(crate::ResizePaneRight);
+        cx.dispatch_action(crate::ResizePaneUp);
+        cx.dispatch_action(crate::ResizePaneDown);
+        cx.dispatch_action(crate::SetParentSplitHorizontal);
+        cx.dispatch_action(crate::SetParentSplitVertical);
+        cx.dispatch_action(crate::ToggleParentSplitDirection);
+        cx.dispatch_action(crate::BalancePanes);
+        cx.dispatch_action(crate::RotatePanesForward);
+        cx.dispatch_action(crate::RotatePanesBackward);
+        cx.dispatch_action(crate::ApplyEvenHorizontalLayout);
+        cx.dispatch_action(crate::ApplyEvenVerticalLayout);
+        cx.dispatch_action(crate::ApplyMainHorizontalLayout);
+        cx.dispatch_action(crate::ApplyMainVerticalLayout);
+        cx.dispatch_action(crate::ApplyTiledLayout);
+        cx.dispatch_action(crate::ToggleZoom);
+        cx.dispatch_action(crate::FocusPane { index: 23 });
+
+        view.read_with(cx, |view, _| {
+            let mut expected = crate::PaneCommand::catalog();
+            expected.push(crate::PaneCommand::FocusIndex(23));
+            assert_eq!(view.routed_commands, expected);
+        });
+    }
+
+    #[gpui::test]
+    fn complete_default_keymap_dispatches_through_the_rendered_view(cx: &mut TestAppContext) {
+        cx.update(register_key_bindings);
+        let keymap = crate::MullionKeymap::default();
+        let expected = keymap.normalized_sequences();
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            MullionView::new(
+                PaneNode::leaf(PaneId::new("only"), "data".to_owned()),
+                vec![],
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        let pane = cx.debug_bounds("pane:only").unwrap().center();
+        cx.simulate_mouse_move(pane, None, gpui::Modifiers::none());
+        for (sequence, _) in &expected {
+            cx.simulate_keystrokes(sequence);
+        }
+        view.read_with(cx, |view, _| {
+            assert_eq!(
+                view.routed_commands,
+                expected
+                    .into_iter()
+                    .map(|(_, command)| command)
+                    .collect::<Vec<_>>()
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn configured_split_factory_and_resize_step_drive_actions(cx: &mut TestAppContext) {
+        let calls = Arc::new(AtomicU8::new(0));
+        let tree = split(SplitDirection::Horizontal, 0.5, leaf("a"), leaf("b"));
+        let (view, cx) = cx
+            .add_window_view(move |_, cx| MullionView::new(tree, vec![], cx).with_resize_step(0.2));
+        cx.run_until_parked();
+
+        // No factory means unavailable and is inert.
+        cx.dispatch_action(crate::SplitPaneVertical);
+        assert_eq!(
+            view.read_with(cx, |view, _| view.model().tree().leaf_ids().len()),
+            2
+        );
+
+        let refusal_calls = calls.clone();
+        view.update(cx, |view, _| {
+            view.set_split_factory(Some(Arc::new(move |_, _, _| {
+                refusal_calls.fetch_add(1, Ordering::SeqCst);
+                None
+            })));
+        });
+        cx.dispatch_action(crate::SplitPaneVertical);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            view.read_with(cx, |view, _| view.model().tree().leaf_ids().len()),
+            2
+        );
+
+        view.update(cx, |view, _| {
+            view.set_split_factory(Some(Arc::new(|_, _, data: &String| {
+                Some((PaneId::new("created"), format!("{data}-split")))
+            })));
+        });
+        cx.dispatch_action(crate::SplitPaneVertical);
+        assert_eq!(
+            view.read_with(cx, |view, _| view.model().tree().leaf_ids().len()),
+            3
+        );
+
+        // Focus the original first pane, then grow it toward the right boundary.
+        cx.dispatch_action(crate::FocusPane { index: 0 });
+        cx.dispatch_action(crate::ResizePaneRight);
+        assert_eq!(
+            view.read_with(cx, |view, _| crate::tree::find_ratio(
+                view.model().tree(),
+                &PaneId::new("b")
+            )),
+            Some(0.7)
+        );
+        assert_eq!(
+            view.read_with(cx, |view, _| view.model().focused().cloned()),
+            Some(PaneId::new("a"))
+        );
+    }
 
     struct StatefulBody;
 

@@ -273,6 +273,16 @@ impl<D> PaneCommandExecutionOptions<D> {
         self
     }
 
+    /// Return the configured split factory, if splitting is enabled.
+    pub fn split_factory(&self) -> Option<&PaneSplitFactory<D>> {
+        self.split_factory.as_ref()
+    }
+
+    /// Replace the split factory. Passing `None` disables split commands.
+    pub fn set_split_factory(&mut self, factory: Option<PaneSplitFactory<D>>) {
+        self.split_factory = factory;
+    }
+
     pub fn with_split_factory_fn(
         mut self,
         factory: impl Fn(&crate::PaneId, SplitDirection, &D) -> Option<(crate::PaneId, D)>
@@ -294,6 +304,14 @@ impl<D> PaneCommandExecutionOptions<D> {
     pub fn can_split(&self) -> bool {
         self.split_factory.is_some()
     }
+
+    /// Replace the resize increment when it is finite and positive.
+    pub fn set_resize_step(&mut self, step: f64) {
+        if step.is_finite() && step > 0.0 {
+            self.resize_step = step;
+        }
+    }
+
     pub fn resize_step(&self) -> f64 {
         self.resize_step
     }

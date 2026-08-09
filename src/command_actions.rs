@@ -211,7 +211,12 @@ pub fn compile_keymap(
     keymap: &MullionKeymap,
     context: &str,
 ) -> Result<Vec<KeyBinding>, KeymapCompileError> {
-    let context = KeyBindingContextPredicate::parse(context)
+    let context = if keymap.captures_editable_targets() {
+        context.to_owned()
+    } else {
+        format!("({context}) && !MullionEditable")
+    };
+    let context = KeyBindingContextPredicate::parse(&context)
         .map_err(|error| KeymapCompileError::InvalidContext(error.to_string()))?;
     let context = Rc::new(context);
 
@@ -273,6 +278,22 @@ mod tests {
                 assert!(binding.predicate().is_some());
             }
         }
+    }
+
+    #[test]
+    fn editable_context_is_suppressed_unless_capture_is_explicit() {
+        let suppressed = compile_keymap(&MullionKeymap::mullion(), MULLION_KEY_CONTEXT).unwrap();
+        let captured = compile_keymap(
+            &MullionKeymap::mullion().capture_editable_targets(true),
+            MULLION_KEY_CONTEXT,
+        )
+        .unwrap();
+        let suppressed = suppressed[0].predicate().unwrap().to_string();
+        let captured = captured[0].predicate().unwrap().to_string();
+        assert!(suppressed.contains("Mullion"));
+        assert!(suppressed.contains("MullionEditable"));
+        assert!(suppressed.contains('!'));
+        assert_eq!(captured, MULLION_KEY_CONTEXT);
     }
 
     #[test]

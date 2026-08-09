@@ -13,7 +13,7 @@ This repository is the GPUI successor to the Leptos `mullion` library and is int
 - Portable, serde-compatible binary `PaneNode<D>` with stable string pane/activity/category IDs.
 - Split, close, move, swap, resize, rotate, balance, five standard layouts, stable split keys, geometric directional navigation, boundary calculations, and extensive inherited model tests.
 - Toolkit-independent `MullionModel`: durable focus, zoom, pane data/activity updates, commands, host-created splits, and typed mutation plus snapshot events.
-- Shared GPUI `MullionView`: recursive layout, basic activity content, headers, focus chrome, zoom, center-only pane docking, click-step resize, a partial action set, and default bindings.
+- Shared GPUI `MullionView`: recursive layout, basic activity content, headers, focus chrome, zoom, center-only pane docking, click-step resize, the full portable command action set, and customizable default bindings.
 - Serializable named workspaces switched inside the shared view, plus native/browser baseline demos.
 
 ## Quick start
@@ -63,7 +63,13 @@ let view = cx.new(|cx| {
 
 Factories are `Rc`-backed and deliberately have no `Send + Sync` requirement. They run lazily once per `(workspace, pane, activity)` when selected. Body and optional header are stable `AnyView` entities across activity switching and topology-only changes. A cached instance's update hook runs only when that pane's `D` changes. Filtering out an activity, closing its pane, removing its workspace, or releasing the Mullion root evicts it and calls its App-only disposal hook exactly once. `clear_activity_cache` permits earlier explicit teardown. Registering the same activity ID replaces its factory and returns the previous factory; existing instances retain the factory that created them until eviction. If no factory is registered, the unchanged legacy `Activity::render` path is used.
 
-At application startup call `register_key_bindings(cx)` and focus `view.read(cx).focus_handle()` after opening the window (as the demo does). Subscribe to `PaneEvent<D>` for pane/model changes. `MullionView::new_with_workspaces` optionally gives the view ownership of a `WorkspaceSet`; every `TreeChanged` snapshot is persisted into its active workspace, the built-in tab strip switches trees in the same window/canvas, and `WorkspaceChanged` is emitted after a successful switch. Use `workspaces()` to inspect the current set and `switch_workspace(...)` to switch programmatically.
+At application startup call `register_key_bindings(cx)` and focus `view.read(cx).focus_handle()` after opening the window (as the demo does). This registers every sequence in `MullionKeymap::default()` under the `Mullion` context. For a user-defined map, call `try_register_key_bindings(cx, &keymap)` (or `register_keymap`) and report its `KeymapCompileError` rather than panicking.
+
+All 37 static `PaneCommand`s and dynamic `FocusPane { index }` actions route through the view's shared `PaneCommandExecutionOptions`. Configure host-created panes and resize increments with `with_split_factory[_fn]`, `set_split_factory`, `with_resize_step`, or `set_resize_step`; the legacy public `execute(command, factory, cx)` remains available. A missing split factory returns `SplitUnavailable`, while a configured factory returning `None` returns `SplitRefused` at the model API.
+
+Default bindings cooperatively avoid editable descendants. Mullion installs `Mullion` on its root; hosts should install the additional `MullionEditable` key context on text fields, editors, and other controls that must retain editing shortcuts. A custom map can explicitly opt into capturing those shortcuts with `capture_editable_targets(true)`. Splitter-local resize/cancel actions remain separate from `PaneCommand` and become active only in the `MullionSplitter` context after direct splitter selection.
+
+Subscribe to `PaneEvent<D>` for pane/model changes. `MullionView::new_with_workspaces` optionally gives the view ownership of a `WorkspaceSet`; every `TreeChanged` snapshot is persisted into its active workspace, the built-in tab strip switches trees in the same window/canvas, and `WorkspaceChanged` is emitted after a successful switch. Use `workspaces()` to inspect the current set and `switch_workspace(...)` to switch programmatically.
 
 ## Window architecture
 
