@@ -52,6 +52,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           targets: wasm32-unknown-unknown
+          components: rust-src, rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Format browser workspace
         run: cargo fmt --manifest-path examples/web/Cargo.toml -- --check
