@@ -3,20 +3,34 @@ set -euo pipefail
 
 runtime_dir="$(mktemp -d)"
 weston_log="${TMPDIR:-/tmp}/mullion-weston.log"
+xvfb_log="${TMPDIR:-/tmp}/mullion-xvfb.log"
 demo_log="${TMPDIR:-/tmp}/mullion-wayland-demo.log"
 chmod 700 "$runtime_dir"
 export XDG_RUNTIME_DIR="$runtime_dir"
 export WAYLAND_DISPLAY=wayland-mullion-ci
-unset DISPLAY
 
-weston --backend=headless-backend.so --socket="$WAYLAND_DISPLAY" --idle-time=0 --use-pixman   >"$weston_log" 2>&1 &
+# Weston headless publishes no wl_seat, while GPUI requires one. Nest Weston's
+# X11 backend under Xvfb so Mullion still exercises a real Wayland client,
+# surface, and input path with a deterministic virtual seat.
+Xvfb :99 -screen 0 1280x720x24 -nolisten tcp >"$xvfb_log" 2>&1 &
+xvfb_pid=$!
+for _ in $(seq 1 100); do
+  [[ -S /tmp/.X11-unix/X99 ]] && break
+  kill -0 "$xvfb_pid" 2>/dev/null || { cat "$xvfb_log"; exit 1; }
+  sleep 0.1
+done
+[[ -S /tmp/.X11-unix/X99 ]] || { cat "$xvfb_log"; exit 1; }
+
+DISPLAY=:99 weston --backend=x11-backend.so --socket="$WAYLAND_DISPLAY" --idle-time=0 --use-pixman --width=1280 --height=720 >"$weston_log" 2>&1 &
 weston_pid=$!
 cleanup() {
-  kill "$weston_pid" 2>/dev/null || true
+  kill "$weston_pid" "$xvfb_pid" 2>/dev/null || true
   wait "$weston_pid" 2>/dev/null || true
+  wait "$xvfb_pid" 2>/dev/null || true
   rm -rf "$runtime_dir"
 }
 trap cleanup EXIT
+unset DISPLAY
 
 for _ in $(seq 1 100); do
   if [[ -S "$runtime_dir/$WAYLAND_DISPLAY" ]]; then
