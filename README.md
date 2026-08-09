@@ -46,6 +46,8 @@ A browser session owns exactly one document/canvas-backed GPUI window. `MullionV
 
 ```sh
 cargo run --example demo
+# Force Wayland when both Wayland and X11 session variables are present
+# env -u DISPLAY cargo run --example demo
 
 # Browser (install wasm32-unknown-unknown and Trunk first)
 cd examples/web && trunk serve
