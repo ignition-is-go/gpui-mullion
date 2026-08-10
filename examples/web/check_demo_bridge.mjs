@@ -170,18 +170,22 @@ assert(
 // Controlled policy is visible synchronously; wait for the next GPUI paint so
 // real CDP input targets the newly installed backdrop rather than stale hit data.
 await sleep(300);
+// Avoid the activity rail at the top-left: use an otherwise empty pane point
+// outside the centered 360x140 modal content.
+const backdropPoint = {
+  x: canvasOrigin.left + canvasOrigin.width - 16,
+  y: canvasOrigin.top + canvasOrigin.height - 80,
+};
 await command("Input.dispatchMouseEvent", {
   type: "mousePressed",
-  x: canvasOrigin.left + 4,
-  y: canvasOrigin.top + 4,
+  ...backdropPoint,
   button: "left",
   buttons: 1,
   clickCount: 1,
 });
 await command("Input.dispatchMouseEvent", {
   type: "mouseReleased",
-  x: canvasOrigin.left + 4,
-  y: canvasOrigin.top + 4,
+  ...backdropPoint,
   button: "left",
   buttons: 0,
   clickCount: 1,
