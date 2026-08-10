@@ -7,12 +7,17 @@ use gpui::{
 };
 use gpui::{Context, Entity};
 use gpui_mullion::{
-    register_key_bindings, Activity, ActivityBarHostConfig, ActivityBarSlots, ActivityCatalog,
-    ActivityCategory, ActivityChrome, ActivityIcon, ActivityId, ActivityNode, CategoryChrome,
-    CategoryId, DropEdge, FocusPresentation, MullionSettings, MullionStyles, MullionView,
-    PaneFocusBehavior, PaneId, PaneNode, SplitDirection, Workspace, WorkspaceId, WorkspaceSet,
+    register_key_bindings, Activity, ActivityBarConfig, ActivityBarEdge, ActivityBarHostConfig,
+    ActivityBarMode, ActivityBarSlots, ActivityCatalog, ActivityCategory, ActivityChrome,
+    ActivityIcon, ActivityId, ActivityNode, CategoryChrome, CategoryId, DropEdge,
+    FocusPresentation, MullionOverlay, MullionSettings, MullionStyles, MullionView,
+    OverlayAlignment, OverlayBackdrop, OverlayHostConfig, OverlayLength, OverlayPlacement,
+    OverlaySize, OverlayStack, OverlayTier, PaneFocusBehavior, PaneId, PaneNode, SplitDirection,
+    Workspace, WorkspaceId, WorkspaceSet,
 };
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::{
     atomic::{AtomicU64, AtomicU8, Ordering},
     Arc, Mutex,
@@ -727,6 +732,85 @@ fn catalog(control: Arc<DemoControl>) -> ActivityCatalog<DemoData> {
     catalog
 }
 
+fn demo_overlay(id: &str) -> MullionOverlay {
+    match id {
+        "modal" => MullionOverlay::new("modal", |_, _| {
+            div()
+                .w_full()
+                .h_full()
+                .rounded(px(8.))
+                .bg(rgb(0x202020))
+                .border_1()
+                .border_color(rgb(0x555555))
+                .p(px(20.))
+                .text_color(rgb(0xeeeeee))
+                .child("Controlled modal · click the backdrop to dismiss")
+                .into_any_element()
+        })
+        .with_tier(OverlayTier::Modal)
+        .with_placement(OverlayPlacement::CENTER)
+        .with_size(OverlaySize::new(
+            OverlayLength::Pixels(360.0),
+            OverlayLength::Pixels(140.0),
+        ))
+        .with_backdrop(OverlayBackdrop::default())
+        .dismiss_on_backdrop(true)
+        .a11y_modal(true)
+        .with_a11y_label("Mullion demo modal"),
+        "toast" => MullionOverlay::new("toast", |_, _| {
+            div()
+                .w_full()
+                .h_full()
+                .rounded(px(6.))
+                .bg(rgb(0x24452f))
+                .p(px(12.))
+                .text_color(rgb(0xeeeeee))
+                .child("Controlled toast")
+                .into_any_element()
+        })
+        .with_tier(OverlayTier::Toast)
+        .with_placement(OverlayPlacement::new(
+            OverlayAlignment::End,
+            OverlayAlignment::Start,
+        ))
+        .with_size(OverlaySize::new(
+            OverlayLength::Pixels(220.0),
+            OverlayLength::Pixels(48.0),
+        )),
+        "drag" => MullionOverlay::new("drag", |_, _| {
+            div()
+                .w_full()
+                .h_full()
+                .border_1()
+                .border_color(rgb(0x75beff))
+                .text_color(rgb(0x75beff))
+                .child("Drag preview (click-through)")
+                .into_any_element()
+        })
+        .with_tier(OverlayTier::Drag)
+        .with_placement(OverlayPlacement::FILL)
+        .with_size(OverlaySize::FILL)
+        .click_through(true),
+        _ => unreachable!("unknown demo overlay"),
+    }
+}
+
+fn set_demo_overlays(stack: &Rc<RefCell<OverlayStack>>, selection: &str) {
+    let overlays = match selection {
+        "modal" => vec![demo_overlay("modal")],
+        "toast" => vec![demo_overlay("toast")],
+        "drag" => vec![demo_overlay("drag")],
+        "all" => vec![
+            demo_overlay("modal"),
+            demo_overlay("toast"),
+            demo_overlay("drag"),
+        ],
+        "clear" => Vec::new(),
+        _ => return,
+    };
+    *stack.borrow_mut() = OverlayStack::from_overlays(overlays).expect("demo overlays are valid");
+}
+
 #[derive(Default)]
 struct DemoControl {
     split_counter: AtomicU64,
@@ -810,8 +894,78 @@ fn demo_styles() -> MullionStyles {
     styles
 }
 
+#[cfg(not(target_family = "wasm"))]
+fn native_demo_controls(
+    view: &Entity<MullionView<DemoData>>,
+    overlays: &Rc<RefCell<OverlayStack>>,
+) -> Vec<gpui::AnyElement> {
+    let mut controls = Vec::new();
+    for (label, edge) in [
+        ("Left", ActivityBarEdge::Left),
+        ("Right", ActivityBarEdge::Right),
+        ("Top", ActivityBarEdge::Top),
+        ("Bottom", ActivityBarEdge::Bottom),
+    ] {
+        let view = view.clone();
+        controls.push(
+            div()
+                .id(format!("demo-bar-edge:{label}"))
+                .px_1()
+                .cursor_pointer()
+                .child(label)
+                .on_click(move |_, _, cx| {
+                    let current = view.read(cx).activity_bar_host().activity_bar;
+                    view.update(cx, |view, cx| {
+                        view.set_activity_bar_config(ActivityBarConfig { edge, ..current }, cx);
+                    });
+                })
+                .into_any_element(),
+        );
+    }
+    for (label, mode) in [
+        ("Pinned", ActivityBarMode::Pinned),
+        ("Auto", ActivityBarMode::AutoHide),
+        ("Hidden", ActivityBarMode::Hidden),
+    ] {
+        let view = view.clone();
+        controls.push(
+            div()
+                .id(format!("demo-bar-mode:{label}"))
+                .px_1()
+                .cursor_pointer()
+                .child(label)
+                .on_click(move |_, _, cx| {
+                    let current = view.read(cx).activity_bar_host().activity_bar;
+                    view.update(cx, |view, cx| {
+                        view.set_activity_bar_config(ActivityBarConfig { mode, ..current }, cx);
+                    });
+                })
+                .into_any_element(),
+        );
+    }
+    for selection in ["modal", "toast", "drag", "all", "clear"] {
+        let view = view.clone();
+        let overlays = overlays.clone();
+        controls.push(
+            div()
+                .id(format!("demo-overlay:{selection}"))
+                .px_1()
+                .cursor_pointer()
+                .child(selection)
+                .on_click(move |_, _, cx| {
+                    set_demo_overlays(&overlays, selection);
+                    view.update(cx, |_, cx| cx.notify());
+                })
+                .into_any_element(),
+        );
+    }
+    controls
+}
+
 struct DemoRoot {
     view: Entity<MullionView<DemoData>>,
+    #[cfg(not(target_family = "wasm"))]
+    overlays: Rc<RefCell<OverlayStack>>,
 }
 
 impl gpui::Render for DemoRoot {
@@ -881,6 +1035,16 @@ impl gpui::Render for DemoRoot {
                                     })
                             }),
                     )
+                    .children({
+                        #[cfg(not(target_family = "wasm"))]
+                        {
+                            native_demo_controls(&self.view, &self.overlays)
+                        }
+                        #[cfg(target_family = "wasm")]
+                        {
+                            Vec::<gpui::AnyElement>::new()
+                        }
+                    })
                     .child(
                         div()
                             .ml_auto()
@@ -901,6 +1065,7 @@ fn launch(cx: &mut App) {
     gpui_command_palette::init(cx);
     let control = Arc::new(DemoControl::default());
     control.reset();
+    let overlays = Rc::new(RefCell::new(OverlayStack::new()));
     let bounds = Bounds::centered(None, size(px(1100.), px(720.)), cx);
     cx.open_window(
         WindowOptions {
@@ -915,6 +1080,8 @@ fn launch(cx: &mut App) {
             let split_control = control.clone();
             let drop_control = control.clone();
             let settings_control = control.clone();
+            let overlay_source = overlays.clone();
+            let dismiss_overlays = overlays.clone();
             let view = cx.new(|cx| {
                 let split_factory = move |source: &PaneId,
                                           direction: SplitDirection,
@@ -969,6 +1136,13 @@ fn launch(cx: &mut App) {
                     .with_styles(demo_styles())
                     .with_workspace_switcher_visible(false)
                     .with_activity_bar_host(host_config())
+                    .with_overlay_host(
+                        OverlayHostConfig::controlled(move || overlay_source.borrow().clone())
+                            .with_dismiss_handler(move |id, _, cx| {
+                                let _ = dismiss_overlays.borrow_mut().remove(id.clone());
+                                cx.refresh_windows();
+                            }),
+                    )
             });
             gpui_mullion::install_command_palette_for_view(&view, window, cx);
             view.read(cx).focus_handle().clone().focus(window, cx);
@@ -976,8 +1150,13 @@ fn launch(cx: &mut App) {
             {
                 TEST_VIEW.with(|slot| *slot.borrow_mut() = Some(view.clone()));
                 TEST_CONTROL.with(|slot| *slot.borrow_mut() = Some(control.clone()));
+                TEST_OVERLAYS.with(|slot| *slot.borrow_mut() = Some(overlays.clone()));
             }
-            cx.new(|_| DemoRoot { view })
+            cx.new(|_| DemoRoot {
+                view,
+                #[cfg(not(target_family = "wasm"))]
+                overlays,
+            })
         },
     )
     .unwrap();
@@ -998,6 +1177,7 @@ thread_local! {
     static APPLICATION: std::cell::RefCell<Option<gpui::ApplicationHandle>> = const { std::cell::RefCell::new(None) };
     static TEST_VIEW: std::cell::RefCell<Option<Entity<MullionView<DemoData>>>> = const { std::cell::RefCell::new(None) };
     static TEST_CONTROL: std::cell::RefCell<Option<Arc<DemoControl>>> = const { std::cell::RefCell::new(None) };
+    static TEST_OVERLAYS: std::cell::RefCell<Option<Rc<RefCell<OverlayStack>>>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(target_family = "wasm")]
@@ -1017,6 +1197,8 @@ struct BrowserTestState {
     bar_hover: Option<String>,
     split_sequence: u64,
     drop_sequence: u64,
+    activity_bar: ActivityBarConfig,
+    overlays: Vec<gpui_mullion::OverlayPolicy>,
     catalog: serde_json::Value,
 }
 
@@ -1066,6 +1248,17 @@ fn browser_test_state() -> String {
                     .into_iter()
                     .find(|pane| view.activity_bar_is_expanded(pane))
                     .map(|pane| pane.0);
+                let overlays = TEST_OVERLAYS.with(|overlays| {
+                    overlays
+                        .borrow()
+                        .as_ref()
+                        .expect("demo overlays retained")
+                        .borrow()
+                        .insertion_order()
+                        .iter()
+                        .map(|overlay| overlay.policy().clone())
+                        .collect()
+                });
                 serde_json::to_string(&BrowserTestState {
                     active_workspace: view.workspaces().unwrap().active.clone(),
                     tree,
@@ -1080,6 +1273,8 @@ fn browser_test_state() -> String {
                     bar_hover,
                     split_sequence: control.split_counter.load(Ordering::SeqCst),
                     drop_sequence: control.drop_counter.load(Ordering::SeqCst),
+                    activity_bar: view.activity_bar_host().activity_bar,
+                    overlays,
                     catalog: serde_json::json!({
                         "primary": [
                             {"id":"0","name":"Explorer","color":"#75beff","children":["1","2","3","4"]},
@@ -1122,6 +1317,13 @@ fn browser_test_action(action: wasm_bindgen::JsValue, payload: wasm_bindgen::JsV
                 let view = view.as_ref().expect("demo view retained").clone();
                 let control = control.borrow();
                 let control = control.as_ref().expect("demo control retained").clone();
+                let overlays = TEST_OVERLAYS.with(|overlays| {
+                    overlays
+                        .borrow()
+                        .as_ref()
+                        .expect("demo overlays retained")
+                        .clone()
+                });
                 application.update(|cx| {
                     let field = |name: &str| {
                         payload_json
@@ -1188,6 +1390,8 @@ fn browser_test_action(action: wasm_bindgen::JsValue, payload: wasm_bindgen::JsV
                         match action.as_str() {
                             "reset" => {
                                 control.reset();
+                                set_demo_overlays(&overlays, "clear");
+                                view.set_activity_bar_config(ActivityBarConfig::default(), cx);
                                 for (id, tree) in [
                                     ("default", default_workspace()),
                                     ("triple", triple_workspace()),
@@ -1249,6 +1453,69 @@ fn browser_test_action(action: wasm_bindgen::JsValue, payload: wasm_bindgen::JsV
                                 } else {
                                     cx.notify();
                                 }
+                            }
+                            "activityBar" | "activity-bar" | "activityBarEdge"
+                            | "activity-bar-edge" | "activityBarMode" | "activity-bar-mode" => {
+                                let current = view.activity_bar_host().activity_bar;
+                                let edge_value = field("edge").or_else(|| {
+                                    matches!(
+                                        action.as_str(),
+                                        "activityBarEdge" | "activity-bar-edge"
+                                    )
+                                    .then(|| field("value").unwrap_or_else(|| payload_text.clone()))
+                                });
+                                let mode_value = field("mode").or_else(|| {
+                                    matches!(
+                                        action.as_str(),
+                                        "activityBarMode" | "activity-bar-mode"
+                                    )
+                                    .then(|| field("value").unwrap_or_else(|| payload_text.clone()))
+                                });
+                                let edge = match edge_value
+                                    .unwrap_or_else(|| format!("{:?}", current.edge))
+                                    .to_ascii_lowercase()
+                                    .as_str()
+                                {
+                                    "right" => ActivityBarEdge::Right,
+                                    "top" => ActivityBarEdge::Top,
+                                    "bottom" => ActivityBarEdge::Bottom,
+                                    _ => ActivityBarEdge::Left,
+                                };
+                                let mode = match mode_value
+                                    .unwrap_or_else(|| format!("{:?}", current.mode))
+                                    .to_ascii_lowercase()
+                                    .as_str()
+                                {
+                                    "hidden" => ActivityBarMode::Hidden,
+                                    "autohide" | "auto-hide" | "auto_hide" => {
+                                        ActivityBarMode::AutoHide
+                                    }
+                                    _ => ActivityBarMode::Pinned,
+                                };
+                                view.set_activity_bar_config(
+                                    ActivityBarConfig {
+                                        edge,
+                                        mode,
+                                        ..current
+                                    },
+                                    cx,
+                                );
+                            }
+                            "overlay" => {
+                                if let Some(selection) = field("value").or_else(|| field("kind")) {
+                                    set_demo_overlays(&overlays, &selection.to_ascii_lowercase());
+                                    cx.notify();
+                                }
+                            }
+                            "modal" | "toast" | "drag" | "all" | "clear" | "overlayModal"
+                            | "overlayToast" | "overlayDrag" | "overlayAll" | "overlayClear" => {
+                                let selection = action
+                                    .strip_prefix("overlay")
+                                    .filter(|value| !value.is_empty())
+                                    .unwrap_or(action.as_str())
+                                    .to_ascii_lowercase();
+                                set_demo_overlays(&overlays, &selection);
+                                cx.notify();
                             }
                             "focusBehavior" | "focus-behavior" => {
                                 let value = field("value").unwrap_or_else(|| payload_text.clone());
