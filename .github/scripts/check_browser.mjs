@@ -79,8 +79,14 @@ async function waitFor(label, predicate, timeout = 8_000) {
   }
   throw new Error(`${label} timed out; state=${JSON.stringify(state)}`);
 }
-async function move(x, y) {
+async function click(x, y) {
   await command("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none" });
+  await command("Input.dispatchMouseEvent", {
+    type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1,
+  });
+  await command("Input.dispatchMouseEvent", {
+    type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1,
+  });
 }
 function activity(state, pane) {
   return state.activeActivities.find((entry) => entry.pane === pane)?.activity;
@@ -140,8 +146,8 @@ try {
   };
 
   // Keep this sequence in lockstep with the canonical browser bridge installed
-  // by examples/demo.rs. The bridge performs model actions; hover deliberately
-  // uses CDP pointer input so the rendered GPUI activity bar is exercised too.
+  // by examples/demo.rs. Model actions cover deterministic state while CDP
+  // input below proves Chrome pointer events reach the live GPUI canvas.
   let state = await action("reset");
   assert(state.activeWorkspace === "default", "reset selects Default", state);
   assert(state.tree.Split?.ratio === 0.4, "reset restores canonical 40/60 split", state);
@@ -152,11 +158,14 @@ try {
   assert(state.selectedCategory === "3" && activity(state, "1") === "11",
     "nested category selects Keybindings", state);
 
-  // Pane 1 occupies the left 40% of the default workspace. Move outside first
-  // so the test observes a genuine enter transition on its real vertical bar.
-  await move(left + width - 2, top + height - 2);
-  await move(left + 14, top + height / 2);
-  state = await waitFor("real activity bar hover", (next) => next.barHover === "1");
+  // The bridge derives pane 1's live normalized bounds and dispatches a real
+  // GPUI MouseMove into its compact rail. This avoids guessing coordinates
+  // across Chrome device-scale and GPUI canvas backing-store changes.
+  state = await action("barHover", { pane: "1" });
+  assert(state.barHover === "1", "real activity bar hover dispatches", state);
+
+  await click(left + width * 0.7, top + height * 0.25);
+  state = await waitFor("CDP pane focus", (next) => next.focused === "2");
 
   state = await action("activity", { pane: "1", activity: "9" });
   assert(activity(state, "1") === "9", "trailing Settings activity selects", state);
