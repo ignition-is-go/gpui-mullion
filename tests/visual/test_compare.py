@@ -33,10 +33,17 @@ with tempfile.TemporaryDirectory() as temporary:
                   "--json", str(root / "uniform.json")],
         check=False,
     )
+    equal_summary = json.loads((root / "equal.json").read_text())
     summary = json.loads((root / "bad.json").read_text())
     assert ok.returncode == 0
     assert bad.returncode != 0
     assert uniform_check.returncode != 0 and uniform_compare.returncode != 0
     assert "uniform actual capture" in (root / "uniform.json").read_text()
+    assert equal_summary["difference_bounds"] is None
     assert summary["changed_pixels"] == 1 and summary["max_channel_difference"] == 240
-print("comparator self-test passed (equal accepted; change and uniform capture rejected)")
+    assert summary["difference_bounds"] == [1, 1, 2, 2]
+    assert Image.open(summary["diff"]).getpixel((1, 1)) == (240, 0, 0, 0)
+    assert Path(summary["heat"]).is_file()
+    blink = Image.open(summary["blink"])
+    assert blink.n_frames == 2
+print("comparator self-test passed (bounds/blink emitted; equal accepted; change and uniform rejected)")
