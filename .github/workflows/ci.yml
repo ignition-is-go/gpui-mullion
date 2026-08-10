@@ -112,7 +112,8 @@ jobs:
             > /tmp/mullion-chrome.log 2>&1 &
           chrome=$!
           trap 'kill -TERM -- -"$chrome" 2>/dev/null || true; kill "$server" 2>/dev/null || true' EXIT
-          if ! timeout 75 node .github/scripts/check_browser.mjs http://127.0.0.1:8181/; then
+          if ! timeout 75 node .github/scripts/check_browser.mjs http://127.0.0.1:8181/ \
+            || ! timeout 45 node examples/web/check_demo_bridge.mjs http://127.0.0.1:8181/; then
             cat /tmp/mullion-chrome.log
             test ! -f /tmp/mullion-browser-failure.json || cat /tmp/mullion-browser-failure.json
             exit 1
