@@ -457,6 +457,7 @@ pub struct MullionView<D: PaneData> {
     dock_drag_active: bool,
     focus_handle: FocusHandle,
     workspaces: Option<WorkspaceSet<D>>,
+    workspace_switcher_visible: bool,
     activity_factories: ActivityFactoryRegistry<D>,
     activity_cache: ActivityCache<D>,
     activity_render_cache: HashMap<(Option<WorkspaceId>, PaneId), PaneActivityRenderData<D>>,
@@ -515,6 +516,7 @@ impl<D: PaneData> MullionView<D> {
             dock_drag_active: false,
             focus_handle: cx.focus_handle(),
             workspaces: None,
+            workspace_switcher_visible: true,
             activity_factories: ActivityFactoryRegistry::new(),
             activity_cache: ActivityCache::default(),
             activity_render_cache: HashMap::new(),
@@ -595,6 +597,16 @@ impl<D: PaneData> MullionView<D> {
     }
     pub fn styles(&self) -> Option<&MullionStyles> {
         self.styles.as_ref()
+    }
+    /// Configure whether the built-in workspace switcher is rendered.
+    ///
+    /// Hosts can disable it when they provide their own workspace navigation.
+    pub fn with_workspace_switcher_visible(mut self, visible: bool) -> Self {
+        self.workspace_switcher_visible = visible;
+        self
+    }
+    pub const fn workspace_switcher_visible(&self) -> bool {
+        self.workspace_switcher_visible
     }
     pub fn with_activity_catalog(
         mut self,
@@ -3712,73 +3724,82 @@ impl<D: PaneData> Render for MullionView<D> {
             .unwrap_or(self.model.tree())
             .clone();
         let pane_ids = tree.leaf_ids();
-        let workspace_tabs = self.workspaces.as_ref().map(|set| {
-            let active = set.active.clone();
-            let count = set.workspaces.len();
-            set.workspaces
-                .iter()
-                .enumerate()
-                .map(|(index, workspace)| {
-                    let id = workspace.id.clone();
-                    let key_id = workspace.id.clone();
-                    let a11y_id = workspace.id.clone();
-                    let selected = id == active;
-                    let accessibility = crate::MullionAccessibilityNode::workspace(
-                        &workspace.id,
-                        &workspace.name,
-                        index,
-                        count,
-                        selected,
-                    );
-                    div()
-                        .id(SharedString::from(format!("workspace:{}", id.0)))
-                        .debug_selector({
-                            let id = id.clone();
-                            move || format!("workspace:{}", id.0)
-                        })
-                        .role(gpui::Role::Tab)
-                        .accessibility_id(format!("mullion-workspace-{}", workspace.id.0))
-                        .aria_label(accessibility.label)
-                        .aria_description(accessibility.description)
-                        .aria_selected(selected)
-                        .focusable()
-                        .tab_stop(true)
-                        .px(styles.workspace_switcher.horizontal_padding)
-                        .py(styles.workspace_switcher.vertical_padding)
-                        .rounded(styles.workspace_switcher.border_radius)
-                        .cursor_pointer()
-                        .text_size(styles.workspace_switcher.font_size)
-                        .line_height(styles.workspace_switcher.line_height)
-                        .text_color(if selected {
-                            styles.workspace_switcher.active_text
-                        } else {
-                            styles.workspace_switcher.text
-                        })
-                        .bg(if selected {
-                            styles.workspace_switcher.active_background
-                        } else {
-                            styles.workspace_switcher.background
-                        })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.switch_workspace(&id, cx);
-                        }))
-                        .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space" | " ") {
-                                this.switch_workspace(&key_id, cx);
-                                cx.stop_propagation();
-                            }
-                        }))
-                        .on_a11y_action(gpui::AccessibleAction::Click, {
-                            let view = cx.entity().downgrade();
-                            move |_, _, cx| {
-                                view.update(cx, |this, cx| this.switch_workspace(&a11y_id, cx))
-                                    .ok();
-                            }
-                        })
-                        .child(workspace.name.clone())
-                })
-                .collect::<Vec<_>>()
-        });
+        let workspace_tabs = self
+            .workspace_switcher_visible
+            .then_some(self.workspaces.as_ref())
+            .flatten()
+            .map(|set| {
+                let active = set.active.clone();
+                let count = set.workspaces.len();
+                set.workspaces
+                    .iter()
+                    .enumerate()
+                    .map(|(index, workspace)| {
+                        let id = workspace.id.clone();
+                        let key_id = workspace.id.clone();
+                        let a11y_id = workspace.id.clone();
+                        let selected = id == active;
+                        let accessibility = crate::MullionAccessibilityNode::workspace(
+                            &workspace.id,
+                            &workspace.name,
+                            index,
+                            count,
+                            selected,
+                        );
+                        div()
+                            .id(SharedString::from(format!("workspace:{}", id.0)))
+                            .debug_selector({
+                                let id = id.clone();
+                                move || format!("workspace:{}", id.0)
+                            })
+                            .role(gpui::Role::Tab)
+                            .accessibility_id(format!("mullion-workspace-{}", workspace.id.0))
+                            .aria_label(accessibility.label)
+                            .aria_description(accessibility.description)
+                            .aria_selected(selected)
+                            .focusable()
+                            .tab_stop(true)
+                            .px(styles.workspace_switcher.horizontal_padding)
+                            .py(styles.workspace_switcher.vertical_padding)
+                            .rounded(styles.workspace_switcher.border_radius)
+                            .cursor_pointer()
+                            .text_size(styles.workspace_switcher.font_size)
+                            .line_height(styles.workspace_switcher.line_height)
+                            .text_color(if selected {
+                                styles.workspace_switcher.active_text
+                            } else {
+                                styles.workspace_switcher.text
+                            })
+                            .bg(if selected {
+                                styles.workspace_switcher.active_background
+                            } else {
+                                styles.workspace_switcher.background
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.switch_workspace(&id, cx);
+                            }))
+                            .on_key_down(cx.listener(
+                                move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                    if matches!(
+                                        event.keystroke.key.as_str(),
+                                        "enter" | "space" | " "
+                                    ) {
+                                        this.switch_workspace(&key_id, cx);
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
+                            .on_a11y_action(gpui::AccessibleAction::Click, {
+                                let view = cx.entity().downgrade();
+                                move |_, _, cx| {
+                                    view.update(cx, |this, cx| this.switch_workspace(&a11y_id, cx))
+                                        .ok();
+                                }
+                            })
+                            .child(workspace.name.clone())
+                    })
+                    .collect::<Vec<_>>()
+            });
         let overlays = self.render_overlays(window, cx);
         let key_context = if self.keyboard_split.is_some() {
             "Mullion MullionSplitter"
@@ -4084,6 +4105,14 @@ mod tests {
                 .into_any_element()
         })
         .with_tier(tier)
+    }
+
+    #[gpui::test]
+    fn workspace_switcher_visibility_is_host_configurable(cx: &mut TestAppContext) {
+        let view = cx.new(|cx| {
+            MullionView::new(leaf("pane"), vec![], cx).with_workspace_switcher_visible(false)
+        });
+        assert!(!view.read_with(cx, |view, _| view.workspace_switcher_visible()));
     }
 
     #[gpui::test]

@@ -1,4 +1,11 @@
-use gpui::{div, prelude::*, px, rgb, size, App, Bounds, WindowBounds, WindowOptions};
+#[path = "demo_assets.rs"]
+mod demo_assets;
+
+use demo_assets::DemoAssets;
+use gpui::{
+    div, prelude::*, px, rgb, size, svg, App, Bounds, FontWeight, WindowBounds, WindowOptions,
+};
+use gpui::{Context, Entity};
 use gpui_mullion::{
     register_key_bindings, Activity, ActivityBarHostConfig, ActivityBarSlots, ActivityCatalog,
     ActivityCategory, ActivityChrome, ActivityIcon, ActivityId, ActivityNode, CategoryChrome,
@@ -10,9 +17,6 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
     Arc, Mutex,
 };
-
-#[cfg(target_family = "wasm")]
-use gpui::Entity;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 struct DemoData {
@@ -127,113 +131,377 @@ fn workspace_set() -> WorkspaceSet<DemoData> {
     }
 }
 
-fn icon(glyph: &'static str) -> ActivityIcon {
+fn icon(name: &'static str) -> ActivityIcon {
     ActivityIcon::new(move |_, _| {
-        div()
+        svg()
+            .path(format!("demo-icons/{name}.svg"))
             .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_size(px(11.))
-            .child(glyph)
+            .text_color(rgb(0xeeeeee))
             .into_any_element()
     })
 }
 
-fn activity_content(name: &'static str, pane: &PaneId, data: &DemoData) -> gpui::AnyElement {
-    let title = if matches!(name, "Files" | "Search") {
-        format!("{} - {name}", data.label)
-    } else {
-        name.into()
-    };
-    let detail = match name {
-        "Files" => "Working tree for the focused-pane presentation pass.",
-        "Open Editors" => "Four files are open across the focus-state iteration.",
-        "Timeline" => "Recent activity from the Mullion design session.",
-        "Search" => "Type to search across files...",
-        "Keybindings" => "Alt+Arrow focus · Ctrl+Alt+Arrow resize · Ctrl+Shift+Enter zoom",
-        "Settings" => "Choose whether pointer hover or click changes the focused pane.",
-        _ => "This activity is a placeholder.",
-    };
-    let rows: &[&str] = match name {
-        "Files" => &[
-            "M  src/components/pane_view.rs",
-            "M  src/components/mullion_root.rs",
-            "M  examples/demo/src/main.rs",
-            "A  tests/focus_visual.rs",
-            "   Cargo.toml",
-        ],
-        "Open Editors" => &[
-            "pane_view.rs       src/components · 428 lines",
-            "mullion_root.rs    src/components · 326 lines",
-            "main.rs            examples/demo/src · 641 lines",
-            "README.md          documentation · 472 lines",
-        ],
-        "Timeline" => &[
-            "09:45  Release demo built",
-            "09:42  Focus presentation updated",
-            "09:38  Test suite passed · 76 tests",
-            "09:18  Command catalog registered",
-        ],
-        "Keybindings" => &[
-            "Alt + Arrow             Focus in that direction",
-            "Alt + Shift + Arrow     Move focused pane",
-            "Ctrl + Shift + Arrow    Swap with a neighbor",
-            "Ctrl + Alt + =          Balance splits",
-            "Ctrl/⌘ + K              Browse every Mullion command",
-        ],
-        "Settings" => &[
-            "◉  Click   Focus a pane when it is clicked and keep focus there.",
-            "○  Hover   Move focus whenever the pointer enters another pane.",
-            "",
-            "Controlled by the host through Mullion's typed setting descriptor.",
-        ],
-        _ => &[],
-    };
+fn content_shell(title: impl Into<gpui::SharedString>, detail: &'static str) -> gpui::Div {
     div()
         .size_full()
         .overflow_hidden()
-        .p_4()
+        .p(px(16.))
         .bg(rgb(0x111111))
-        .text_color(rgb(0xeeeeee))
+        .text_color(rgb(0xdddddd))
         .child(
             div()
-                .text_xl()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(title),
+                .mb(px(12.))
+                .text_size(px(12.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(rgb(0xbbbbbb))
+                .child(title.into()),
         )
         .child(
             div()
-                .mt_2()
-                .text_size(px(12.))
-                .text_color(rgb(0x888888))
+                .text_size(px(13.))
+                .line_height(px(20.8))
+                .text_color(rgb(0xbababa))
                 .child(detail),
         )
+}
+
+fn section_label(label: &'static str) -> gpui::Div {
+    div()
+        .mt(px(16.))
+        .mb(px(6.))
+        .text_size(px(10.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(rgb(0x777777))
+        .child(label)
+}
+
+fn files_content(data: &DemoData) -> gpui::AnyElement {
+    let files = [
+        ("src/components/pane_view.rs", "M", 0xe8ab53),
+        ("src/components/mullion_root.rs", "M", 0xe8ab53),
+        ("src/commands.rs", "M", 0xe8ab53),
+        ("src/context.rs", "M", 0xe8ab53),
+        ("src/focus.rs", "M", 0xe8ab53),
+        ("src/settings.rs", "M", 0xe8ab53),
+        ("src/tree.rs", "", 0x777777),
+        ("src/theme.rs", "", 0x777777),
+        ("examples/demo/src/main.rs", "M", 0xe8ab53),
+        ("examples/demo/index.html", "M", 0xe8ab53),
+        ("tests/focus_visual.rs", "A", 0x73c991),
+        ("Cargo.toml", "", 0x777777),
+        ("README.md", "M", 0xe8ab53),
+    ];
+    let summaries = [
+        ("13", "FILES", 0xdddddd),
+        ("76", "TESTS", 0xdddddd),
+        ("✓", "WASM", 0x73c991),
+    ];
+    content_shell(
+        format!("{} - FILES", data.label.to_uppercase()),
+        "Working tree for the focused-pane presentation pass.",
+    )
+    .child(section_label("CHANGES"))
+    .children(files.into_iter().map(|(path, status, color)| {
+        div()
+            .h(px(24.))
+            .px(px(8.))
+            .flex()
+            .items_center()
+            .text_size(px(13.))
+            .child(div().flex_1().min_w_0().overflow_hidden().child(path))
+            .child(
+                div()
+                    .ml(px(10.))
+                    .font_family("monospace")
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_size(px(10.))
+                    .text_color(rgb(color))
+                    .child(status),
+            )
+    }))
+    .child(
+        div()
+            .mt(px(12.))
+            .flex()
+            .gap(px(7.))
+            .children(summaries.into_iter().map(|(value, label, color)| {
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .p(px(9.))
+                    .border_1()
+                    .border_color(rgb(0x222222))
+                    .rounded(px(5.))
+                    .bg(rgb(0x131313))
+                    .child(
+                        div()
+                            .text_size(px(15.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(rgb(color))
+                            .child(value),
+                    )
+                    .child(
+                        div()
+                            .mt(px(3.))
+                            .text_size(px(10.))
+                            .text_color(rgb(0x707070))
+                            .child(label),
+                    )
+            })),
+    )
+    .into_any_element()
+}
+
+fn editors_content() -> gpui::AnyElement {
+    let editors = [
+        ("pane_view.rs", "src/components", "428 lines", 0x75beff),
+        ("mullion_root.rs", "src/components", "326 lines", 0xc586c0),
+        ("main.rs", "examples/demo/src", "641 lines", 0xe8ab53),
+        ("README.md", "documentation", "472 lines", 0x73c991),
+    ];
+    content_shell("OPEN EDITORS", "Four files are open across the focus-state iteration.")
+        .child(section_label("WORKING SET"))
         .child(
-            div()
-                .mt_4()
-                .text_size(px(11.))
-                .font_family("monospace")
-                .children(rows.iter().map(|row| {
+            div().flex().flex_col().gap(px(8.)).children(editors.into_iter().map(
+                |(name, path, meta, color)| {
                     div()
-                        .py_1()
-                        .border_b_1()
-                        .border_color(rgb(0x1a1a1a))
-                        .child(*row)
-                })),
+                        .h(px(51.))
+                        .p(px(10.))
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .border_1()
+                        .border_color(rgb(0x222222))
+                        .rounded(px(5.))
+                        .bg(rgb(0x131313))
+                        .child(div().w(px(3.)).h_full().rounded(px(2.)).bg(rgb(color)))
+                        .child(
+                            div().flex_1().min_w_0()
+                                .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child(name))
+                                .child(div().mt(px(3.)).font_family("monospace").text_size(px(10.)).text_color(rgb(0x707070)).child(path)),
+                        )
+                        .child(div().font_family("monospace").text_size(px(10.)).text_color(rgb(0x777777)).child(meta))
+                },
+            )),
         )
+        .child(section_label("CURRENT SELECTION"))
         .child(
             div()
-                .absolute()
-                .right_3()
-                .bottom_3()
-                .text_size(px(10.))
-                .text_color(rgb(0x555555))
-                .child(format!("pane {}", pane.0)),
+                .mt(px(4.))
+                .p(px(11.))
+                .border_1()
+                .border_color(rgb(0x202020))
+                .rounded(px(5.))
+                .bg(rgb(0x0b0b0b))
+                .font_family("monospace")
+                .text_size(px(11.))
+                .line_height(px(18.15))
+                .text_color(rgb(0x929292))
+                .child("let focused = show_focus_indicator\n    && focused_pane.get() == pane_id;\n\nview! { <PaneView focused=focused /> }"),
         )
         .into_any_element()
 }
 
+fn timeline_content() -> gpui::AnyElement {
+    let events = [
+        (
+            "09:45",
+            "Release demo built",
+            "Optimized WASM bundle generated successfully.",
+            0x73c991,
+        ),
+        (
+            "09:42",
+            "Focus presentation updated",
+            "One-pixel accent and geometry-aware internal edges.",
+            0x75beff,
+        ),
+        (
+            "09:38",
+            "Test suite passed",
+            "76 unit tests and two documentation tests completed.",
+            0x73c991,
+        ),
+        (
+            "09:31",
+            "Compatibility default restored",
+            "Existing consumers retain hover focus and unchanged chrome.",
+            0xe8ab53,
+        ),
+        (
+            "09:18",
+            "Command catalog registered",
+            "Focus, split, move, resize, layout, and zoom actions available.",
+            0x75beff,
+        ),
+        (
+            "09:05",
+            "Workspace opened",
+            "Three-pane main-and-stack layout restored from session state.",
+            0x777777,
+        ),
+    ];
+    content_shell(
+        "TIMELINE",
+        "Recent activity from the Mullion design session.",
+    )
+    .child(section_label("TODAY"))
+    .children(
+        events
+            .into_iter()
+            .enumerate()
+            .map(|(index, (time, title, detail, color))| {
+                div()
+                    .min_h(px(50.))
+                    .flex()
+                    .child(
+                        div()
+                            .w(px(48.))
+                            .pt(px(2.))
+                            .font_family("monospace")
+                            .text_size(px(10.))
+                            .text_color(rgb(0x666666))
+                            .child(time),
+                    )
+                    .child(
+                        div()
+                            .relative()
+                            .w(px(9.))
+                            .mr(px(10.))
+                            .pt(px(3.))
+                            .when(index < 5, |rail| {
+                                rail.child(
+                                    div()
+                                        .absolute()
+                                        .top(px(8.))
+                                        .bottom(px(-8.))
+                                        .left(px(4.))
+                                        .w(px(1.))
+                                        .bg(rgb(0x252525)),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .size(px(7.))
+                                    .border_2()
+                                    .border_color(rgb(color))
+                                    .rounded_full()
+                                    .bg(rgb(0x111111)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(rgb(0xd5d5d5))
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .mt(px(4.))
+                                    .text_size(px(11.))
+                                    .line_height(px(14.85))
+                                    .text_color(rgb(0x737373))
+                                    .child(detail),
+                            ),
+                    )
+            }),
+    )
+    .into_any_element()
+}
+
+fn keybindings_content() -> gpui::AnyElement {
+    let bindings = [
+        ("Alt + Arrow", "Focus in that direction"),
+        ("Alt + Shift + Arrow", "Move focused pane"),
+        ("Ctrl + Shift + Arrow", "Swap with a neighbor"),
+        ("Ctrl + Alt + Arrow", "Resize toward a boundary"),
+        ("Ctrl + Alt + Shift + →/↓", "New pane right / down"),
+        ("Ctrl + Shift + Backspace", "Close focused pane"),
+        ("Ctrl + Shift + Enter", "Toggle focused-pane zoom"),
+        ("Ctrl + Alt + =", "Balance splits"),
+        ("Ctrl + Alt + 1…5", "Apply a standard layout"),
+    ];
+    content_shell(
+        "MULLION KEYBINDINGS",
+        "Direct shortcuts—no leader or pane mode.",
+    )
+    .child(
+        div()
+            .mt(px(12.))
+            .flex()
+            .flex_col()
+            .gap(px(7.))
+            .children(bindings.into_iter().map(|(keys, action)| {
+                div()
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .w(px(190.))
+                            .px(px(6.))
+                            .py(px(2.))
+                            .border_1()
+                            .border_color(rgb(0x333333))
+                            .rounded(px(4.))
+                            .bg(rgb(0x222222))
+                            .font_family("monospace")
+                            .text_size(px(12.))
+                            .child(keys),
+                    )
+                    .child(
+                        div()
+                            .ml(px(12.))
+                            .text_size(px(12.))
+                            .text_color(rgb(0x888888))
+                            .child(action),
+                    )
+            })),
+    )
+    .child(
+        div()
+            .mt(px(14.))
+            .text_size(px(13.))
+            .text_color(rgb(0x888888))
+            .child("Use Ctrl/⌘+K to browse every Mullion command."),
+    )
+    .into_any_element()
+}
+
+fn activity_content(name: &'static str, _pane: &PaneId, data: &DemoData) -> gpui::AnyElement {
+    match name {
+        "Files" => files_content(data),
+        "Open Editors" => editors_content(),
+        "Timeline" => timeline_content(),
+        "Search" => content_shell(
+            format!("{} - SEARCH", data.label.to_uppercase()),
+            "Type to search across files...",
+        )
+        .child(
+            div()
+                .mt(px(8.))
+                .w_full()
+                .px(px(8.))
+                .py(px(6.))
+                .bg(rgb(0x222222))
+                .border_1()
+                .border_color(rgb(0x333333))
+                .rounded(px(3.))
+                .text_size(px(13.))
+                .text_color(rgb(0x888888))
+                .child("Search..."),
+        )
+        .into_any_element(),
+        "Keybindings" => keybindings_content(),
+        _ => {
+            content_shell(name.to_uppercase(), "This activity is a placeholder.").into_any_element()
+        }
+    }
+}
 fn activity(id: &str, name: &'static str, filter: fn(&DemoData) -> bool) -> ActivityNode<DemoData> {
     ActivityNode::Activity(Activity {
         id: ActivityId::new(id),
@@ -270,6 +538,8 @@ fn category(
     })
 }
 
+type DemoClickHandler = Box<dyn Fn(&gpui::ClickEvent, &mut gpui::Window, &mut App)>;
+
 fn settings_activity(control: Arc<DemoControl>) -> ActivityNode<DemoData> {
     ActivityNode::Activity(Activity {
         id: ActivityId::new("9"),
@@ -279,48 +549,94 @@ fn settings_activity(control: Arc<DemoControl>) -> ActivityNode<DemoData> {
             let current = control.focus_behavior();
             let click_control = control.clone();
             let hover_control = control.clone();
-            div()
-                .size_full()
-                .p_4()
-                .bg(rgb(0x111111))
-                .text_color(rgb(0xeeeeee))
-                .child(div().text_xl().child("Pane focus behavior"))
-                .child(div().mt_2().text_size(px(12.)).text_color(rgb(0x888888)).child(
-                    "Choose whether pointer hover or click changes the focused pane.",
-                ))
-                .child(
-                    div()
-                        .mt_4()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .child(
-                            div()
-                                .id(format!("focus-setting-click:{}", pane.0))
-                                .p_3()
-                                .border_1()
-                                .rounded_md()
-                                .border_color(if current == PaneFocusBehavior::Click { rgb(0x75beff) } else { rgb(0x333333) })
-                                .cursor_pointer()
-                                .child("Click")
-                                .child(div().mt_1().text_size(px(11.)).text_color(rgb(0x888888)).child("Focus a pane when it is clicked and keep focus there."))
-                                .on_click(move |_, _, cx| { click_control.focus_behavior.store(0, Ordering::SeqCst); cx.refresh_windows(); }),
-                        )
-                        .child(
-                            div()
-                                .id(format!("focus-setting-hover:{}", pane.0))
-                                .p_3()
-                                .border_1()
-                                .rounded_md()
-                                .border_color(if current == PaneFocusBehavior::Hover { rgb(0x75beff) } else { rgb(0x333333) })
-                                .cursor_pointer()
-                                .child("Hover")
-                                .child(div().mt_1().text_size(px(11.)).text_color(rgb(0x888888)).child("Move focus whenever the pointer enters another pane."))
-                                .on_click(move |_, _, cx| { hover_control.focus_behavior.store(1, Ordering::SeqCst); cx.refresh_windows(); }),
-                        ),
-                )
-                .child(div().mt_4().text_size(px(11.)).text_color(rgb(0x888888)).child("Controlled and persisted by the demo host from Mullion's typed setting descriptor."))
-                .into_any_element()
+            let option = |label: &'static str,
+                          description: &'static str,
+                          selected: bool,
+                          id: String,
+                          on_click: DemoClickHandler| {
+                div()
+                    .id(id)
+                    .w_full()
+                    .max_w(px(480.))
+                    .p(px(10.))
+                    .px(px(12.))
+                    .flex()
+                    .items_start()
+                    .gap(px(10.))
+                    .border_1()
+                    .border_color(rgb(0x333333))
+                    .rounded(px(5.))
+                    .cursor_pointer()
+                    .child(
+                        div()
+                            .mt(px(2.))
+                            .size(px(12.))
+                            .border_1()
+                            .border_color(if selected {
+                                rgb(0x00a4ef)
+                            } else {
+                                rgb(0x888888)
+                            })
+                            .rounded_full()
+                            .when(selected, |dot| {
+                                dot.p(px(3.))
+                                    .child(div().size_full().rounded_full().bg(rgb(0x00a4ef)))
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(rgb(0xeeeeee))
+                                    .child(label),
+                            )
+                            .child(
+                                div()
+                                    .mt(px(3.))
+                                    .text_size(px(12.))
+                                    .line_height(px(16.8))
+                                    .text_color(rgb(0x888888))
+                                    .child(description),
+                            ),
+                    )
+                    .on_click(on_click)
+            };
+            let click = option(
+                "Click",
+                "Focus a pane when it is clicked and keep focus there.",
+                current == PaneFocusBehavior::Click,
+                format!("focus-setting-click:{}", pane.0),
+                Box::new(move |_, _, cx| {
+                    click_control.focus_behavior.store(0, Ordering::SeqCst);
+                    cx.refresh_windows();
+                }),
+            );
+            let hover = option(
+                "Hover",
+                "Move focus whenever the pointer enters another pane.",
+                current == PaneFocusBehavior::Hover,
+                format!("focus-setting-hover:{}", pane.0),
+                Box::new(move |_, _, cx| {
+                    hover_control.focus_behavior.store(1, Ordering::SeqCst);
+                    cx.refresh_windows();
+                }),
+            );
+            content_shell(
+                "PANE FOCUS BEHAVIOR",
+                "Choose whether pointer hover or click changes the focused pane.",
+            )
+            .child(div().mt(px(14.)).flex().flex_col().gap(px(8.)).child(click).child(hover))
+            .child(
+                div()
+                    .mt(px(14.))
+                    .text_size(px(13.))
+                    .text_color(rgb(0x888888))
+                    .child("This control is rendered and persisted by the demo app from Mullion's headless setting descriptor."),
+            )
+            .into_any_element()
         }),
     })
 }
@@ -368,21 +684,21 @@ fn catalog(control: Arc<DemoControl>) -> ActivityCatalog<DemoData> {
         ),
     ];
     let mut catalog = ActivityCatalog::new(primary).with_trailing(vec![settings_activity(control)]);
-    for (id, glyph) in [
-        ("1", "F"),
-        ("2", "E"),
-        ("3", "T"),
-        ("4", "O"),
-        ("5", "⌕"),
-        ("6", "R"),
-        ("7", "B"),
-        ("8", "<>"),
-        ("9", "⚙"),
-        ("10", "◐"),
-        ("11", "⌨"),
-        ("12", "+"),
+    for (id, asset) in [
+        ("1", "description"),
+        ("2", "article"),
+        ("3", "timeline"),
+        ("4", "list"),
+        ("5", "search"),
+        ("6", "find_replace"),
+        ("7", "bookmarks"),
+        ("8", "code"),
+        ("9", "settings"),
+        ("10", "palette"),
+        ("11", "keyboard"),
+        ("12", "extension"),
     ] {
-        let mut chrome = ActivityChrome::new(icon(glyph));
+        let mut chrome = ActivityChrome::new(icon(asset));
         if id == "1" {
             chrome = chrome.with_header(|_, data: &DemoData, _, _| {
                 div()
@@ -393,8 +709,13 @@ fn catalog(control: Arc<DemoControl>) -> ActivityCatalog<DemoData> {
         }
         catalog.insert_activity_chrome(ActivityId::new(id), chrome);
     }
-    for (id, glyph) in [("0", "▣"), ("1", "✎"), ("2", "⚙"), ("3", "≡")] {
-        catalog.insert_category_chrome(CategoryId::new(id), CategoryChrome::new(icon(glyph)));
+    for (id, asset) in [
+        ("0", "folder"),
+        ("1", "edit_note"),
+        ("2", "settings"),
+        ("3", "tune"),
+    ] {
+        catalog.insert_category_chrome(CategoryId::new(id), CategoryChrome::new(icon(asset)));
     }
     catalog
         .validate()
@@ -447,7 +768,7 @@ fn host_config(control: Arc<DemoControl>) -> ActivityBarHostConfig<DemoData> {
     };
     ActivityBarHostConfig::new().with_slots(
         ActivityBarSlots::new()
-            .with_app_icon(icon("◆"))
+            .with_app_icon(icon("apps"))
             .with_leading(hairline())
             .with_trailing(hairline())
             .with_pane_accessory(move |_, _, _, _| {
@@ -478,7 +799,100 @@ fn demo_styles() -> MullionStyles {
     styles.activity_bar.active_icon_opacity = 1.0;
     styles.activity_bar.expanded_padding = px(10.);
     styles.split_handle.thickness = px(2.);
+    styles.workspace_switcher.gap = px(1.);
+    styles.workspace_switcher.font_size = px(11.);
+    styles.workspace_switcher.line_height = px(13.);
+    styles.workspace_switcher.vertical_padding = px(2.);
+    styles.workspace_switcher.horizontal_padding = px(8.);
+    styles.workspace_switcher.border_radius = px(2.);
+    styles.workspace_switcher.background = gpui::transparent_black();
+    styles.workspace_switcher.active_background = rgb(0x222222).into();
+    styles.workspace_switcher.active_text = styles.pane.text;
     styles
+}
+
+struct DemoRoot {
+    view: Entity<MullionView<DemoData>>,
+}
+
+impl gpui::Render for DemoRoot {
+    fn render(
+        &mut self,
+        _window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> impl gpui::IntoElement {
+        let (active, workspaces) = {
+            let view = self.view.read(cx);
+            let set = view
+                .workspaces()
+                .expect("canonical demo owns a workspace set");
+            (set.active.clone(), set.workspaces.clone())
+        };
+
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .child(self.view.clone()),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .gap(px(1.))
+                    .px(px(4.))
+                    .py(px(2.))
+                    .border_t_1()
+                    .border_color(rgb(0x1a1a1a))
+                    .bg(rgb(0x0e0e0e))
+                    .children(
+                        workspaces
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, workspace)| {
+                                let selected = workspace.id == active;
+                                let id = workspace.id;
+                                let view = self.view.clone();
+                                div()
+                                    .id(format!("demo-workspace:{}", id.0))
+                                    .px(px(8.))
+                                    .py(px(2.))
+                                    .rounded(px(2.))
+                                    .cursor_pointer()
+                                    .font_family("monospace")
+                                    .text_size(px(11.))
+                                    .text_color(if selected {
+                                        rgb(0xeeeeee)
+                                    } else {
+                                        rgb(0x888888)
+                                    })
+                                    .when(selected, |tab| tab.bg(rgb(0x222222)))
+                                    .child(format!("{}", index + 1))
+                                    .on_click(move |_, _, cx| {
+                                        view.update(cx, |view, cx| {
+                                            view.switch_workspace(&id, cx);
+                                        });
+                                    })
+                            }),
+                    )
+                    .child(
+                        div()
+                            .ml_auto()
+                            .px(px(6.))
+                            .py(px(2.))
+                            .font_family("monospace")
+                            .text_size(px(11.))
+                            .text_color(rgb(0x888888))
+                            .child("Alt+Arrow · focus   Ctrl/⌘+K · all commands"),
+                    ),
+            )
+    }
 }
 
 fn launch(cx: &mut App) {
@@ -552,6 +966,7 @@ fn launch(cx: &mut App) {
                             .with_unfocused_pane_opacity(0.75),
                     )
                     .with_styles(demo_styles())
+                    .with_workspace_switcher_visible(false)
                     .with_activity_bar_host(host_config(control.clone()))
             });
             gpui_mullion::command_palette_for_view(&view, cx);
@@ -561,7 +976,7 @@ fn launch(cx: &mut App) {
                 TEST_VIEW.with(|slot| *slot.borrow_mut() = Some(view.clone()));
                 TEST_CONTROL.with(|slot| *slot.borrow_mut() = Some(control.clone()));
             }
-            view
+            cx.new(|_| DemoRoot { view })
         },
     )
     .unwrap();
@@ -572,7 +987,9 @@ fn launch(cx: &mut App) {
 
 #[cfg(not(target_family = "wasm"))]
 fn main() {
-    gpui_platform::application().run(launch);
+    gpui_platform::application()
+        .with_assets(DemoAssets)
+        .run(launch);
 }
 
 #[cfg(target_family = "wasm")]
@@ -921,7 +1338,9 @@ fn install_browser_test_bridge() {
 #[cfg(target_family = "wasm")]
 fn main() {
     gpui_platform::web_init();
-    let application = gpui_platform::application().run_embedded(launch);
+    let application = gpui_platform::application()
+        .with_assets(DemoAssets)
+        .run_embedded(launch);
     APPLICATION.with(|slot| *slot.borrow_mut() = Some(application));
     install_browser_test_bridge();
 }
