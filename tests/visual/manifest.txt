@@ -1,0 +1,9 @@
+category-card-open-1280x720.png
+command-palette-overlay-1280x720.png
+focus-unfocused-wash-1280x720.png
+initial-nested-3-panes-1000x700.png
+initial-nested-3-panes-1280x720.png
+initial-nested-3-panes-390x844.png
+initial-nested-3-panes-800x600.png
+vertical-rail-hovered-expanded-1280x720.png
+workspace-switch-1280x720.png

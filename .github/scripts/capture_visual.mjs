@@ -92,6 +92,11 @@ async function bridgeAction(name, payload = {}) {
   await sleep(300);
   return JSON.parse(value);
 }
+async function bridgeState() {
+  const value = await evaluate("globalThis.__mullionTestState()");
+  if (typeof value !== "string") throw new Error("GPUI bridge state was unavailable");
+  return JSON.parse(value);
+}
 async function center(selector, index = 0) {
   const point = await evaluate(`(() => { const r = document.querySelectorAll(${JSON.stringify(selector)})[${index}]?.getBoundingClientRect();
     return r && {x:r.left+r.width/2,y:r.top+r.height/2}; })()`);
@@ -121,14 +126,20 @@ async function shot(name, width, height, action) {
 await command("Page.enable");
 await command("Runtime.enable");
 const scenarios = [
+  ["initial-nested-3-panes-1000x700", 1000, 700],
   ["initial-nested-3-panes-1280x720", 1280, 720],
-  ["initial-nested-3-panes-960x600", 960, 600],
+  ["initial-nested-3-panes-800x600", 800, 600],
+  ["initial-nested-3-panes-390x844", 390, 844],
   ["vertical-rail-hovered-expanded-1280x720", 1280, 720, async () => {
     if (adapter === "reference") {
       const point = await center(".mullion-ab"); await mouse(point.x, point.y);
     } else {
-      const state = await bridgeAction("barHover", { pane: "1" });
-      if (state.barHover !== "1") throw new Error("GPUI rail did not resolve as expanded");
+      await bridgeAction("barHover", { pane: "1" });
+      // Keep the real browser pointer inside the resolved panel. Otherwise the
+      // canvas correctly delivers a leave after the bridge's synthetic entry.
+      await mouse(74, 43);
+      const state = await bridgeState();
+      if (state.barHover !== "1") throw new Error("GPUI rail did not remain expanded");
     }
     await sleep(900);
   }],
@@ -137,8 +148,10 @@ const scenarios = [
       const rail = await center(".mullion-ab"); await mouse(rail.x, rail.y); await sleep(700);
       const category = await center(".mullion-ab-category .mullion-ab-btn"); await click(category.x, category.y);
     } else {
-      let state = await bridgeAction("barHover", { pane: "1" });
-      if (state.barHover !== "1") throw new Error("GPUI rail did not resolve as expanded");
+      await bridgeAction("barHover", { pane: "1" });
+      await mouse(74, 43);
+      let state = await bridgeState();
+      if (state.barHover !== "1") throw new Error("GPUI rail did not remain expanded");
       await sleep(700);
       // Drive the same catalog category as the reference selector. A canvas
       // coordinate can instead hit the already-revealed card and collapse it.

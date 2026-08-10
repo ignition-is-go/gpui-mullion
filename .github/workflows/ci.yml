@@ -189,6 +189,7 @@ jobs:
             fc-list | sort | sha256sum | sed 's/^/font_manifest_sha256=/'
           } > gpui-mullion/visual-artifacts/environment.txt
           grep -Fx "reference=$REFERENCE_COMMIT" gpui-mullion/visual-artifacts/environment.txt
+          grep -Fx "actual=$GITHUB_SHA" gpui-mullion/visual-artifacts/environment.txt
       - name: Serve both isolated WASM apps
         run: |
           python3 gpui-mullion/.github/scripts/serve_dist.py mullion-reference/examples/demo/dist --port 8181 > /tmp/reference-server.log 2>&1 &

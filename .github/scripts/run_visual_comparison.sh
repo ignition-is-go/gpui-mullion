@@ -10,16 +10,23 @@ node .github/scripts/capture_visual.mjs "$GPUI_URL" "$OUT/actual" gpui "$PORT"
 # Fail before invoking the comparator: an uncomposited WebGPU surface is a
 # capture infrastructure error, never a meaningful visual regression.
 python3 tests/visual/check_capture.py "$OUT"/reference/*.png "$OUT"/actual/*.png
+# A checked-in manifest makes missing, extra, or stale cells a hard failure
+# instead of silently comparing only the intersection of two capture sets.
+for adapter in reference actual; do
+  find "$OUT/$adapter" -maxdepth 1 -type f -name '*.png' -printf '%f\n' \
+    | LC_ALL=C sort > "$OUT/$adapter-manifest.txt"
+  diff -u tests/visual/manifest.txt "$OUT/$adapter-manifest.txt"
+done
 status=0
-for reference in "$OUT"/reference/*.png; do
-  name=$(basename "$reference")
+while IFS= read -r name; do
+  reference="$OUT/reference/$name"
   python3 tests/visual/compare.py "$reference" "$OUT/actual/$name" \
     --diff "$OUT/diff/$name" --json "$OUT/summary/${name%.png}.json" \
     --channel-tolerance "${VISUAL_CHANNEL_TOLERANCE:-0}" \
     --max-difference "${VISUAL_MAX_DIFFERENCE:-32}" \
     --mean-difference "${VISUAL_MEAN_DIFFERENCE:-1.0}" \
     --changed-fraction "${VISUAL_CHANGED_FRACTION:-0.005}" || status=1
-done
+done < tests/visual/manifest.txt
 python3 - "$OUT" <<'PY'
 import json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
