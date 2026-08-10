@@ -6207,6 +6207,65 @@ mod tests {
     }
 
     #[test]
+    fn grabber_focus_color_and_opacity_have_exact_interpolation_samples() {
+        let from: Hsla = gpui::rgb(0x808080).into();
+        let to: Hsla = gpui::rgb(0x0974a4).into();
+        let start = interpolate_hsla(from, to, 0.0).to_rgb();
+        let mid = interpolate_hsla(from, to, 0.5).to_rgb();
+        let end = interpolate_hsla(from, to, 1.0).to_rgb();
+        assert_eq!(start, from.to_rgb());
+        assert_eq!(end, to.to_rgb());
+        assert!((mid.r - (start.r + end.r) / 2.0).abs() < 0.0001);
+        assert!((mid.g - (start.g + end.g) / 2.0).abs() < 0.0001);
+        assert!((mid.b - (start.b + end.b) / 2.0).abs() < 0.0001);
+        assert_eq!(
+            (0.5 + 0.5 * 0.0, 0.5 + 0.5 * 0.5, 0.5 + 0.5),
+            (0.5, 0.75, 1.0)
+        );
+    }
+
+    #[gpui::test]
+    fn grabber_focus_motion_uses_125ms_state_and_stops_at_the_endpoint(cx: &mut TestAppContext) {
+        let tree = split(SplitDirection::Horizontal, 0.5, leaf("a"), leaf("b"));
+        let (view, cx) = cx.add_window_view(move |_, cx| MullionView::new(tree, vec![], cx));
+        cx.run_until_parked();
+        assert_eq!(
+            view.read_with(cx, |view, _| view.focus_motion[&PaneId::new("a")].progress),
+            1.0
+        );
+        view.update(cx, |view, cx| {
+            view.model.focus(&PaneId::new("b"));
+            view.finish(cx);
+        });
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_millis(60));
+        cx.run_until_parked();
+        let expected = ease_in_out(60.0 / 125.0);
+        view.read_with(cx, |view, _| {
+            assert!(
+                (view.focus_motion[&PaneId::new("a")].progress - (1.0 - expected)).abs() < 0.0001
+            );
+            assert!((view.focus_motion[&PaneId::new("b")].progress - expected).abs() < 0.0001);
+        });
+        cx.executor().advance_clock(Duration::from_millis(75));
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.focus_motion[&PaneId::new("a")].progress, 0.0);
+            assert_eq!(view.focus_motion[&PaneId::new("b")].progress, 1.0);
+            assert!(view.focus_motion[&PaneId::new("a")].started_at.is_none());
+            assert!(view.focus_motion[&PaneId::new("b")].started_at.is_none());
+        });
+        cx.executor().advance_clock(Duration::from_millis(300));
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| {
+            assert!(view
+                .focus_motion
+                .values()
+                .all(|motion| motion.started_at.is_none()));
+        });
+    }
+
+    #[test]
     fn reference_vector_icons_stay_inside_the_exact_sixteen_unit_viewbox() {
         for icon in [
             ReferencePaneIcon::SplitHorizontal,
