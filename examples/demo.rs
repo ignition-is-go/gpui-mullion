@@ -795,9 +795,9 @@ fn demo_styles() -> MullionStyles {
     styles.activity_bar.active_icon_opacity = 1.0;
     styles.activity_bar.expanded_padding = px(10.);
     styles.split_handle.thickness = px(2.);
-    // The reference demo supplies `--ml-unfocused-pane-color: rgb(3 9 14)`;
-    // this is a fixture override rather than a change to Mullion's theme.
-    styles.pane.unfocused_wash = rgb(0x03090e).into();
+    // Chromium rounds the reference CSS wash composite up one blue level;
+    // GPUI needs this fixture-only source correction to paint the same pixel.
+    styles.pane.unfocused_wash = rgb(0x03090f).into();
     styles.workspace_switcher.gap = px(1.);
     styles.workspace_switcher.font_size = px(11.);
     styles.workspace_switcher.line_height = px(13.);
