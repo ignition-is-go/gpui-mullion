@@ -127,7 +127,6 @@ const scenarios = [
     if (adapter === "reference") {
       const point = await center(".mullion-ab"); await mouse(point.x, point.y);
     } else {
-      await mouse(14, 43);
       const state = await bridgeAction("barHover", { pane: "1" });
       if (state.barHover !== "1") throw new Error("GPUI rail did not resolve as expanded");
     }
@@ -138,13 +137,16 @@ const scenarios = [
       const rail = await center(".mullion-ab"); await mouse(rail.x, rail.y); await sleep(700);
       const category = await center(".mullion-ab-category .mullion-ab-btn"); await click(category.x, category.y);
     } else {
-      await mouse(14, 43);
-      const state = await bridgeAction("barHover", { pane: "1" });
+      let state = await bridgeAction("barHover", { pane: "1" });
       if (state.barHover !== "1") throw new Error("GPUI rail did not resolve as expanded");
       await sleep(700);
-      // Pane 1 begins at the canvas origin; Explorer is the first 28px row
-      // below the 28px border-box header once the vertical panel is expanded.
-      await click(74, 43);
+      // Drive the same catalog category as the reference selector. A canvas
+      // coordinate can instead hit the already-revealed card and collapse it.
+      state = await bridgeAction("category", { category: "0" });
+      const pane = state.activeActivities.find(({ pane }) => pane === "1");
+      if (state.selectedCategory !== "0" || pane?.activity !== "1") {
+        throw new Error(`GPUI category did not resolve expected model state: ${JSON.stringify(state)}`);
+      }
     }
     await sleep(500);
   }],
