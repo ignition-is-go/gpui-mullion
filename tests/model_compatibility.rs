@@ -14,20 +14,20 @@ fn reference_json_shape_round_trips() {
             PaneId::new("a"),
             ActivityId::new("files"),
             Data {
-                project: "rship".into(),
+                project: "demo".into(),
             },
         )),
         second: Box::new(PaneNode::leaf(
             PaneId::new("b"),
             Data {
-                project: "rship".into(),
+                project: "demo".into(),
             },
         )),
     };
     let value = serde_json::to_value(&tree).unwrap();
     assert_eq!(
         value,
-        json!({"Split":{"direction":"Horizontal","ratio":0.6,"first":{"Leaf":{"id":"a","active_activity":"files","data":{"project":"rship"}}},"second":{"Leaf":{"id":"b","active_activity":null,"data":{"project":"rship"}}}}})
+        json!({"Split":{"direction":"Horizontal","ratio":0.6,"first":{"Leaf":{"id":"a","active_activity":"files","data":{"project":"demo"}}},"second":{"Leaf":{"id":"b","active_activity":null,"data":{"project":"demo"}}}}})
     );
     assert_eq!(
         serde_json::from_value::<PaneNode<Data>>(value).unwrap(),

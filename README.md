@@ -2,7 +2,7 @@
 
 Native split panes and activity surfaces for GPUI, targeting browsers plus Windows, macOS, and Linux. GPUI and `gpui_platform` are pinned to official Zed revision `08827f9208b4848d62f3faf86ffa15155966d63c`.
 
-This repository is the GPUI successor to the Leptos `mullion` library and is intended to become the canonical pane UI for Rship on desktop and the web. One shared `MullionView` implementation runs on every target; only the thin application host differs. The Leptos implementation remains migration/reference material rather than a separately maintained frontend. Persisted pane trees deliberately retain Mullion's serde representation so existing layouts migrate cleanly.
+This repository is the GPUI successor to the Leptos `mullion` library and is intended to provide a canonical pane UI on desktop and the web. One shared `MullionView` implementation runs on every target; only the thin application host differs. The Leptos implementation remains migration/reference material rather than a separately maintained frontend. Persisted pane trees deliberately retain Mullion's serde representation so existing layouts migrate cleanly.
 
 ## Current implementation baseline
 
@@ -92,7 +92,7 @@ cd examples/web && trunk serve
 
 Demo controls:
 
-- click the Rship/Browser tabs to switch internal workspaces;
+- click the Desktop/Browser tabs to switch internal workspaces;
 - hover a pane to focus it with the default policy;
 - drag a pane's explicit handle to any of another pane's five docking zones;
 - drag a separator proportionally; use its splitter-local keyboard actions for stepping/cancel;
