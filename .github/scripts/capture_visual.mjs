@@ -121,15 +121,22 @@ const scenarios = [
   ["initial-nested-3-panes-1280x720", 1280, 720],
   ["initial-nested-3-panes-960x600", 960, 600],
   ["vertical-rail-hovered-expanded-1280x720", 1280, 720, async () => {
-    const point = adapter === "reference" ? await center(".mullion-ab") : {x: 14, y: 360};
-    await mouse(point.x, point.y); await sleep(900);
+    if (adapter === "reference") {
+      const point = await center(".mullion-ab"); await mouse(point.x, point.y);
+    } else {
+      await bridgeAction("barHover", { pane: "1" });
+    }
+    await sleep(900);
   }],
   ["category-card-open-1280x720", 1280, 720, async () => {
     if (adapter === "reference") {
       const rail = await center(".mullion-ab"); await mouse(rail.x, rail.y); await sleep(700);
       const category = await center(".mullion-ab-category .mullion-ab-btn"); await click(category.x, category.y);
     } else {
-      await mouse(14, 360); await sleep(700); await bridgeAction("category", { category: "0" });
+      await bridgeAction("barHover", { pane: "1" }); await sleep(700);
+      // Pane 1 begins at the canvas origin; Explorer is the first 28px row
+      // below the 29px header once the vertical panel is expanded.
+      await click(74, 43);
     }
     await sleep(500);
   }],
