@@ -14,6 +14,7 @@ categories = ["gui"]
 gpui = { git = "https://github.com/zed-industries/zed.git", rev = "08827f9208b4848d62f3faf86ffa15155966d63c" }
 gpui_platform = { git = "https://github.com/zed-industries/zed.git", rev = "08827f9208b4848d62f3faf86ffa15155966d63c", features = ["wayland", "x11"] }
 serde = { version = "1", features = ["derive"] }
+scheduler = { git = "https://github.com/zed-industries/zed.git", rev = "08827f9208b4848d62f3faf86ffa15155966d63c" }
 
 [dev-dependencies]
 gpui = { git = "https://github.com/zed-industries/zed.git", rev = "08827f9208b4848d62f3faf86ffa15155966d63c", features = ["test-support"] }

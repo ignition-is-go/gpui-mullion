@@ -11,10 +11,10 @@ use crate::{
     WorkspaceId, WorkspaceSet, WorkspaceSetError,
 };
 use gpui::{
-    actions, canvas, div, ease_in_out, point, prelude::*, px, relative, Animation, AnimationExt,
-    AnyElement, App, Bounds, Context, DragMoveEvent, Element, ElementId, EventEmitter, FocusHandle,
-    GlobalElementId, Hsla, InspectorElementId, LayoutId, MouseButton, PathBuilder, Pixels, Point,
-    SharedString, StyleRefinement, Window,
+    actions, canvas, div, ease_in_out, point, prelude::*, px, relative, AnyElement, App, Bounds,
+    Context, DragMoveEvent, Element, ElementId, EventEmitter, FocusHandle, GlobalElementId, Hsla,
+    InspectorElementId, LayoutId, MouseButton, PathBuilder, Pixels, Point, SharedString,
+    StyleRefinement, Window,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -67,8 +67,9 @@ struct PaneMoveRenderStyle {
     size: Pixels,
     row_extent: Pixels,
     icon_size: Pixels,
+    end_padding: Pixels,
+    focus_progress: f32,
     theme: MullionTheme,
-    focused: bool,
     horizontal: bool,
 }
 
@@ -79,6 +80,7 @@ struct PaneControlRenderStyle {
     label_size: Pixels,
     show_label: bool,
     label_opacity: f32,
+    end_padding: Pixels,
     theme: MullionTheme,
 }
 
@@ -87,21 +89,92 @@ type ActiveSplit = Rc<RefCell<Option<(PaneId, f64)>>>;
 
 const ACTIVITY_BAR_TRANSITION: Duration = Duration::from_millis(150);
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct ActivityMotion {
-    expanded: bool,
-    started: bool,
+    progress: f32,
+    from: f32,
+    target: bool,
+    started_at: Option<scheduler::Instant>,
+    generation: u64,
+}
+
+impl Default for ActivityMotion {
+    fn default() -> Self {
+        Self {
+            progress: 0.0,
+            from: 0.0,
+            target: false,
+            started_at: None,
+            generation: 0,
+        }
+    }
 }
 
 impl ActivityMotion {
-    fn set(&mut self, expanded: bool) -> bool {
-        if self.expanded == expanded {
-            return false;
+    fn endpoint(target: bool) -> f32 {
+        if target {
+            1.0
+        } else {
+            0.0
         }
-        self.expanded = expanded;
-        self.started = true;
-        true
     }
+
+    fn resolved(&self, reduce_motion: bool) -> f32 {
+        if reduce_motion {
+            Self::endpoint(self.target)
+        } else {
+            self.progress
+        }
+    }
+
+    fn advance(&mut self, now: scheduler::Instant, duration: Duration) -> bool {
+        let Some(started_at) = self.started_at else {
+            return false;
+        };
+        let delta =
+            now.saturating_duration_since(started_at).as_secs_f32() / duration.as_secs_f32();
+        self.progress = self.from
+            + (Self::endpoint(self.target) - self.from) * ease_in_out(delta.clamp(0.0, 1.0));
+        if delta >= 1.0 {
+            self.progress = Self::endpoint(self.target);
+            self.started_at = None;
+        }
+        self.started_at.is_some()
+    }
+
+    fn start(
+        &mut self,
+        target: bool,
+        now: scheduler::Instant,
+        duration: Duration,
+        immediate: bool,
+        from: Option<f32>,
+    ) -> Option<u64> {
+        self.advance(now, duration);
+        if let Some(from) = from {
+            self.progress = from.clamp(0.0, 1.0);
+        }
+        self.target = target;
+        self.generation = self.generation.wrapping_add(1);
+        let endpoint = Self::endpoint(target);
+        if immediate || (self.progress - endpoint).abs() <= f32::EPSILON {
+            self.progress = endpoint;
+            self.from = endpoint;
+            self.started_at = None;
+            None
+        } else {
+            self.from = self.progress;
+            self.started_at = Some(now);
+            Some(self.generation)
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum MotionKey {
+    Bar(PaneId),
+    Item(PaneId, String),
+    Focus(PaneId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -114,34 +187,29 @@ struct ActivityMotionSample {
     hidden_translation: f32,
 }
 
-fn activity_motion_sample(
-    expanded: bool,
-    dragging: bool,
-    reduce_motion: bool,
-    delta: f32,
-) -> ActivityMotionSample {
-    let progress = if dragging || reduce_motion {
-        if expanded || dragging {
-            1.0
-        } else {
-            0.0
-        }
-    } else {
-        let eased = ease_in_out(delta.clamp(0.0, 1.0));
-        if expanded {
-            eased
-        } else {
-            1.0 - eased
-        }
-    };
+fn activity_motion_sample(progress: f32) -> ActivityMotionSample {
+    let progress = progress.clamp(0.0, 1.0);
     ActivityMotionSample {
         progress,
-        vertical_extent: 28.0 + (150.0 - 28.0) * progress,
+        vertical_extent: 28.0 + (158.0 - 28.0) * progress,
         edge_padding: 8.0 * progress,
         row_extent: 28.0 + (150.0 - 28.0) * progress,
         label_opacity: progress,
         hidden_translation: 1.0 - progress,
     }
+}
+
+fn interpolate_hsla(from: Hsla, to: Hsla, progress: f32) -> Hsla {
+    let from = from.to_rgb();
+    let to = to.to_rgb();
+    let progress = progress.clamp(0.0, 1.0);
+    gpui::Rgba {
+        r: from.r + (to.r - from.r) * progress,
+        g: from.g + (to.g - from.g) * progress,
+        b: from.b + (to.b - from.b) * progress,
+        a: from.a + (to.a - from.a) * progress,
+    }
+    .into()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -378,6 +446,8 @@ pub struct MullionView<D: PaneData> {
     hovered_bar_items: HashSet<(PaneId, String)>,
     bar_motion: HashMap<PaneId, ActivityMotion>,
     item_motion: HashMap<(PaneId, String), ActivityMotion>,
+    focus_motion: HashMap<PaneId, ActivityMotion>,
+    motion_focus: Option<PaneId>,
     dock_drag_active: bool,
     focus_handle: FocusHandle,
     workspaces: Option<WorkspaceSet<D>>,
@@ -431,6 +501,8 @@ impl<D: PaneData> MullionView<D> {
             hovered_bar_items: HashSet::new(),
             bar_motion: HashMap::new(),
             item_motion: HashMap::new(),
+            focus_motion: HashMap::new(),
+            motion_focus: None,
             dock_drag_active: false,
             focus_handle: cx.focus_handle(),
             workspaces: None,
@@ -961,7 +1033,7 @@ impl<D: PaneData> MullionView<D> {
             .any(|event| matches!(event, PaneEvent::TreeChanged { .. }));
         let ratio_only = !events.is_empty()
             && events.len().is_multiple_of(2)
-            && events.chunks_exact(2).all(|pair| {
+            && events.as_chunks::<2>().0.iter().all(|pair| {
                 matches!(
                     pair,
                     [PaneEvent::Resized { .. }, PaneEvent::TreeChanged { .. }]
@@ -1430,7 +1502,7 @@ impl<D: PaneData> MullionView<D> {
         event: &DragMoveEvent<DockDrag>,
         cx: &mut Context<Self>,
     ) {
-        self.dock_drag_active = true;
+        self.set_dock_drag_active(true, cx);
         let drag = event.drag(cx);
         let can_drop = match &drag.payload {
             DockPayload::Pane(source) => source != destination,
@@ -1468,7 +1540,7 @@ impl<D: PaneData> MullionView<D> {
     }
 
     fn handle_dock_drop(&mut self, drag: &DockDrag, destination: &PaneId, cx: &mut Context<Self>) {
-        self.dock_drag_active = false;
+        self.set_dock_drag_active(false, cx);
         let hover = self
             .dock_hover
             .take()
@@ -1490,6 +1562,134 @@ impl<D: PaneData> MullionView<D> {
             }
         }
         self.finish(cx);
+    }
+
+    fn motion_mut(&mut self, key: &MotionKey) -> &mut ActivityMotion {
+        match key {
+            MotionKey::Bar(pane) => self.bar_motion.entry(pane.clone()).or_default(),
+            MotionKey::Item(pane, item) => self
+                .item_motion
+                .entry((pane.clone(), item.clone()))
+                .or_default(),
+            MotionKey::Focus(pane) => self.focus_motion.entry(pane.clone()).or_default(),
+        }
+    }
+
+    fn start_motion(
+        &mut self,
+        key: MotionKey,
+        target: bool,
+        duration: Duration,
+        from: Option<f32>,
+        cx: &mut Context<Self>,
+    ) {
+        let immediate =
+            cx.reduce_motion() || (self.dock_drag_active && !matches!(key, MotionKey::Focus(_)));
+        let now = cx.background_executor().now();
+        let Some(generation) = self
+            .motion_mut(&key)
+            .start(target, now, duration, immediate, from)
+        else {
+            return;
+        };
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(15))
+                .await;
+            let keep_running = this
+                .update(cx, |this, cx| {
+                    let force_endpoint = cx.reduce_motion()
+                        || (this.dock_drag_active && !matches!(key, MotionKey::Focus(_)));
+                    let now = cx.background_executor().now();
+                    let motion = this.motion_mut(&key);
+                    if motion.generation != generation {
+                        return false;
+                    }
+                    if force_endpoint {
+                        motion.progress = ActivityMotion::endpoint(motion.target);
+                        motion.from = motion.progress;
+                        motion.started_at = None;
+                    } else {
+                        motion.advance(now, duration);
+                    }
+                    cx.notify();
+                    motion.started_at.is_some()
+                })
+                .unwrap_or(false);
+            if !keep_running {
+                break;
+            }
+        })
+        .detach();
+    }
+
+    fn set_dock_drag_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.dock_drag_active == active {
+            return;
+        }
+        self.dock_drag_active = active;
+        if active {
+            for motion in self
+                .bar_motion
+                .values_mut()
+                .chain(self.item_motion.values_mut())
+            {
+                motion.generation = motion.generation.wrapping_add(1);
+                motion.progress = 1.0;
+                motion.from = 1.0;
+                motion.started_at = None;
+            }
+            cx.notify();
+            return;
+        }
+        let bars = self
+            .bar_motion
+            .iter()
+            .map(|(pane, motion)| (MotionKey::Bar(pane.clone()), motion.target))
+            .collect::<Vec<_>>();
+        let items = self
+            .item_motion
+            .iter()
+            .map(|((pane, item), motion)| {
+                (MotionKey::Item(pane.clone(), item.clone()), motion.target)
+            })
+            .collect::<Vec<_>>();
+        for (key, target) in bars.into_iter().chain(items) {
+            let motion = self.motion_mut(&key);
+            motion.progress = 1.0;
+            motion.from = 1.0;
+            motion.started_at = None;
+            self.start_motion(key, target, ACTIVITY_BAR_TRANSITION, Some(1.0), cx);
+        }
+        cx.notify();
+    }
+
+    fn sync_focus_motion(&mut self, cx: &mut Context<Self>) {
+        let focused = self.model.focused().cloned();
+        if self.motion_focus == focused {
+            return;
+        }
+        let initial = self.motion_focus.is_none() && self.focus_motion.is_empty();
+        if let Some(previous) = self.motion_focus.clone() {
+            self.start_motion(
+                MotionKey::Focus(previous),
+                false,
+                Duration::from_millis(125),
+                None,
+                cx,
+            );
+        }
+        if let Some(next) = focused.clone() {
+            let from = initial.then_some(1.0);
+            self.start_motion(
+                MotionKey::Focus(next),
+                true,
+                Duration::from_millis(125),
+                from,
+                cx,
+            );
+        }
+        self.motion_focus = focused;
     }
 
     fn handle_activity_bar_hover(
@@ -1517,7 +1717,13 @@ impl<D: PaneData> MullionView<D> {
                         .or_default()
                         .apply_open(generation)
                     {
-                        this.bar_motion.entry(pane).or_default().set(true);
+                        this.start_motion(
+                            MotionKey::Bar(pane),
+                            true,
+                            ACTIVITY_BAR_TRANSITION,
+                            None,
+                            cx,
+                        );
                         cx.notify();
                     }
                 });
@@ -1529,7 +1735,13 @@ impl<D: PaneData> MullionView<D> {
                 return;
             }
             state.leave();
-            self.bar_motion.entry(pane.clone()).or_default().set(false);
+            self.start_motion(
+                MotionKey::Bar(pane.clone()),
+                false,
+                ACTIVITY_BAR_TRANSITION,
+                None,
+                cx,
+            );
             let removed = self
                 .hovered_bar_items
                 .iter()
@@ -1539,14 +1751,20 @@ impl<D: PaneData> MullionView<D> {
             self.hovered_bar_items
                 .retain(|(item_pane, _)| item_pane != pane);
             for key in removed {
-                self.item_motion.entry(key).or_default().set(false);
+                self.start_motion(
+                    MotionKey::Item(key.0, key.1),
+                    false,
+                    ACTIVITY_BAR_TRANSITION,
+                    None,
+                    cx,
+                );
             }
             cx.notify();
         }
     }
 
     fn render_activity_nodes(
-        &self,
+        &mut self,
         pane: &PaneId,
         nodes: &[VisibleActivityNode<D>],
         selected: Option<&ActivityId>,
@@ -1570,12 +1788,6 @@ impl<D: PaneData> MullionView<D> {
         let styles = self
             .styles
             .unwrap_or_else(|| MullionStyles::from_theme(self.theme));
-        let panel_expanded = self.dock_drag_active
-            || (self
-                .hover
-                .get(pane)
-                .is_some_and(|state| state.is_expanded())
-                && self.host.activity_bar.behavior.hover_expand);
         let edge = self.host.activity_bar.edge;
         let horizontal = edge.is_horizontal();
         let mut rendered = Vec::new();
@@ -1585,28 +1797,21 @@ impl<D: PaneData> MullionView<D> {
                     let activity = &visible.activity;
                     let active = selected == Some(&activity.id);
                     let item_key = format!("activity:{}", activity.id.0);
-                    let item_expanded = panel_expanded
-                        && (!horizontal
-                            || self.dock_drag_active
-                            || self
-                                .hovered_bar_items
-                                .contains(&(pane.clone(), item_key.clone())));
-                    let item_motion = if horizontal {
-                        self.item_motion
-                            .get(&(pane.clone(), item_key.clone()))
-                            .copied()
-                            .unwrap_or_default()
+                    let stored_item_progress = self
+                        .item_motion
+                        .entry((pane.clone(), item_key.clone()))
+                        .or_default()
+                        .progress;
+                    let stored_bar_progress =
+                        self.bar_motion.entry(pane.clone()).or_default().progress;
+                    let item_progress = if self.dock_drag_active {
+                        1.0
+                    } else if horizontal {
+                        stored_item_progress
                     } else {
-                        self.bar_motion.get(pane).copied().unwrap_or_default()
+                        stored_bar_progress
                     };
-                    let animate_label = item_motion.started && !self.dock_drag_active;
-                    let animate_item = horizontal && animate_label;
-                    let item_animation_id = SharedString::from(format!(
-                        "activity-motion:{}:{}:{}",
-                        pane.0,
-                        activity.id.0,
-                        if item_expanded { "enter" } else { "leave" }
-                    ));
+                    let item_sample = activity_motion_sample(item_progress);
                     let pane_id = pane.clone();
                     let down_pane_id = pane.clone();
                     let key_pane_id = pane.clone();
@@ -1652,30 +1857,9 @@ impl<D: PaneData> MullionView<D> {
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_ellipsis()
-                        .opacity(if item_expanded { 1.0 } else { 0.0 })
+                        .opacity(item_sample.label_opacity)
                         .child(activity.name.clone());
-                    let activity_label = if animate_label {
-                        let expanded = item_expanded;
-                        activity_label
-                            .with_animation(
-                                SharedString::from(format!(
-                                    "activity-label-motion:{}:{}:{}",
-                                    pane.0,
-                                    activity.id.0,
-                                    if expanded { "enter" } else { "leave" }
-                                )),
-                                Animation::new(ACTIVITY_BAR_TRANSITION).with_easing(ease_in_out),
-                                move |label, delta| {
-                                    label.opacity(
-                                        activity_motion_sample(expanded, false, false, delta)
-                                            .label_opacity,
-                                    )
-                                },
-                            )
-                            .into_any_element()
-                    } else {
-                        activity_label.into_any_element()
-                    };
+                    let activity_label = activity_label.into_any_element();
                     let item = div()
                         .id(SharedString::from(format!(
                             "activity:{}:{}",
@@ -1703,13 +1887,7 @@ impl<D: PaneData> MullionView<D> {
                         .items_center()
                         .h(styles.activity_bar.thickness)
                         .flex_shrink_0()
-                        .when(horizontal, |item| {
-                            item.w(if item_expanded {
-                                styles.activity_bar.expanded_extent
-                            } else {
-                                styles.activity_bar.thickness
-                            })
-                        })
+                        .when(horizontal, |item| item.w(px(item_sample.row_extent)))
                         .when(!horizontal, |item| item.w_full())
                         .overflow_hidden()
                         .text_size(styles.activity_bar.font_size)
@@ -1728,7 +1906,13 @@ impl<D: PaneData> MullionView<D> {
                                     this.hovered_bar_items.remove(&key)
                                 };
                                 if changed {
-                                    this.item_motion.entry(key).or_default().set(*hovered);
+                                    this.start_motion(
+                                        MotionKey::Item(key.0, key.1),
+                                        *hovered,
+                                        ACTIVITY_BAR_TRANSITION,
+                                        None,
+                                        cx,
+                                    );
                                     cx.notify();
                                 }
                             }))
@@ -1778,22 +1962,20 @@ impl<D: PaneData> MullionView<D> {
                             item.cursor_copy()
                                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                     drag_arm_view
-                                        .update(cx, |this, _| this.dock_drag_active = true)
+                                        .update(cx, |this, cx| this.set_dock_drag_active(true, cx))
                                         .ok();
                                 })
                                 .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                                     drag_release_inside_view
                                         .update(cx, |this, cx| {
-                                            this.dock_drag_active = false;
-                                            cx.notify();
+                                            this.set_dock_drag_active(false, cx);
                                         })
                                         .ok();
                                 })
                                 .on_mouse_up_out(MouseButton::Left, move |_, _, cx| {
                                     drag_release_view
                                         .update(cx, |this, cx| {
-                                            this.dock_drag_active = false;
-                                            cx.notify();
+                                            this.set_dock_drag_active(false, cx);
                                         })
                                         .ok();
                                 })
@@ -1826,20 +2008,7 @@ impl<D: PaneData> MullionView<D> {
                                 ),
                         )
                         .child(activity_label);
-                    let item = if animate_item {
-                        let expanded = item_expanded;
-                        item.with_animation(
-                            item_animation_id,
-                            Animation::new(ACTIVITY_BAR_TRANSITION).with_easing(ease_in_out),
-                            move |item, delta| {
-                                item.w(px(activity_motion_sample(expanded, false, false, delta)
-                                    .row_extent))
-                            },
-                        )
-                        .into_any_element()
-                    } else {
-                        item.into_any_element()
-                    };
+                    let item = item.into_any_element();
                     rendered.push(item);
                 }
                 VisibleActivityNode::Category(category) => {
@@ -1850,22 +2019,21 @@ impl<D: PaneData> MullionView<D> {
                     let has_active = contains_active(node, selected);
                     let show_dot = !expanded && has_active;
                     let item_key = format!("category:{}", category.id.0);
-                    let item_expanded = panel_expanded
-                        && (!horizontal
-                            || self.dock_drag_active
-                            || self
-                                .hovered_bar_items
-                                .contains(&(pane.clone(), item_key.clone())));
-                    let item_motion = if horizontal {
-                        self.item_motion
-                            .get(&(pane.clone(), item_key.clone()))
-                            .copied()
-                            .unwrap_or_default()
+                    let stored_item_progress = self
+                        .item_motion
+                        .entry((pane.clone(), item_key.clone()))
+                        .or_default()
+                        .progress;
+                    let stored_bar_progress =
+                        self.bar_motion.entry(pane.clone()).or_default().progress;
+                    let item_progress = if self.dock_drag_active {
+                        1.0
+                    } else if horizontal {
+                        stored_item_progress
                     } else {
-                        self.bar_motion.get(pane).copied().unwrap_or_default()
+                        stored_bar_progress
                     };
-                    let animate_label = item_motion.started && !self.dock_drag_active;
-                    let animate_item = horizontal && animate_label;
+                    let item_sample = activity_motion_sample(item_progress);
                     let pane_id = pane.clone();
                     let category_id = category.id.clone();
                     let key_pane_id = pane.clone();
@@ -1939,13 +2107,7 @@ impl<D: PaneData> MullionView<D> {
                         .items_center()
                         .h(styles.activity_bar.thickness)
                         .flex_shrink_0()
-                        .when(horizontal, |item| {
-                            item.w(if item_expanded {
-                                styles.activity_bar.expanded_extent
-                            } else {
-                                styles.activity_bar.thickness
-                            })
-                        })
+                        .when(horizontal, |item| item.w(px(item_sample.row_extent)))
                         .when(!horizontal, |item| item.w_full())
                         .overflow_hidden()
                         .text_size(styles.activity_bar.font_size)
@@ -1965,7 +2127,13 @@ impl<D: PaneData> MullionView<D> {
                                     this.hovered_bar_items.remove(&key)
                                 };
                                 if changed {
-                                    this.item_motion.entry(key).or_default().set(*hovered);
+                                    this.start_motion(
+                                        MotionKey::Item(key.0, key.1),
+                                        *hovered,
+                                        ACTIVITY_BAR_TRANSITION,
+                                        None,
+                                        cx,
+                                    );
                                     cx.notify();
                                 }
                             }))
@@ -2032,30 +2200,9 @@ impl<D: PaneData> MullionView<D> {
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .text_ellipsis()
-                                .opacity(if item_expanded { 1.0 } else { 0.0 })
+                                .opacity(item_sample.label_opacity)
                                 .child(category.name.clone());
-                            if animate_label {
-                                let expanded = item_expanded;
-                                text.with_animation(
-                                    SharedString::from(format!(
-                                        "category-label-motion:{}:{}:{}",
-                                        pane.0,
-                                        category.id.0,
-                                        if expanded { "enter" } else { "leave" }
-                                    )),
-                                    Animation::new(ACTIVITY_BAR_TRANSITION)
-                                        .with_easing(ease_in_out),
-                                    move |text, delta| {
-                                        text.opacity(
-                                            activity_motion_sample(expanded, false, false, delta)
-                                                .label_opacity,
-                                        )
-                                    },
-                                )
-                                .into_any_element()
-                            } else {
-                                text.into_any_element()
-                            }
+                            text.into_any_element()
                         })
                         .child({
                             let chevron = div()
@@ -2066,60 +2213,17 @@ impl<D: PaneData> MullionView<D> {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .opacity(if item_expanded { 0.5 } else { 0.0 })
+                                .opacity(0.5 * item_sample.label_opacity)
                                 .child(chevron_icon(
                                     edge,
                                     expanded,
                                     px(9.),
                                     styles.activity_bar.category_label,
                                 ));
-                            if animate_label {
-                                let target = item_expanded;
-                                chevron
-                                    .with_animation(
-                                        SharedString::from(format!(
-                                            "category-chevron-motion:{}:{}:{}",
-                                            pane.0,
-                                            category.id.0,
-                                            if target { "enter" } else { "leave" }
-                                        )),
-                                        Animation::new(ACTIVITY_BAR_TRANSITION)
-                                            .with_easing(ease_in_out),
-                                        move |chevron, delta| {
-                                            chevron.opacity(
-                                                0.5 * activity_motion_sample(
-                                                    target, false, false, delta,
-                                                )
-                                                .label_opacity,
-                                            )
-                                        },
-                                    )
-                                    .into_any_element()
-                            } else {
-                                chevron.into_any_element()
-                            }
+                            chevron.into_any_element()
                         });
 
-                    let label = if animate_item {
-                        let target = item_expanded;
-                        label
-                            .with_animation(
-                                SharedString::from(format!(
-                                    "category-row-motion:{}:{}:{}",
-                                    pane.0,
-                                    category.id.0,
-                                    if target { "enter" } else { "leave" }
-                                )),
-                                Animation::new(ACTIVITY_BAR_TRANSITION).with_easing(ease_in_out),
-                                move |row, delta| {
-                                    row.w(px(activity_motion_sample(target, false, false, delta)
-                                        .row_extent))
-                                },
-                            )
-                            .into_any_element()
-                    } else {
-                        label.into_any_element()
-                    };
+                    let label = label.into_any_element();
 
                     let mut wrapper = div()
                         .debug_selector({
@@ -2261,6 +2365,7 @@ impl<D: PaneData> MullionView<D> {
             .flex()
             .items_center()
             .overflow_hidden()
+            .pr(style.end_padding)
             .text_color(style.theme.text)
             .when(horizontal, |element| {
                 element.on_hover(cx.listener(move |this, hovered, _, cx| {
@@ -2271,7 +2376,13 @@ impl<D: PaneData> MullionView<D> {
                         this.hovered_bar_items.remove(&key)
                     };
                     if changed {
-                        this.item_motion.entry(key).or_default().set(*hovered);
+                        this.start_motion(
+                            MotionKey::Item(key.0, key.1),
+                            *hovered,
+                            ACTIVITY_BAR_TRANSITION,
+                            None,
+                            cx,
+                        );
                         cx.notify();
                     }
                 }))
@@ -2374,7 +2485,7 @@ impl<D: PaneData> MullionView<D> {
             .flex_shrink_0()
             .flex()
             .items_center()
-            .justify_center()
+            .pr(style.end_padding)
             .cursor_move()
             .text_color(style.theme.text)
             .when(style.horizontal, |element| {
@@ -2386,29 +2497,33 @@ impl<D: PaneData> MullionView<D> {
                         this.hovered_bar_items.remove(&key)
                     };
                     if changed {
-                        this.item_motion.entry(key).or_default().set(*hovered);
+                        this.start_motion(
+                            MotionKey::Item(key.0, key.1),
+                            *hovered,
+                            ACTIVITY_BAR_TRANSITION,
+                            None,
+                            cx,
+                        );
                         cx.notify();
                     }
                 }))
             })
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 drag_arm_view
-                    .update(cx, |this, _| this.dock_drag_active = true)
+                    .update(cx, |this, cx| this.set_dock_drag_active(true, cx))
                     .ok();
             })
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 drag_release_inside_view
                     .update(cx, |this, cx| {
-                        this.dock_drag_active = false;
-                        cx.notify();
+                        this.set_dock_drag_active(false, cx);
                     })
                     .ok();
             })
             .on_mouse_up_out(MouseButton::Left, move |_, _, cx| {
                 drag_release_view
                     .update(cx, |this, cx| {
-                        this.dock_drag_active = false;
-                        cx.notify();
+                        this.set_dock_drag_active(false, cx);
                     })
                     .ok();
             })
@@ -2437,12 +2552,12 @@ impl<D: PaneData> MullionView<D> {
                         div()
                             .debug_selector(move || drag_selector.clone())
                             .size(style.icon_size)
-                            .text_color(if style.focused {
-                                gpui::rgb(0x0974a4).into()
-                            } else {
-                                style.theme.text
-                            })
-                            .opacity(if style.focused { 1.0 } else { 0.5 })
+                            .text_color(interpolate_hsla(
+                                style.theme.text,
+                                gpui::rgb(0x0974a4).into(),
+                                style.focus_progress,
+                            ))
+                            .opacity(0.5 + 0.5 * style.focus_progress)
                             .flex()
                             .items_center()
                             .justify_center()
@@ -2530,6 +2645,12 @@ impl<D: PaneData> MullionView<D> {
         let panel_expanded = self.dock_drag_active
             || (hover_expanded && self.host.activity_bar.behavior.hover_expand);
         let selected_id = selected.as_ref().map(|activity| &activity.id);
+        self.bar_motion.entry(id.clone()).or_default();
+        for key in ["move", "split-h", "split-v", "close"] {
+            self.item_motion
+                .entry((id.clone(), format!("control:{key}")))
+                .or_default();
+        }
         let primary_tabs =
             self.render_activity_nodes(id, &projection.primary, selected_id, 0, window, cx);
         let trailing_tabs =
@@ -2653,20 +2774,44 @@ impl<D: PaneData> MullionView<D> {
         let split_h_expanded = row_expanded("split-h");
         let split_v_expanded = row_expanded("split-v");
         let close_expanded = row_expanded("close");
+        let row_sample = |key: &str, expanded: bool| {
+            activity_motion_sample(if self.dock_drag_active {
+                1.0
+            } else if horizontal {
+                self.item_motion
+                    .get(&(id.clone(), format!("control:{key}")))
+                    .map_or(ActivityMotion::endpoint(expanded), |motion| {
+                        motion.resolved(cx.reduce_motion())
+                    })
+            } else {
+                self.bar_motion
+                    .get(id)
+                    .map_or(ActivityMotion::endpoint(expanded), |motion| {
+                        motion.resolved(cx.reduce_motion())
+                    })
+            })
+        };
+        let move_sample = row_sample("move", move_expanded);
+        let split_h_sample = row_sample("split-h", split_h_expanded);
+        let split_v_sample = row_sample("split-v", split_v_expanded);
+        let close_sample = row_sample("close", close_expanded);
+        let focus_progress = self
+            .focus_motion
+            .get(id)
+            .map_or(ActivityMotion::endpoint(focused), |motion| {
+                motion.resolved(cx.reduce_motion())
+            });
         let compact_move = (mode != ActivityBarMode::Hidden).then(|| {
             Self::render_pane_move_control(
                 id,
                 app_icon,
                 PaneMoveRenderStyle {
                     size: styles.pane_controls.compact_size,
-                    row_extent: if move_expanded {
-                        styles.activity_bar.expanded_extent
-                    } else {
-                        styles.pane_controls.compact_size
-                    },
+                    row_extent: px(move_sample.row_extent),
                     icon_size: styles.pane_controls.compact_icon_size,
+                    end_padding: px(move_sample.edge_padding),
+                    focus_progress,
                     theme,
-                    focused,
                     horizontal,
                 },
                 cx,
@@ -2680,15 +2825,12 @@ impl<D: PaneData> MullionView<D> {
                 can_split,
                 PaneControlRenderStyle {
                     size: styles.pane_controls.compact_size,
-                    row_extent: if split_h_expanded {
-                        styles.activity_bar.expanded_extent
-                    } else {
-                        styles.pane_controls.compact_size
-                    },
+                    row_extent: px(split_h_sample.row_extent),
                     icon_size: styles.pane_controls.compact_icon_size,
                     label_size: styles.pane_controls.expanded_label_size,
                     show_label: true,
-                    label_opacity: if split_h_expanded { 1.0 } else { 0.0 },
+                    label_opacity: split_h_sample.label_opacity,
+                    end_padding: px(split_h_sample.edge_padding),
                     theme,
                 },
                 horizontal,
@@ -2703,15 +2845,12 @@ impl<D: PaneData> MullionView<D> {
                 can_split,
                 PaneControlRenderStyle {
                     size: styles.pane_controls.compact_size,
-                    row_extent: if split_v_expanded {
-                        styles.activity_bar.expanded_extent
-                    } else {
-                        styles.pane_controls.compact_size
-                    },
+                    row_extent: px(split_v_sample.row_extent),
                     icon_size: styles.pane_controls.compact_icon_size,
                     label_size: styles.pane_controls.expanded_label_size,
                     show_label: true,
-                    label_opacity: if split_v_expanded { 1.0 } else { 0.0 },
+                    label_opacity: split_v_sample.label_opacity,
+                    end_padding: px(split_v_sample.edge_padding),
                     theme,
                 },
                 horizontal,
@@ -2726,15 +2865,12 @@ impl<D: PaneData> MullionView<D> {
                 can_close,
                 PaneControlRenderStyle {
                     size: styles.pane_controls.compact_size,
-                    row_extent: if close_expanded {
-                        styles.activity_bar.expanded_extent
-                    } else {
-                        styles.pane_controls.compact_size
-                    },
+                    row_extent: px(close_sample.row_extent),
                     icon_size: styles.pane_controls.compact_icon_size,
                     label_size: styles.pane_controls.expanded_label_size,
                     show_label: true,
-                    label_opacity: if close_expanded { 1.0 } else { 0.0 },
+                    label_opacity: close_sample.label_opacity,
+                    end_padding: px(close_sample.edge_padding),
                     theme,
                 },
                 horizontal,
@@ -2746,12 +2882,26 @@ impl<D: PaneData> MullionView<D> {
             let delay = self.host.activity_bar.behavior.hover_intent.expand_delay_ms;
             let auto_hide = mode == ActivityBarMode::AutoHide;
             let edge = self.host.activity_bar.edge;
-            let revealed = !auto_hide || hover_expanded || self.dock_drag_active;
-            let panel_extent = if panel_expanded && !horizontal {
-                styles.activity_bar.expanded_extent + styles.activity_bar.expanded_padding
+            let motion_progress = if self.dock_drag_active {
+                1.0
             } else {
-                styles.activity_bar.thickness
+                self.bar_motion
+                    .get(id)
+                    .map_or(ActivityMotion::endpoint(hover_expanded), |motion| {
+                        motion.resolved(cx.reduce_motion())
+                    })
             };
+            let reveal_progress = if auto_hide { motion_progress } else { 1.0 };
+            let expansion_progress = if self.host.activity_bar.behavior.hover_expand {
+                motion_progress
+            } else if self.dock_drag_active {
+                1.0
+            } else {
+                0.0
+            };
+            let panel_sample = activity_motion_sample(expansion_progress);
+            let panel_extent = px(panel_sample.vertical_extent);
+            let edge_padding = px(panel_sample.edge_padding);
 
             let primary_group = div()
                 .debug_selector({
@@ -2805,36 +2955,24 @@ impl<D: PaneData> MullionView<D> {
                 })
                 .when(edge == ActivityBarEdge::Left, |panel| {
                     panel
-                        .left(if revealed { px(0.) } else { -panel_extent })
+                        .left(-panel_extent * (1.0 - reveal_progress))
                         .border_r(styles.activity_bar.border_width)
-                        .when(panel_expanded, |panel| {
-                            panel.pr(styles.activity_bar.expanded_padding)
-                        })
+                        .pr(edge_padding)
                 })
                 .when(edge == ActivityBarEdge::Right, |panel| {
                     panel
-                        .right(if revealed { px(0.) } else { -panel_extent })
+                        .right(-panel_extent * (1.0 - reveal_progress))
                         .border_l(styles.activity_bar.border_width)
-                        .when(panel_expanded, |panel| {
-                            panel.pl(styles.activity_bar.expanded_padding)
-                        })
+                        .pl(edge_padding)
                 })
                 .when(edge == ActivityBarEdge::Top, |panel| {
                     panel
-                        .top(if revealed {
-                            px(0.)
-                        } else {
-                            -styles.activity_bar.thickness
-                        })
+                        .top(-styles.activity_bar.thickness * (1.0 - reveal_progress))
                         .border_b(styles.activity_bar.border_width)
                 })
                 .when(edge == ActivityBarEdge::Bottom, |panel| {
                     panel
-                        .bottom(if revealed {
-                            px(0.)
-                        } else {
-                            -styles.activity_bar.thickness
-                        })
+                        .bottom(-styles.activity_bar.thickness * (1.0 - reveal_progress))
                         .border_t(styles.activity_bar.border_width)
                 })
                 .on_hover(cx.listener(move |this, hovered, _, cx| {
@@ -2909,8 +3047,9 @@ impl<D: PaneData> MullionView<D> {
                     size: styles.pane_controls.hidden_size,
                     row_extent: styles.pane_controls.hidden_size,
                     icon_size: styles.pane_controls.hidden_icon_size,
+                    end_padding: px(0.),
+                    focus_progress,
                     theme,
-                    focused,
                     horizontal: false,
                 },
                 cx,
@@ -2927,6 +3066,7 @@ impl<D: PaneData> MullionView<D> {
                     label_size: styles.pane_controls.expanded_label_size,
                     show_label: false,
                     label_opacity: 0.0,
+                    end_padding: px(0.),
                     theme,
                 },
                 false,
@@ -2944,6 +3084,7 @@ impl<D: PaneData> MullionView<D> {
                     label_size: styles.pane_controls.expanded_label_size,
                     show_label: false,
                     label_opacity: 0.0,
+                    end_padding: px(0.),
                     theme,
                 },
                 false,
@@ -2961,6 +3102,7 @@ impl<D: PaneData> MullionView<D> {
                     label_size: styles.pane_controls.expanded_label_size,
                     show_label: false,
                     label_opacity: 0.0,
+                    end_padding: px(0.),
                     theme,
                 },
                 false,
@@ -3366,8 +3508,9 @@ impl<D: PaneData> Render for MullionView<D> {
             .unwrap_or_else(|| MullionStyles::from_theme(self.theme));
         if !cx.has_active_drag() {
             self.dock_hover = None;
-            self.dock_drag_active = false;
+            self.set_dock_drag_active(false, cx);
         }
+        self.sync_focus_motion(cx);
         self.sync_activity_cache(window, cx);
         let tree = self
             .model
@@ -6000,41 +6143,48 @@ mod tests {
         ));
     }
     #[test]
-    fn activity_motion_has_exact_eased_endpoints_midpoint_and_reduced_motion() {
-        let start = activity_motion_sample(true, false, false, 0.0);
-        let mid = activity_motion_sample(true, false, false, 0.5);
-        let end = activity_motion_sample(true, false, false, 1.0);
+    fn activity_motion_has_exact_linear_geometry_at_eased_progress_endpoints_and_midpoint() {
+        let start = activity_motion_sample(ease_in_out(0.0));
+        let mid = activity_motion_sample(ease_in_out(0.5));
+        let end = activity_motion_sample(ease_in_out(1.0));
         assert_eq!(
             (
                 start.vertical_extent,
                 start.edge_padding,
+                start.row_extent,
                 start.label_opacity
             ),
-            (28.0, 0.0, 0.0)
+            (28.0, 0.0, 28.0, 0.0)
         );
         assert_eq!(
-            (mid.vertical_extent, mid.edge_padding, mid.label_opacity),
-            (89.0, 4.0, 0.5)
+            (
+                mid.vertical_extent,
+                mid.edge_padding,
+                mid.row_extent,
+                mid.label_opacity
+            ),
+            (93.0, 4.0, 89.0, 0.5)
         );
         assert_eq!(
-            (end.vertical_extent, end.edge_padding, end.label_opacity),
-            (150.0, 8.0, 1.0)
+            (
+                end.vertical_extent,
+                end.edge_padding,
+                end.row_extent,
+                end.label_opacity
+            ),
+            (158.0, 8.0, 150.0, 1.0)
         );
-        let leave_start = activity_motion_sample(false, false, false, 0.0);
-        let leave_end = activity_motion_sample(false, false, false, 1.0);
-        assert_eq!(leave_start, end);
-        assert_eq!(leave_end, start);
-        assert_eq!(activity_motion_sample(true, false, true, 0.0), end);
-        assert_eq!(activity_motion_sample(false, false, true, 0.0), start);
-        assert_eq!(activity_motion_sample(false, true, false, 0.0), end);
+        assert_eq!(start.hidden_translation, 1.0);
+        assert_eq!(mid.hidden_translation, 0.5);
+        assert_eq!(end.hidden_translation, 0.0);
+        assert_eq!(activity_motion_sample(1.0 - ease_in_out(0.0)), end);
+        assert_eq!(activity_motion_sample(1.0 - ease_in_out(0.5)), mid);
+        assert_eq!(activity_motion_sample(1.0 - ease_in_out(1.0)), start);
     }
 
     #[test]
-    fn drag_forces_every_axis_expanded_without_mutating_restored_motion() {
-        let mut motion = ActivityMotion::default();
-        assert!(motion.set(true));
-        assert!(motion.set(false));
-        let forced = activity_motion_sample(motion.expanded, true, false, 0.37);
+    fn drag_and_reduced_motion_use_exact_state_endpoints() {
+        let forced = activity_motion_sample(ActivityMotion::endpoint(true));
         assert_eq!(
             (
                 forced.vertical_extent,
@@ -6042,9 +6192,9 @@ mod tests {
                 forced.edge_padding,
                 forced.label_opacity
             ),
-            (150.0, 150.0, 8.0, 1.0)
+            (158.0, 150.0, 8.0, 1.0)
         );
-        let restored = activity_motion_sample(motion.expanded, false, true, 0.37);
+        let restored = activity_motion_sample(ActivityMotion::endpoint(false));
         assert_eq!(
             (
                 restored.vertical_extent,
@@ -6100,6 +6250,124 @@ mod tests {
     }
 
     #[gpui::test]
+    fn rendered_autohide_translation_reverses_through_the_exact_midpoint(cx: &mut TestAppContext) {
+        let host = ActivityBarHostConfig::new().with_activity_bar(crate::ActivityBarConfig {
+            mode: ActivityBarMode::AutoHide,
+            behavior: crate::ActivityBarBehavior {
+                hover_expand: true,
+                hover_intent: crate::ActivityBarHoverIntent { expand_delay_ms: 0 },
+            },
+            ..crate::ActivityBarConfig::default()
+        });
+        let (_, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::new(leaf("pane"), vec![], cx).with_activity_bar_host(host)
+        });
+        cx.simulate_resize(gpui::size(px(500.), px(320.)));
+        cx.run_until_parked();
+        let pane = cx.debug_bounds("pane-visual:pane").unwrap();
+        let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
+        assert_eq!(panel.size.width, px(28.));
+        assert_eq!(panel.right(), pane.left());
+        let trigger = cx.debug_bounds("activity-bar-trigger:pane").unwrap();
+        cx.simulate_mouse_move(trigger.center(), None, gpui::Modifiers::none());
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_millis(75));
+        cx.run_until_parked();
+        let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
+        assert_eq!(panel.size.width, px(93.));
+        assert_eq!(panel.left(), pane.left() - px(46.5));
+        cx.executor().advance_clock(Duration::from_millis(75));
+        cx.run_until_parked();
+        assert_eq!(
+            cx.debug_bounds("activity-bar-panel:pane").unwrap().left(),
+            pane.left()
+        );
+        cx.simulate_mouse_move(pane.center(), None, gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(
+            cx.debug_bounds("activity-bar-panel:pane").unwrap().left(),
+            pane.left()
+        );
+        cx.executor().advance_clock(Duration::from_millis(75));
+        cx.run_until_parked();
+        let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
+        assert_eq!(panel.size.width, px(93.));
+        assert_eq!(panel.left(), pane.left() - px(46.5));
+        cx.executor().advance_clock(Duration::from_millis(75));
+        cx.run_until_parked();
+        let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
+        assert_eq!(panel.size.width, px(28.));
+        assert_eq!(panel.right(), pane.left());
+    }
+
+    #[gpui::test]
+    fn rendered_state_motion_reaches_vertical_and_horizontal_midpoints_and_endpoints(
+        cx: &mut TestAppContext,
+    ) {
+        let catalog = ActivityCatalog::new(vec![ActivityNode::Activity(rendered_activity(
+            "activity",
+            show_activity,
+        ))]);
+        let tree = PaneNode::leaf_with_activity(
+            PaneId::new("pane"),
+            ActivityId::new("activity"),
+            "data".to_owned(),
+        );
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::try_new_with_catalog(tree, catalog, cx).unwrap()
+        });
+        cx.simulate_resize(gpui::size(px(500.), px(320.)));
+        cx.run_until_parked();
+        let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
+        assert_eq!(panel.size.width, px(28.));
+        cx.simulate_mouse_move(panel.center(), None, gpui::Modifiers::none());
+        cx.executor().advance_clock(Duration::from_millis(75));
+        cx.run_until_parked();
+        let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
+        let row = cx.debug_bounds("activity:pane:activity").unwrap();
+        assert_eq!(panel.size.width, px(93.));
+        assert_eq!(row.size.width, px(88.));
+        assert_eq!(panel.size.width - row.size.width - px(1.), px(4.));
+        cx.executor().advance_clock(Duration::from_millis(75));
+        cx.run_until_parked();
+        let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
+        let row = cx.debug_bounds("activity:pane:activity").unwrap();
+        assert_eq!(panel.size.width, px(158.));
+        assert_eq!(row.size.width, px(149.));
+        assert_eq!(panel.size.width - row.size.width - px(1.), px(8.));
+
+        view.update(cx, |view, cx| {
+            view.host.activity_bar.edge = ActivityBarEdge::Top;
+            view.hover.clear();
+            view.bar_motion.clear();
+            view.item_motion.clear();
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let control = cx.debug_bounds("pane-control:split-h:pane").unwrap();
+        assert_eq!(control.size.width, px(28.));
+        cx.simulate_mouse_move(control.center(), None, gpui::Modifiers::none());
+        cx.executor().advance_clock(Duration::from_millis(75));
+        cx.run_until_parked();
+        assert_eq!(
+            cx.debug_bounds("pane-control:split-h:pane")
+                .unwrap()
+                .size
+                .width,
+            px(89.)
+        );
+        cx.executor().advance_clock(Duration::from_millis(75));
+        cx.run_until_parked();
+        assert_eq!(
+            cx.debug_bounds("pane-control:split-h:pane")
+                .unwrap()
+                .size
+                .width,
+            px(150.)
+        );
+    }
+
+    #[gpui::test]
     fn rendered_dock_drag_forces_all_horizontal_rows_then_restores_on_cancel(
         cx: &mut TestAppContext,
     ) {
@@ -6148,6 +6416,18 @@ mod tests {
             view.read_with(cx, |view, _| view.model().tree().leaf_ids()),
             vec![PaneId::new("a"), PaneId::new("b")]
         );
+        assert_eq!(
+            cx.debug_bounds("activity:a:activity").unwrap().size.width,
+            px(150.)
+        );
+        cx.executor().advance_clock(Duration::from_millis(75));
+        cx.run_until_parked();
+        assert_eq!(
+            cx.debug_bounds("activity:a:activity").unwrap().size.width,
+            px(89.)
+        );
+        cx.executor().advance_clock(Duration::from_millis(75));
+        cx.run_until_parked();
         assert_eq!(
             cx.debug_bounds("activity:a:activity").unwrap().size.width,
             px(28.)
