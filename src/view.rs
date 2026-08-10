@@ -1,14 +1,15 @@
 use crate::{
-    Activity, ActivityBarEdge, ActivityBarHostConfig, ActivityBarHoverState, ActivityBarMode,
-    ActivityCache, ActivityCacheKey, ActivityCatalog, ActivityCatalogValidationError,
-    ActivityExpansionState, ActivityFactoryRegistry, ActivityId, ActivityNode, ActivityProjection,
-    DockBounds, DockConfig, DockDrag, DockHover, DockPayload, DropEdge, FocusPresentation,
-    MullionModel, MullionOverlay, MullionSettings, MullionStyles, MullionTheme, MullionThemeMode,
-    NewPaneFactory, OverlayAlignment, OverlayError, OverlayHostConfig, OverlayLength, PaletteEntry,
-    PaletteInvocation, PaletteInvocationError, PaletteSearchResult, PaneCommandExecutionOptions,
-    PaneControl, PaneData, PaneDirection, PaneEvent, PaneFocusBehavior, PaneId, PaneNode,
-    PaneSplitFactory, SplitDirection, VisibleActivityNode, WorkspaceChanged, WorkspaceEvent,
-    WorkspaceId, WorkspaceSet, WorkspaceSetError,
+    Activity, ActivityBarConfig, ActivityBarEdge, ActivityBarHostConfig, ActivityBarHoverState,
+    ActivityBarMode, ActivityCache, ActivityCacheKey, ActivityCatalog,
+    ActivityCatalogValidationError, ActivityExpansionState, ActivityFactoryRegistry, ActivityId,
+    ActivityNode, ActivityProjection, DockBounds, DockConfig, DockDrag, DockHover, DockPayload,
+    DropEdge, FocusPresentation, MullionModel, MullionOverlay, MullionSettings, MullionStyles,
+    MullionTheme, MullionThemeMode, NewPaneFactory, OverlayAlignment, OverlayError,
+    OverlayHostConfig, OverlayLength, PaletteEntry, PaletteInvocation, PaletteInvocationError,
+    PaletteSearchResult, PaneCommandExecutionOptions, PaneControl, PaneData, PaneDirection,
+    PaneEvent, PaneFocusBehavior, PaneId, PaneNode, PaneSplitFactory, SplitDirection,
+    VisibleActivityNode, WorkspaceChanged, WorkspaceEvent, WorkspaceId, WorkspaceSet,
+    WorkspaceSetError,
 };
 use gpui::{
     actions, canvas, div, ease_in_out, point, prelude::*, px, relative, AnyElement, App, Bounds,
@@ -666,6 +667,32 @@ impl<D: PaneData> MullionView<D> {
     }
     pub fn activity_bar_host(&self) -> &ActivityBarHostConfig<D> {
         &self.host
+    }
+    /// Replace the activity-bar policy at runtime.
+    pub fn set_activity_bar_config(&mut self, config: ActivityBarConfig, cx: &mut Context<Self>) {
+        if self.host.activity_bar == config {
+            return;
+        }
+
+        self.host.activity_bar = config;
+        // Keep generation tombstones so already-spawned hover and animation
+        // callbacks cannot collide with fresh state after the policy change.
+        for state in self.hover.values_mut() {
+            state.leave();
+        }
+        self.hovered_bar_items.clear();
+        for motion in self
+            .bar_motion
+            .values_mut()
+            .chain(self.item_motion.values_mut())
+        {
+            motion.generation = motion.generation.wrapping_add(1);
+            motion.progress = 0.0;
+            motion.from = 0.0;
+            motion.target = false;
+            motion.started_at = None;
+        }
+        cx.notify();
     }
     /// Install a controlled window-level overlay host.
     pub fn with_overlay_host(mut self, host: OverlayHostConfig) -> Self {
@@ -5798,6 +5825,121 @@ mod tests {
     pinned_edge_test!(pinned_bottom_rail_follows_content, ActivityBarEdge::Bottom);
 
     #[gpui::test]
+    fn runtime_activity_bar_config_updates_edge_and_visibility_modes(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            MullionView::new(
+                leaf("pane"),
+                vec![ActivityNode::Activity(legacy_activity())],
+                cx,
+            )
+        });
+        cx.simulate_resize(gpui::size(px(500.), px(320.)));
+        cx.run_until_parked();
+
+        let visual = cx.debug_bounds("pane-visual:pane").unwrap();
+        let left_bar = cx.debug_bounds("activity-bar:pane").unwrap();
+        assert_eq!(left_bar.left(), visual.left());
+        assert_eq!(
+            cx.debug_bounds("pane-content:pane").unwrap().left(),
+            left_bar.right()
+        );
+        let activity = cx.debug_bounds("activity:pane:legacy").unwrap();
+        cx.simulate_mouse_move(activity.center(), None, gpui::Modifiers::none());
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| {
+            assert!(view.activity_bar_is_expanded(&PaneId::new("pane")));
+        });
+
+        view.update(cx, |view, cx| {
+            view.set_activity_bar_config(
+                ActivityBarConfig {
+                    edge: ActivityBarEdge::Top,
+                    ..ActivityBarConfig::default()
+                },
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| {
+            assert!(!view.activity_bar_is_expanded(&PaneId::new("pane")));
+            assert!(view.hovered_bar_items.is_empty());
+            assert!(view
+                .bar_motion
+                .values()
+                .chain(view.item_motion.values())
+                .all(|motion| !motion.target
+                    && motion.started_at.is_none()
+                    && motion.progress == 0.0));
+        });
+        cx.executor().advance_clock(Duration::from_millis(20));
+        cx.run_until_parked();
+        assert!(!view.read_with(cx, |view, _| view
+            .activity_bar_is_expanded(&PaneId::new("pane"))));
+        let top_bar = cx.debug_bounds("activity-bar:pane").unwrap();
+        assert_eq!(top_bar.top(), visual.top());
+        assert_eq!(top_bar.size.height, px(28.));
+        assert_eq!(
+            cx.debug_bounds("pane-content:pane").unwrap().top(),
+            top_bar.bottom()
+        );
+        let activity = cx.debug_bounds("activity:pane:legacy").unwrap();
+        cx.simulate_mouse_move(activity.center(), None, gpui::Modifiers::none());
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| assert!(!view.hovered_bar_items.is_empty()));
+
+        view.update(cx, |view, cx| {
+            view.set_activity_bar_config(
+                ActivityBarConfig {
+                    edge: ActivityBarEdge::Top,
+                    mode: ActivityBarMode::Hidden,
+                    ..ActivityBarConfig::default()
+                },
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("activity-bar:pane").is_none());
+        view.read_with(cx, |view, _| {
+            assert!(view.hovered_bar_items.is_empty());
+            assert!(view
+                .item_motion
+                .values()
+                .all(|motion| !motion.target && motion.started_at.is_none()));
+        });
+        let hidden_content = cx.debug_bounds("pane-content:pane").unwrap();
+
+        view.update(cx, |view, cx| {
+            view.set_activity_bar_config(
+                ActivityBarConfig {
+                    edge: ActivityBarEdge::Top,
+                    mode: ActivityBarMode::AutoHide,
+                    behavior: crate::ActivityBarBehavior {
+                        hover_expand: false,
+                        ..crate::ActivityBarBehavior::default()
+                    },
+                },
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            cx.debug_bounds("activity-bar:pane").unwrap().size.height,
+            px(0.)
+        );
+        assert_eq!(
+            cx.debug_bounds("activity-bar-trigger:pane")
+                .unwrap()
+                .size
+                .height,
+            px(12.)
+        );
+        assert_eq!(
+            cx.debug_bounds("pane-content:pane").unwrap(),
+            hidden_content
+        );
+    }
+
+    #[gpui::test]
     fn pinned_pane_controls_have_exact_bounds_secondary_order_and_split_dispatch(
         cx: &mut TestAppContext,
     ) {
@@ -5953,17 +6095,19 @@ mod tests {
         assert!(cx.debug_bounds("activity-bar:pane").is_none());
 
         view.update(cx, |view, cx| {
-            view.host.activity_bar = crate::ActivityBarConfig {
-                edge: ActivityBarEdge::Left,
-                mode: ActivityBarMode::AutoHide,
-                behavior: crate::ActivityBarBehavior {
-                    hover_expand: true,
-                    hover_intent: crate::ActivityBarHoverIntent {
-                        expand_delay_ms: 50,
+            view.set_activity_bar_config(
+                crate::ActivityBarConfig {
+                    edge: ActivityBarEdge::Left,
+                    mode: ActivityBarMode::AutoHide,
+                    behavior: crate::ActivityBarBehavior {
+                        hover_expand: true,
+                        hover_intent: crate::ActivityBarHoverIntent {
+                            expand_delay_ms: 50,
+                        },
                     },
                 },
-            };
-            cx.notify();
+                cx,
+            );
         });
         cx.run_until_parked();
         let content_before = cx.debug_bounds("pane-content:pane").unwrap();
@@ -5981,8 +6125,9 @@ mod tests {
         );
 
         view.update(cx, |view, cx| {
-            view.host.activity_bar.behavior.hover_intent.expand_delay_ms = 0;
-            cx.notify();
+            let mut config = view.activity_bar_host().activity_bar;
+            config.behavior.hover_intent.expand_delay_ms = 0;
+            view.set_activity_bar_config(config, cx);
         });
         cx.run_until_parked();
         let trigger = cx.debug_bounds("activity-bar-trigger:pane").unwrap();
