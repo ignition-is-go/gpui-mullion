@@ -167,6 +167,9 @@ assert(
   "controlled modal exposes real backdrop policy",
   state,
 );
+// Controlled policy is visible synchronously; wait for the next GPUI paint so
+// real CDP input targets the newly installed backdrop rather than stale hit data.
+await sleep(300);
 await command("Input.dispatchMouseEvent", {
   type: "mousePressed",
   x: canvasOrigin.left + 4,
@@ -211,6 +214,7 @@ assert(
   "controlled drag overlay is click-through",
   state,
 );
+await sleep(300);
 const paneOnePoint = {
   x: canvasOrigin.left + canvasOrigin.width * 0.25,
   y: canvasOrigin.top + canvasOrigin.height * 0.3,
