@@ -598,6 +598,47 @@ impl<D: PaneData> MullionView<D> {
     pub fn styles(&self) -> Option<&MullionStyles> {
         self.styles.as_ref()
     }
+    /// Whether pointer hover has expanded this pane's activity bar.
+    ///
+    /// This reports resolved interaction state, not merely that an input event
+    /// was dispatched, so browser hosts can make honest end-to-end assertions.
+    pub fn activity_bar_is_expanded(&self, pane: &PaneId) -> bool {
+        self.hover
+            .get(pane)
+            .is_some_and(|state| state.is_expanded())
+    }
+    /// Deliver a host-resolved activity-bar hover event.
+    ///
+    /// Native GPUI pointers call the same state transition internally. This
+    /// public event hook lets embedded canvas hosts and deterministic browser
+    /// bridges forward their own hit-tested pointer state without claiming
+    /// success before the panel actually expands.
+    pub fn set_activity_bar_hovered(
+        &mut self,
+        pane: &PaneId,
+        hovered: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.model.tree().find(pane).is_none() {
+            return false;
+        }
+        let delay = self.host.activity_bar.behavior.hover_intent.expand_delay_ms;
+        self.handle_activity_bar_hover(pane, hovered, delay, cx);
+        // A forwarded host event is already a resolved boundary crossing, so
+        // expose its endpoint synchronously. Native pointer paths retain the
+        // 150ms visual transition; deterministic embedded bridges do not need
+        // to race an executor timer before their next frame.
+        if delay == 0 {
+            let endpoint = ActivityMotion::endpoint(hovered);
+            let motion = self.bar_motion.entry(pane.clone()).or_default();
+            motion.progress = endpoint;
+            motion.from = endpoint;
+            motion.target = hovered;
+            motion.started_at = None;
+            cx.notify();
+        }
+        true
+    }
     /// Configure whether the built-in workspace switcher is rendered.
     ///
     /// Hosts can disable it when they provide their own workspace navigation.
@@ -1315,6 +1356,27 @@ impl<D: PaneData> MullionView<D> {
                 let arrow_key = key.clone();
                 let split_accessibility =
                     crate::MullionAccessibilityNode::split(*direction, *ratio, false);
+                // In the CSS reference, the pane's z-index-6 focus frame paints
+                // over the z-index-auto splitter. Preserve that one-pixel band
+                // while keeping the transparent hit target above both paints.
+                let focused_first = self.focus_presentation.show_focus_indicator()
+                    && self
+                        .model
+                        .focused()
+                        .is_some_and(|focused| first.find(focused).is_some());
+                let split_focus_overlay = focused_first.then(|| {
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .when(*direction == SplitDirection::Horizontal, |edge| {
+                            edge.bottom_0().w(styles.pane.focus_indicator_width)
+                        })
+                        .when(*direction == SplitDirection::Vertical, |edge| {
+                            edge.right_0().h(styles.pane.focus_indicator_width)
+                        })
+                        .bg(styles.pane.focus_indicator)
+                });
 
                 // Split geometry is non-consuming: the four-pixel line and its
                 // eight-pixel pointer target are centered over the exact ratio.
@@ -1353,6 +1415,7 @@ impl<D: PaneData> MullionView<D> {
                     } else {
                         handle_color
                     })
+                    .when_some(split_focus_overlay, |handle, overlay| handle.child(overlay))
                     .child(
                         div()
                             .id(SharedString::from(format!("split-hit-target:{}", key.0)))
@@ -1798,6 +1861,24 @@ impl<D: PaneData> MullionView<D> {
                 return;
             }
             let generation = state.enter();
+            if delay_ms == 0 {
+                if self
+                    .hover
+                    .entry(pane.clone())
+                    .or_default()
+                    .apply_open(generation)
+                {
+                    self.start_motion(
+                        MotionKey::Bar(pane.clone()),
+                        true,
+                        ACTIVITY_BAR_TRANSITION,
+                        None,
+                        cx,
+                    );
+                    cx.notify();
+                }
+                return;
+            }
             let pane = pane.clone();
             cx.spawn(async move |this, cx| {
                 cx.background_executor()
@@ -2804,10 +2885,10 @@ impl<D: PaneData> MullionView<D> {
                     let id = id.clone();
                     move || format!("pane-header:{}", id.0)
                 })
-                // The reference fixture uses content-box: 28px content plus its
-                // one-pixel bottom rule is a 29px painted outer band.
-                .h(styles.header.height + styles.header.border_width)
-                .min_h(styles.header.height + styles.header.border_width)
+                // CSS `box-sizing: border-box` keeps the bottom rule inside the
+                // declared band height; mirror that geometry in GPUI.
+                .h(styles.header.height)
+                .min_h(styles.header.height)
                 .flex_shrink_0()
                 .flex()
                 .items_center()
@@ -5988,6 +6069,9 @@ mod tests {
             px(158.)
         );
         assert_eq!(cx.debug_bounds("pane-content:pane").unwrap(), content);
+        view.read_with(cx, |view, _| {
+            assert!(view.activity_bar_is_expanded(&PaneId::new("pane")));
+        });
 
         view.update(cx, |view, cx| {
             view.host.activity_bar.edge = ActivityBarEdge::Top;
@@ -6012,6 +6096,39 @@ mod tests {
             px(150.)
         );
         assert_eq!(cx.debug_bounds("pane-content:pane").unwrap(), content);
+    }
+
+    #[gpui::test]
+    fn rendered_header_and_focus_frame_use_reference_bounds_and_color(cx: &mut TestAppContext) {
+        let catalog = ActivityCatalog::new(vec![ActivityNode::Activity(rendered_activity(
+            "activity",
+            show_activity,
+        ))]);
+        let tree = split(
+            SplitDirection::Horizontal,
+            0.5,
+            PaneNode::leaf_with_activity(PaneId::new("a"), ActivityId::new("activity"), "a".into()),
+            PaneNode::leaf_with_activity(PaneId::new("b"), ActivityId::new("activity"), "b".into()),
+        );
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::try_new_with_catalog(tree, catalog, cx)
+                .unwrap()
+                .with_focus_presentation(FocusPresentation::new().with_focus_indicator(true))
+        });
+        cx.simulate_resize(gpui::size(px(500.), px(320.)));
+        cx.run_until_parked();
+
+        assert_eq!(
+            cx.debug_bounds("pane-header:a").unwrap().size.height,
+            px(28.)
+        );
+        let content = cx.debug_bounds("pane-content:a").unwrap();
+        let edge = cx.debug_bounds("focus-edge:a:right").unwrap();
+        assert_eq!(edge.size.width, px(1.));
+        assert_eq!(edge.right(), content.right());
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.theme.focus_indicator, gpui::rgb(0x0974a4).into());
+        });
     }
 
     #[gpui::test]
@@ -6809,7 +6926,7 @@ mod tests {
         let host_border = cx.debug_bounds("pane-host-border:pane").unwrap();
         assert_eq!(column, content);
         assert_eq!(wash, content);
-        assert_eq!(header.size.height, px(29.));
+        assert_eq!(header.size.height, px(28.));
         assert_eq!(body.top(), header.bottom());
         assert_eq!(body.bottom(), content.bottom());
         assert_eq!(host_border.size.height, px(2.));

@@ -106,9 +106,12 @@ async function key(keyName, code, keyCode, modifiers) {
 }
 async function shot(name, width, height, action) {
   await reset(width, height);
-  if (action) await action(width, height);
-  await command("Page.bringToFront");
+  // Let both hosts settle viewport geometry before applying a pointer-driven
+  // scenario; resizing afterward synthesizes a GPUI hover leave and collapses
+  // the very state the screenshot is meant to prove.
   await evaluate("window.dispatchEvent(new Event('resize')); new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  await command("Page.bringToFront");
+  if (action) await action(width, height);
   await sleep(250);
   const png = await command("Page.captureScreenshot", { format: "png", fromSurface: true,
     captureBeyondViewport: false, clip: { x: 0, y: 0, width, height, scale: 1 } });
@@ -124,7 +127,9 @@ const scenarios = [
     if (adapter === "reference") {
       const point = await center(".mullion-ab"); await mouse(point.x, point.y);
     } else {
-      await bridgeAction("barHover", { pane: "1" });
+      await mouse(14, 43);
+      const state = await bridgeAction("barHover", { pane: "1" });
+      if (state.barHover !== "1") throw new Error("GPUI rail did not resolve as expanded");
     }
     await sleep(900);
   }],
@@ -133,9 +138,12 @@ const scenarios = [
       const rail = await center(".mullion-ab"); await mouse(rail.x, rail.y); await sleep(700);
       const category = await center(".mullion-ab-category .mullion-ab-btn"); await click(category.x, category.y);
     } else {
-      await bridgeAction("barHover", { pane: "1" }); await sleep(700);
+      await mouse(14, 43);
+      const state = await bridgeAction("barHover", { pane: "1" });
+      if (state.barHover !== "1") throw new Error("GPUI rail did not resolve as expanded");
+      await sleep(700);
       // Pane 1 begins at the canvas origin; Explorer is the first 28px row
-      // below the 29px header once the vertical panel is expanded.
+      // below the 28px border-box header once the vertical panel is expanded.
       await click(74, 43);
     }
     await sleep(500);

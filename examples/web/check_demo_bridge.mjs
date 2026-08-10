@@ -58,8 +58,17 @@ assert(
   "nested category fixture selects its canonical child",
   state,
 );
-state = await action("barHover", { pane: "1" });
-assert(state.barHover === "1", "bar hover state is deterministic", state);
+const canvasRect = await evaluate(`(() => { const r = document.querySelector("canvas").getBoundingClientRect(); return JSON.stringify({left:r.left,top:r.top}); })()`);
+const canvasOrigin = JSON.parse(canvasRect);
+await command("Input.dispatchMouseEvent", {
+  type: "mouseMoved", x: canvasOrigin.left + 14, y: canvasOrigin.top + 180, button: "none",
+});
+for (let attempt = 0; attempt < 40; attempt += 1) {
+  state = JSON.parse(await evaluate("globalThis.__mullionTestState()"));
+  if (state.barHover === "1") break;
+  await sleep(50);
+}
+assert(state.barHover === "1", "live canvas hover expands the bar", state);
 state = await action("activity", { pane: "1", activity: "9" });
 assert(state.activeActivities.find(({ pane }) => pane === "1").activity === "9", "Settings selects", state);
 state = await action("focusBehavior", { value: "hover" });

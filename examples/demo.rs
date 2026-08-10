@@ -145,13 +145,16 @@ fn content_shell(title: impl Into<gpui::SharedString>, detail: &'static str) -> 
     div()
         .size_full()
         .overflow_hidden()
-        .p(px(16.))
+        .px(px(16.))
+        .pt(px(14.))
+        .pb(px(16.))
         .bg(rgb(0x111111))
         .text_color(rgb(0xdddddd))
         .child(
             div()
                 .mb(px(12.))
                 .text_size(px(12.))
+                .line_height(px(14.))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(rgb(0xbbbbbb))
                 .child(title.into()),
@@ -170,6 +173,7 @@ fn section_label(label: &'static str) -> gpui::Div {
         .mt(px(16.))
         .mb(px(6.))
         .text_size(px(10.))
+        .line_height(px(12.))
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(rgb(0x777777))
         .child(label)
@@ -203,7 +207,7 @@ fn files_content(data: &DemoData) -> gpui::AnyElement {
     .child(section_label("CHANGES"))
     .children(files.into_iter().map(|(path, status, color)| {
         div()
-            .h(px(24.))
+            .h(px(25.))
             .px(px(8.))
             .flex()
             .items_center()
@@ -799,6 +803,9 @@ fn demo_styles() -> MullionStyles {
     styles.activity_bar.active_icon_opacity = 1.0;
     styles.activity_bar.expanded_padding = px(10.);
     styles.split_handle.thickness = px(2.);
+    // The reference demo supplies `--ml-unfocused-pane-color: rgb(3 9 14)`;
+    // this is a fixture override rather than a change to Mullion's theme.
+    styles.pane.unfocused_wash = rgb(0x03090e).into();
     styles.workspace_switcher.gap = px(1.);
     styles.workspace_switcher.font_size = px(11.);
     styles.workspace_switcher.line_height = px(13.);
@@ -867,6 +874,7 @@ impl gpui::Render for DemoRoot {
                                     .cursor_pointer()
                                     .font_family("monospace")
                                     .text_size(px(11.))
+                                    .line_height(px(13.))
                                     .text_color(if selected {
                                         rgb(0xeeeeee)
                                     } else {
@@ -888,6 +896,7 @@ impl gpui::Render for DemoRoot {
                             .py(px(2.))
                             .font_family("monospace")
                             .text_size(px(11.))
+                            .line_height(px(13.))
                             .text_color(rgb(0x888888))
                             .child("Alt+Arrow · focus   Ctrl/⌘+K · all commands"),
                     ),
@@ -1049,6 +1058,11 @@ fn browser_test_state() -> String {
                 }).collect();
                 let query = control.palette_query.lock().unwrap().clone();
                 let palette_results = view.search_palette(&query).into_iter().take(12).map(|result| result.entry.id).collect();
+                let bar_hover = tree
+                    .leaf_ids()
+                    .into_iter()
+                    .find(|pane| view.activity_bar_is_expanded(pane))
+                    .map(|pane| pane.0);
                 serde_json::to_string(&BrowserTestState {
                     active_workspace: view.workspaces().unwrap().active.clone(),
                     tree,
@@ -1060,7 +1074,7 @@ fn browser_test_state() -> String {
                     palette_query: query,
                     palette_results,
                     selected_category: control.selected_category.lock().unwrap().clone(),
-                    bar_hover: control.bar_hover.lock().unwrap().clone(),
+                    bar_hover,
                     split_sequence: control.split_counter.load(Ordering::SeqCst),
                     drop_sequence: control.drop_counter.load(Ordering::SeqCst),
                     catalog: serde_json::json!({
@@ -1091,37 +1105,6 @@ fn js_text(value: &wasm_bindgen::JsValue) -> String {
 }
 
 #[cfg(target_family = "wasm")]
-fn hover_activity_bar(view: &Entity<MullionView<DemoData>>, pane: &PaneId, cx: &mut App) -> bool {
-    let tree = view.read(cx).model().snapshot();
-    let Some(rect) = gpui_mullion::leaf_rect(&tree, pane, |key| {
-        gpui_mullion::find_ratio(&tree, key).unwrap_or(0.5)
-    }) else {
-        return false;
-    };
-    let Some(window) = cx.active_window() else {
-        return false;
-    };
-    window
-        .update(cx, |_, window, cx| {
-            let viewport = window.viewport_size();
-            let position = gpui::point(
-                viewport.width * rect.left as f32 + px(14.),
-                viewport.height * (rect.top + rect.height / 2.) as f32,
-            );
-            let _ = window.dispatch_event(
-                gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
-                    position,
-                    modifiers: gpui::Modifiers::none(),
-                    pressed_button: None,
-                }),
-                cx,
-            );
-        })
-        .expect("demo window remains open while its test bridge is installed");
-    true
-}
-
-#[cfg(target_family = "wasm")]
 fn browser_test_action(action: wasm_bindgen::JsValue, payload: wasm_bindgen::JsValue) -> String {
     let action = js_text(&action);
     let payload_text = js_text(&payload);
@@ -1146,8 +1129,13 @@ fn browser_test_action(action: wasm_bindgen::JsValue, payload: wasm_bindgen::JsV
                     if matches!(action.as_str(), "barHover" | "bar-hover") {
                         let pane =
                             PaneId::new(field("pane").unwrap_or_else(|| payload_text.clone()));
-                        *control.bar_hover.lock().unwrap() =
-                            hover_activity_bar(&view, &pane, cx).then_some(pane.0);
+                        view.update(cx, |view, cx| {
+                            view.set_activity_bar_hovered(&pane, true, cx);
+                        });
+                        *control.bar_hover.lock().unwrap() = view
+                            .read(cx)
+                            .activity_bar_is_expanded(&pane)
+                            .then_some(pane.0);
                         cx.refresh_windows();
                         return;
                     }

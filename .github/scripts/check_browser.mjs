@@ -158,11 +158,13 @@ try {
   assert(state.selectedCategory === "3" && activity(state, "1") === "11",
     "nested category selects Keybindings", state);
 
-  // The bridge derives pane 1's live normalized bounds and dispatches a real
-  // GPUI MouseMove into its compact rail. This avoids guessing coordinates
-  // across Chrome device-scale and GPUI canvas backing-store changes.
-  state = await action("barHover", { pane: "1" });
-  assert(state.barHover === "1", "real activity bar hover dispatches", state);
+  // Drive Chrome's live canvas, then assert Mullion's resolved hover state.
+  // Recording only that a synthetic bridge dispatch returned would allow a
+  // collapsed rail to masquerade as expanded.
+  await command("Input.dispatchMouseEvent", {
+    type: "mouseMoved", x: left + 14, y: top + 180, button: "none",
+  });
+  state = await waitFor("activity bar expansion", (next) => next.barHover === "1");
 
   await click(left + width * 0.7, top + height * 0.25);
   state = await waitFor("CDP pane focus", (next) => next.focused === "2");
