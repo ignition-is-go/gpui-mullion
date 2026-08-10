@@ -410,7 +410,7 @@ struct DemoControl {
     focus_behavior: AtomicU8,
     palette_open: AtomicBool,
     palette_query: Mutex<String>,
-    category: Mutex<Option<String>>,
+    selected_category: Mutex<Option<String>>,
     bar_hover: Mutex<Option<String>>,
 }
 
@@ -429,7 +429,7 @@ impl DemoControl {
         self.focus_behavior.store(0, Ordering::SeqCst);
         self.palette_open.store(false, Ordering::SeqCst);
         *self.palette_query.lock().unwrap() = String::new();
-        *self.category.lock().unwrap() = None;
+        *self.selected_category.lock().unwrap() = None;
         *self.bar_hover.lock().unwrap() = None;
     }
 }
@@ -657,7 +657,7 @@ struct BrowserTestState {
     palette_open: bool,
     palette_query: String,
     palette_results: Vec<String>,
-    expanded_category: Option<String>,
+    selected_category: Option<String>,
     bar_hover: Option<String>,
     split_sequence: u64,
     drop_sequence: u64,
@@ -704,7 +704,7 @@ fn browser_test_state() -> String {
                     palette_open: control.palette_open.load(Ordering::SeqCst),
                     palette_query: query,
                     palette_results,
-                    expanded_category: control.category.lock().unwrap().clone(),
+                    selected_category: control.selected_category.lock().unwrap().clone(),
                     bar_hover: control.bar_hover.lock().unwrap().clone(),
                     split_sequence: control.split_counter.load(Ordering::SeqCst),
                     drop_sequence: control.drop_counter.load(Ordering::SeqCst),
@@ -736,6 +736,37 @@ fn js_text(value: &wasm_bindgen::JsValue) -> String {
 }
 
 #[cfg(target_family = "wasm")]
+fn hover_activity_bar(view: &Entity<MullionView<DemoData>>, pane: &PaneId, cx: &mut App) -> bool {
+    let tree = view.read(cx).model().snapshot();
+    let Some(rect) = gpui_mullion::leaf_rect(&tree, pane, |key| {
+        gpui_mullion::find_ratio(&tree, key).unwrap_or(0.5)
+    }) else {
+        return false;
+    };
+    let Some(window) = cx.active_window() else {
+        return false;
+    };
+    window
+        .update(cx, |_, window, cx| {
+            let viewport = window.viewport_size();
+            let position = gpui::point(
+                viewport.width * rect.left as f32 + px(14.),
+                viewport.height * (rect.top + rect.height / 2.) as f32,
+            );
+            let _ = window.dispatch_event(
+                gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                    position,
+                    modifiers: gpui::Modifiers::none(),
+                    pressed_button: None,
+                }),
+                cx,
+            );
+        })
+        .expect("demo window remains open while its test bridge is installed");
+    true
+}
+
+#[cfg(target_family = "wasm")]
 fn browser_test_action(action: wasm_bindgen::JsValue, payload: wasm_bindgen::JsValue) -> String {
     let action = js_text(&action);
     let payload_text = js_text(&payload);
@@ -751,13 +782,22 @@ fn browser_test_action(action: wasm_bindgen::JsValue, payload: wasm_bindgen::JsV
                 let control = control.borrow();
                 let control = control.as_ref().expect("demo control retained").clone();
                 application.update(|cx| {
+                    let field = |name: &str| {
+                        payload_json
+                            .get(name)
+                            .and_then(|v| v.as_str())
+                            .map(str::to_owned)
+                    };
+                    if matches!(action.as_str(), "barHover" | "bar-hover") {
+                        let pane =
+                            PaneId::new(field("pane").unwrap_or_else(|| payload_text.clone()));
+                        *control.bar_hover.lock().unwrap() =
+                            hover_activity_bar(&view, &pane, cx).then_some(pane.0);
+                        cx.refresh_windows();
+                        return;
+                    }
                     view.update(cx, |view, cx| {
-                        let field = |name: &str| {
-                            payload_json
-                                .get(name)
-                                .and_then(|v| v.as_str())
-                                .map(str::to_owned)
-                        };
+                        let field = &field;
                         match action.as_str() {
                             "reset" => {
                                 control.reset();
@@ -804,7 +844,7 @@ fn browser_test_action(action: wasm_bindgen::JsValue, payload: wasm_bindgen::JsV
                             "category" => {
                                 let category =
                                     field("category").unwrap_or_else(|| payload_text.clone());
-                                *control.category.lock().unwrap() = Some(category.clone());
+                                *control.selected_category.lock().unwrap() = Some(category.clone());
                                 let first_activity = match category.as_str() {
                                     "0" => "1",
                                     "1" => "5",
@@ -822,11 +862,6 @@ fn browser_test_action(action: wasm_bindgen::JsValue, payload: wasm_bindgen::JsV
                                 } else {
                                     cx.notify();
                                 }
-                            }
-                            "barHover" | "bar-hover" => {
-                                *control.bar_hover.lock().unwrap() =
-                                    Some(field("pane").unwrap_or_else(|| payload_text.clone()));
-                                cx.notify();
                             }
                             "focusBehavior" | "focus-behavior" => {
                                 let value = field("value").unwrap_or_else(|| payload_text.clone());

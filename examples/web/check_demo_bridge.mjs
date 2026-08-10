@@ -53,7 +53,11 @@ assert(state.tree.Split.ratio === 0.4, "reset restores canonical 40/60 split", s
 assert(state.catalog.primary[2].children[1].name === "Advanced", "nested category is exposed", state);
 assert(state.catalog.trailing[0].name === "Settings", "trailing Settings is exposed", state);
 state = await action("category", { category: "3" });
-assert(state.expandedCategory === "3", "nested flyout state is deterministic", state);
+assert(
+  state.selectedCategory === "3" && state.activeActivities.find(({ pane }) => pane === "1").activity === "11",
+  "nested category fixture selects its canonical child",
+  state,
+);
 state = await action("barHover", { pane: "1" });
 assert(state.barHover === "1", "bar hover state is deterministic", state);
 state = await action("activity", { pane: "1", activity: "9" });
