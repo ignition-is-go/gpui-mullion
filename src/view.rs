@@ -3889,13 +3889,6 @@ impl<D: PaneData> Render for MullionView<D> {
         };
         div()
             .key_context(key_context)
-            .on_action(cx.listener(
-                |this, _: &gpui_command_palette::ToggleCommandPalette, window, cx| {
-                    if let Some(palette) = this.command_palette.clone() {
-                        palette.update(cx, |palette, cx| palette.toggle(window, cx));
-                    }
-                },
-            ))
             .track_focus(&self.focus_handle)
             .size_full()
             .relative()

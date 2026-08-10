@@ -200,6 +200,18 @@ pub fn command_palette_for_view<D: PaneData>(
     palette
 }
 
+/// Create the Mullion adapter palette, attach it to `view`, and install its
+/// application-level action route for `window`.
+pub fn install_command_palette_for_view<D: PaneData>(
+    view: &gpui::Entity<crate::MullionView<D>>,
+    window: &gpui::Window,
+    cx: &mut gpui::App,
+) -> gpui::Entity<gpui_command_palette::CommandPalette<PaletteInvocation>> {
+    let palette = command_palette_for_view(view, cx);
+    gpui_command_palette::install_palette(&palette, window, cx);
+    palette
+}
+
 /// Source-compatible forwarding shim; ranking lives in `gpui-command-palette`.
 pub fn search_palette(entries: &[PaletteEntry], query: &str) -> Vec<PaletteSearchResult> {
     gpui_command_palette::search_commands(entries, query)

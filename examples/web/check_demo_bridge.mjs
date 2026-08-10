@@ -74,7 +74,11 @@ assert(state.activeActivities.find(({ pane }) => pane === "1").activity === "9",
 state = await action("focusBehavior", { value: "hover" });
 assert(state.focusBehavior === "Hover", "controlled setting updates", state);
 state = await action("palette", { query: "keybindings" });
-assert(state.paletteOpen && state.paletteResults.some((id) => id.endsWith(".11")), "palette finds nested activity", state);
+assert(state.paletteOpen && state.paletteQuery === "keybindings"
+  && state.paletteResults.some((id) => id.endsWith(".11")), "real palette finds nested activity", state);
+state = await action("paletteClose");
+assert(!state.paletteOpen && state.paletteQuery === "" && state.paletteResults.length > 0,
+  "real palette closes and clears its query", state);
 state = await action("workspace", { id: "triple" });
 assert(state.activeWorkspace === "triple", "Triple workspace switches", state);
 state = await action("workspace", { id: "stacked" });

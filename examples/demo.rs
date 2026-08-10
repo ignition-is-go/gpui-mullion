@@ -14,7 +14,7 @@ use gpui_mullion::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
+    atomic::{AtomicU64, AtomicU8, Ordering},
     Arc, Mutex,
 };
 
@@ -732,8 +732,6 @@ struct DemoControl {
     split_counter: AtomicU64,
     drop_counter: AtomicU64,
     focus_behavior: AtomicU8,
-    palette_open: AtomicBool,
-    palette_query: Mutex<String>,
     selected_category: Mutex<Option<String>>,
     bar_hover: Mutex<Option<String>>,
 }
@@ -751,15 +749,12 @@ impl DemoControl {
         self.split_counter.store(0, Ordering::SeqCst);
         self.drop_counter.store(0, Ordering::SeqCst);
         self.focus_behavior.store(0, Ordering::SeqCst);
-        self.palette_open.store(false, Ordering::SeqCst);
-        *self.palette_query.lock().unwrap() = String::new();
         *self.selected_category.lock().unwrap() = None;
         *self.bar_hover.lock().unwrap() = None;
     }
 }
 
-fn host_config(control: Arc<DemoControl>) -> ActivityBarHostConfig<DemoData> {
-    let palette = control.clone();
+fn host_config() -> ActivityBarHostConfig<DemoData> {
     let hairline = || {
         move |_: &PaneId, _: &DemoData, _: &mut gpui::Window, _: &mut App| {
             div()
@@ -776,7 +771,6 @@ fn host_config(control: Arc<DemoControl>) -> ActivityBarHostConfig<DemoData> {
             .with_leading(hairline())
             .with_trailing(hairline())
             .with_pane_accessory(move |_, _, _, _| {
-                let palette = palette.clone();
                 div()
                     .id("demo-command-palette")
                     .debug_selector(|| "demo-command-palette".into())
@@ -789,8 +783,6 @@ fn host_config(control: Arc<DemoControl>) -> ActivityBarHostConfig<DemoData> {
                             Box::new(gpui_command_palette::ToggleCommandPalette),
                             cx,
                         );
-                        let next = !palette.palette_open.load(Ordering::SeqCst);
-                        palette.palette_open.store(next, Ordering::SeqCst);
                     })
                     .into_any_element()
             }),
@@ -976,9 +968,9 @@ fn launch(cx: &mut App) {
                     )
                     .with_styles(demo_styles())
                     .with_workspace_switcher_visible(false)
-                    .with_activity_bar_host(host_config(control.clone()))
+                    .with_activity_bar_host(host_config())
             });
-            gpui_mullion::command_palette_for_view(&view, cx);
+            gpui_mullion::install_command_palette_for_view(&view, window, cx);
             view.read(cx).focus_handle().clone().focus(window, cx);
             #[cfg(target_family = "wasm")]
             {
@@ -1056,8 +1048,19 @@ fn browser_test_state() -> String {
                     };
                     BrowserActiveActivity { pane, activity, label }
                 }).collect();
-                let query = control.palette_query.lock().unwrap().clone();
-                let palette_results = view.search_palette(&query).into_iter().take(12).map(|result| result.entry.id).collect();
+                let palette = view
+                    .command_palette()
+                    .expect("demo command palette installed")
+                    .read(cx);
+                let palette_state = palette.state();
+                let palette_open = palette_state.is_open();
+                let palette_query = palette_state.query().to_owned();
+                let palette_results = palette_state
+                    .results(&palette.registry().commands())
+                    .into_iter()
+                    .take(12)
+                    .map(|result| result.entry.id)
+                    .collect();
                 let bar_hover = tree
                     .leaf_ids()
                     .into_iter()
@@ -1070,8 +1073,8 @@ fn browser_test_state() -> String {
                     zoomed: view.model().zoomed().cloned(),
                     active_activities,
                     focus_behavior: control.focus_behavior(),
-                    palette_open: control.palette_open.load(Ordering::SeqCst),
-                    palette_query: query,
+                    palette_open,
+                    palette_query,
                     palette_results,
                     selected_category: control.selected_category.lock().unwrap().clone(),
                     bar_hover,
@@ -1138,6 +1141,47 @@ fn browser_test_action(action: wasm_bindgen::JsValue, payload: wasm_bindgen::JsV
                             .then_some(pane.0);
                         cx.refresh_windows();
                         return;
+                    }
+                    if matches!(
+                        action.as_str(),
+                        "palette" | "paletteClose" | "palette-close"
+                    ) {
+                        let palette = view
+                            .read(cx)
+                            .command_palette()
+                            .expect("demo command palette installed")
+                            .clone();
+                        let window = cx.active_window().expect("demo window is active");
+                        window
+                            .update(cx, |_, window, cx| {
+                                palette.update(cx, |palette, cx| {
+                                    if action == "palette" {
+                                        palette.open(window, cx);
+                                        palette.set_query(
+                                            field("query").unwrap_or_else(|| payload_text.clone()),
+                                            cx,
+                                        );
+                                    } else {
+                                        palette.close(window, cx);
+                                    }
+                                });
+                            })
+                            .expect("demo window is alive");
+                        cx.refresh_windows();
+                        return;
+                    }
+                    if action == "reset" {
+                        let palette = view
+                            .read(cx)
+                            .command_palette()
+                            .expect("demo command palette installed")
+                            .clone();
+                        let window = cx.active_window().expect("demo window is active");
+                        window
+                            .update(cx, |_, window, cx| {
+                                palette.update(cx, |palette, cx| palette.close(window, cx));
+                            })
+                            .expect("demo window is alive");
                     }
                     view.update(cx, |view, cx| {
                         let field = &field;
@@ -1216,16 +1260,6 @@ fn browser_test_action(action: wasm_bindgen::JsValue, payload: wasm_bindgen::JsV
                                     },
                                     cx,
                                 );
-                            }
-                            "palette" => {
-                                control.palette_open.store(true, Ordering::SeqCst);
-                                *control.palette_query.lock().unwrap() =
-                                    field("query").unwrap_or_else(|| payload_text.clone());
-                                cx.notify();
-                            }
-                            "paletteClose" | "palette-close" => {
-                                control.palette_open.store(false, Ordering::SeqCst);
-                                cx.notify();
                             }
                             "split" => {
                                 let pane = field("pane").unwrap_or_else(|| {

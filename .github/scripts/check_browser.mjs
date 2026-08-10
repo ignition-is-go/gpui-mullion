@@ -177,7 +177,10 @@ try {
   state = await action("palette", { query: "keybindings" });
   assert(state.paletteOpen && state.paletteQuery === "keybindings"
     && state.paletteResults.some((id) => id.endsWith(".11")),
-  "palette finds nested Keybindings activity", state);
+  "real palette finds nested Keybindings activity", state);
+  state = await action("paletteClose");
+  assert(!state.paletteOpen && state.paletteQuery === "" && state.paletteResults.length > 0,
+    "real palette closes and clears its query", state);
 
   for (const workspace of ["triple", "stacked", "default"]) {
     state = await action("workspace", { id: workspace });
