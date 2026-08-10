@@ -10,6 +10,13 @@ from PIL import Image, ImageChops
 def compare(reference, actual, diff, channel_tolerance=0):
     ref = Image.open(reference).convert("RGBA")
     got = Image.open(actual).convert("RGBA")
+    uniform = [name for name, image in (("reference", ref), ("actual", got))
+               if all(low == high for low, high in image.convert("RGB").getextrema())]
+    if uniform:
+        Path(diff).parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGBA", ref.size, (255, 255, 0, 255)).save(diff)
+        return {"reference": str(reference), "actual": str(actual), "diff": str(diff),
+                "error": f"uniform {' and '.join(uniform)} capture", "passed": False}
     if ref.size != got.size:
         # A magenta canvas makes a dimension failure visible in artifacts even
         # though corresponding-pixel statistics would be meaningless.

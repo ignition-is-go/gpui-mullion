@@ -106,8 +106,8 @@ jobs:
           setsid xvfb-run -a "${{ steps.setup-chrome.outputs.chrome-path }}" \
             --no-sandbox --no-first-run --no-default-browser-check \
             --disable-dev-shm-usage --enable-unsafe-webgpu \
-            --enable-unsafe-swiftshader --use-angle=swiftshader \
-            --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 \
+            --enable-unsafe-swiftshader --use-angle=swiftshader --use-vulkan=swiftshader \
+            --enable-features=Vulkan,UseSkiaRenderer --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 \
             --user-data-dir=/tmp/mullion-chrome http://127.0.0.1:8181/ \
             > /tmp/mullion-chrome.log 2>&1 &
           chrome=$!
@@ -203,8 +203,9 @@ jobs:
         run: |
           setsid xvfb-run -a "${{ steps.chrome.outputs.chrome-path }}" --no-sandbox \
             --no-first-run --no-default-browser-check --disable-background-networking \
-            --disable-component-update --disable-dev-shm-usage --disable-gpu-driver-bug-workarounds \
+            --disable-component-update --disable-dev-shm-usage \
             --enable-unsafe-webgpu --enable-unsafe-swiftshader --use-angle=swiftshader \
+            --use-vulkan=swiftshader --enable-features=Vulkan,UseSkiaRenderer \
             --force-device-scale-factor=1 --hide-scrollbars --remote-debugging-address=127.0.0.1 \
             --remote-debugging-port=9223 --user-data-dir=/tmp/mullion-visual-chrome about:blank \
             > /tmp/visual-chrome.log 2>&1 &

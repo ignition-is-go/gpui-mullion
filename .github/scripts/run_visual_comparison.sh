@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -uo pipefail
+set -euo pipefail
 REFERENCE_URL=${REFERENCE_URL:-http://127.0.0.1:8181/}
 GPUI_URL=${GPUI_URL:-http://127.0.0.1:8182/}
 OUT=${VISUAL_OUT:-visual-artifacts}
@@ -7,6 +7,9 @@ PORT=${CDP_PORT:-9223}
 mkdir -p "$OUT"/{reference,actual,diff,summary}
 node .github/scripts/capture_visual.mjs "$REFERENCE_URL" "$OUT/reference" reference "$PORT"
 node .github/scripts/capture_visual.mjs "$GPUI_URL" "$OUT/actual" gpui "$PORT"
+# Fail before invoking the comparator: an uncomposited WebGPU surface is a
+# capture infrastructure error, never a meaningful visual regression.
+python3 tests/visual/check_capture.py "$OUT"/reference/*.png "$OUT"/actual/*.png
 status=0
 for reference in "$OUT"/reference/*.png; do
   name=$(basename "$reference")
