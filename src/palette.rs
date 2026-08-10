@@ -85,7 +85,18 @@ pub fn pane_command_palette_entries(can_split: bool) -> Vec<PaletteEntry> {
         .collect()
 }
 pub fn mullion_palette_entries(panes: &[PaneId], can_split: bool) -> Vec<PaletteEntry> {
-    let mut entries = focus_index_palette_entries(panes);
+    let focus_children = focus_index_palette_entries(panes);
+    let fallback = PaletteInvocation::PaneCommand(PaneCommand::FocusIndex(0));
+    let focus = entry(
+        "mullion.focus.pane".into(),
+        "Focus Pane…".into(),
+        "Choose a pane from the live Mullion layout".into(),
+        "Mullion · Focus".into(),
+        fallback,
+    )
+    .children(move || focus_children.clone())
+    .searchable_children();
+    let mut entries = vec![focus];
     entries.extend(pane_command_palette_entries(can_split));
     entries
 }
@@ -96,10 +107,10 @@ pub fn focus_index_palette_entries(panes: &[PaneId]) -> Vec<PaletteEntry> {
         .map(|(index, pane)| {
             let command = PaneCommand::FocusIndex(index);
             entry(
-                command.id(),
+                format!("mullion.focus.pane.{}", pane.0),
                 format!("{} · {}", index + 1, pane.0),
                 "Focus this pane".into(),
-                command.group().label().into(),
+                "Mullion · Focus".into(),
                 PaletteInvocation::PaneCommand(command),
             )
         })
@@ -184,15 +195,32 @@ pub fn command_palette_for_view<D: PaneData>(
 ) -> gpui::Entity<gpui_command_palette::CommandPalette<PaletteInvocation>> {
     let weak = view.downgrade();
     let palette = cx.new(|cx| {
-        gpui_command_palette::CommandPalette::new(cx).with_on_execute(
-            move |invocation: &PaletteInvocation, _, cx| {
+        gpui_command_palette::CommandPalette::new(cx)
+            // GPUI resolves percentage padding against width. Use positioned
+            // percentages so the shared widget matches the reference's top:20%.
+            .with_position(gpui_command_palette::CommandPalettePosition::Custom {
+                top: Some(gpui_command_palette::PaletteLength::percent(20.0)),
+                right: None,
+                bottom: None,
+                left: Some(gpui_command_palette::PaletteLength::percent(50.0)),
+                transform: Some(gpui_command_palette::PaletteTransform::pixels(-250.0, 0.0)),
+            })
+            // Match CSS line boxes after GPUI's taller font metrics.
+            .with_input_theme(gpui_command_palette::CommandPaletteInputTheme {
+                padding_y: gpui::px(4.5),
+                ..Default::default()
+            })
+            .with_item_theme(gpui_command_palette::CommandPaletteItemTheme {
+                padding_y: gpui::px(2.0),
+                ..Default::default()
+            })
+            .with_on_execute(move |invocation: &PaletteInvocation, _, cx| {
                 let invocation = invocation.clone();
                 weak.update(cx, |view, cx| {
                     let _ = view.invoke_palette(invocation, cx);
                 })
                 .ok();
-            },
-        )
+            })
     });
     view.update(cx, |view, cx| {
         view.set_command_palette(Some(palette.clone()), cx)
@@ -243,12 +271,18 @@ mod tests {
         assert_eq!(entries.len(), PaneCommand::catalog().len());
         assert_eq!(entries[0].id, "mullion.focus.left");
         assert_eq!(entries[0].group.as_deref(), Some("Mullion · Focus"));
-        let focus = focus_index_palette_entries(&[PaneId::new("one"), PaneId::new("two")]);
+        let panes = [PaneId::new("one"), PaneId::new("two")];
+        let focus = focus_index_palette_entries(&panes);
+        assert_eq!(focus[1].id, "mullion.focus.pane.two");
         assert_eq!(focus[1].name, "2 · two");
         assert_eq!(
             focus[1].metadata,
             PaletteInvocation::PaneCommand(PaneCommand::FocusIndex(1))
         );
+        let projected = mullion_palette_entries(&panes, true);
+        assert_eq!(projected[0].id, "mullion.focus.pane");
+        assert_eq!(projected[0].name, "Focus Pane…");
+        assert_eq!(projected[0].resolve_children().unwrap().len(), 2);
     }
     #[test]
     fn dynamic_activity_metadata_and_invocation() {

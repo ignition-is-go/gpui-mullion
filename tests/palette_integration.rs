@@ -50,17 +50,19 @@ fn shared_widget_tracks_dynamic_entries_and_invokes_mullion(cx: &mut TestAppCont
         ""
     );
 
-    let ids = cx.update(|_, app| {
-        palette
-            .read(app)
-            .registry()
-            .commands()
-            .into_iter()
-            .map(|entry| entry.id)
-            .collect::<Vec<_>>()
-    });
-    assert!(ids.contains(&"mullion.focus.index.1".to_string()));
-    assert!(ids.contains(&"mullion.activity.left.files".to_string()));
+    let commands = cx.update(|_, app| palette.read(app).registry().commands());
+    assert!(commands
+        .iter()
+        .any(|entry| entry.id == "mullion.activity.left.files"));
+    let focus = commands
+        .iter()
+        .find(|entry| entry.id == "mullion.focus.pane")
+        .unwrap();
+    assert!(focus
+        .resolve_children()
+        .unwrap()
+        .iter()
+        .any(|entry| entry.id == "mullion.focus.pane.right"));
 
     view.update(cx, |view, cx| {
         view.invoke_palette(

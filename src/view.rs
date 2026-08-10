@@ -893,9 +893,9 @@ impl<D: PaneData> MullionView<D> {
     }
     /// Return a fresh host-palette projection of the mounted view.
     ///
-    /// The projection always contains all 37 stable commands, one dynamic focus
-    /// command per live pane, and the activities currently visible for the
-    /// focused pane. Unsupported split commands remain discoverable and report
+    /// The projection always contains all 37 stable commands, one live focus
+    /// submenu whose children follow pane order, and the activities currently
+    /// visible for the focused pane. Unsupported split commands remain discoverable and report
     /// `SplitUnavailable` when invoked.
     pub fn palette_entries(&self) -> Vec<PaletteEntry> {
         let panes = self.model.tree().leaf_ids();
@@ -6299,8 +6299,13 @@ mod tests {
                     .iter()
                     .filter(|entry| matches!(entry.metadata, PaletteInvocation::PaneCommand(_)))
                     .count(),
-                39
+                38
             );
+            let focus = entries
+                .iter()
+                .find(|entry| entry.id == "mullion.focus.pane")
+                .unwrap();
+            assert_eq!(focus.resolve_children().unwrap().len(), 2);
             assert!(entries
                 .iter()
                 .any(|entry| entry.id == "mullion.activity.a.visible"));
