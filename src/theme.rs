@@ -10,6 +10,8 @@ pub struct MullionTheme {
     pub text: Hsla,
     pub muted_text: Hsla,
     pub focused: Hsla,
+    /// Dedicated focus fallback: 65% #00a4ef mixed with #1a1a1a in sRGB.
+    pub focus_indicator: Hsla,
     pub drop_target: Hsla,
 }
 
@@ -23,6 +25,7 @@ impl MullionTheme {
             text: rgb(0xeeeeee).into(),
             muted_text: rgb(0x888888).into(),
             focused: rgb(0x333333).into(),
+            focus_indicator: rgb(0x0974a4).into(),
             drop_target: Hsla {
                 h: 0.0,
                 s: 0.0,
@@ -41,6 +44,7 @@ impl MullionTheme {
             text: rgb(0x202020).into(),
             muted_text: rgb(0x666666).into(),
             focused: rgb(0x0067c0).into(),
+            focus_indicator: rgb(0x0067c0).into(),
             drop_target: rgb(0xb8d8f2).into(),
         }
     }
@@ -89,6 +93,7 @@ mod tests {
         assert_eq!(theme.text, rgb(0xeeeeee).into());
         assert_eq!(theme.muted_text, rgb(0x888888).into());
         assert_eq!(theme.focused, rgb(0x333333).into());
+        assert_eq!(theme.focus_indicator, rgb(0x0974a4).into());
         assert_eq!(theme.drop_target.a, 0.06);
     }
 

@@ -174,7 +174,10 @@ impl ActivityMotion {
 enum MotionKey {
     Bar(PaneId),
     Item(PaneId, String),
+    /// Header wash and focused grabber share the reference 125ms duration.
     Focus(PaneId),
+    /// The inset focus frame has its own 100ms transition.
+    FocusFrame(PaneId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -444,9 +447,12 @@ pub struct MullionView<D: PaneData> {
     hover: HashMap<PaneId, ActivityBarHoverState>,
     /// Horizontal rails expand only the row under the pointer.
     hovered_bar_items: HashSet<(PaneId, String)>,
+    /// Split hit target currently under the pointer; paint remains four pixels wide.
+    hovered_split: Option<PaneId>,
     bar_motion: HashMap<PaneId, ActivityMotion>,
     item_motion: HashMap<(PaneId, String), ActivityMotion>,
     focus_motion: HashMap<PaneId, ActivityMotion>,
+    focus_frame_motion: HashMap<PaneId, ActivityMotion>,
     motion_focus: Option<PaneId>,
     dock_drag_active: bool,
     focus_handle: FocusHandle,
@@ -499,9 +505,11 @@ impl<D: PaneData> MullionView<D> {
             expansion_active: HashMap::new(),
             hover: HashMap::new(),
             hovered_bar_items: HashSet::new(),
+            hovered_split: None,
             bar_motion: HashMap::new(),
             item_motion: HashMap::new(),
             focus_motion: HashMap::new(),
+            focus_frame_motion: HashMap::new(),
             motion_focus: None,
             dock_drag_active: false,
             focus_handle: cx.focus_handle(),
@@ -1280,23 +1288,43 @@ impl<D: PaneData> MullionView<D> {
                 let split_accessibility =
                     crate::MullionAccessibilityNode::split(*direction, *ratio, false);
 
-                // Keep the actual layout separator one pixel wide. Its absolutely
-                // positioned child supplies an eight-pixel, centered hit target.
+                // Split geometry is non-consuming: the four-pixel line and its
+                // eight-pixel pointer target are centered over the exact ratio.
+                let split_is_hot = self.hovered_split.as_ref() == Some(&key)
+                    || self
+                        .active_split
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|(active, _)| active == &key);
+                let hover_key = key.clone();
                 let handle = div()
                     .id(SharedString::from(format!("split-handle:{}", key.0)))
                     .debug_selector({
                         let key = key.clone();
                         move || format!("split-handle:{}", key.0)
                     })
-                    .relative()
-                    .flex_shrink_0()
+                    .absolute()
                     .when(*direction == SplitDirection::Horizontal, |element| {
-                        element.w(handle_thickness).h_full()
+                        element
+                            .left(relative(*ratio as f32))
+                            .ml(-handle_thickness / 2.)
+                            .top_0()
+                            .bottom_0()
+                            .w(handle_thickness)
                     })
                     .when(*direction == SplitDirection::Vertical, |element| {
-                        element.h(handle_thickness).w_full()
+                        element
+                            .top(relative(*ratio as f32))
+                            .mt(-handle_thickness / 2.)
+                            .left_0()
+                            .right_0()
+                            .h(handle_thickness)
                     })
-                    .bg(handle_color)
+                    .bg(if split_is_hot {
+                        focused_color
+                    } else {
+                        handle_color
+                    })
                     .child(
                         div()
                             .id(SharedString::from(format!("split-hit-target:{}", key.0)))
@@ -1334,7 +1362,14 @@ impl<D: PaneData> MullionView<D> {
                                     .w_full()
                                     .cursor_row_resize()
                             })
-                            .hover(move |element| element.bg(focused_color))
+                            .on_hover(cx.listener(move |this, hovered, _, cx| {
+                                if *hovered {
+                                    this.hovered_split = Some(hover_key.clone());
+                                } else if this.hovered_split.as_ref() == Some(&hover_key) {
+                                    this.hovered_split = None;
+                                }
+                                cx.notify();
+                            }))
                             .block_mouse_except_scroll()
                             .on_mouse_down(
                                 MouseButton::Left,
@@ -1431,11 +1466,8 @@ impl<D: PaneData> MullionView<D> {
                         move || format!("split-container:{}", key.0)
                     })
                     .size_full()
-                    .flex()
+                    .relative()
                     .overflow_hidden()
-                    .when(*direction == SplitDirection::Vertical, |element| {
-                        element.flex_col()
-                    })
                     .on_drag_move::<SplitDrag>(cx.listener(
                         move |this, event: &gpui::DragMoveEvent<SplitDrag>, _, cx| {
                             let drag = event.drag(cx);
@@ -1475,7 +1507,9 @@ impl<D: PaneData> MullionView<D> {
                     })
                     .child(
                         div()
-                            .flex_none()
+                            .absolute()
+                            .left_0()
+                            .top_0()
                             .when(*direction == SplitDirection::Horizontal, |element| {
                                 element.w(relative(*ratio as f32)).h_full()
                             })
@@ -1484,8 +1518,20 @@ impl<D: PaneData> MullionView<D> {
                             })
                             .child(first_el),
                     )
-                    .child(handle)
-                    .child(div().flex_1().min_w_0().min_h_0().child(second_el));
+                    .child(
+                        div()
+                            .absolute()
+                            .right_0()
+                            .bottom_0()
+                            .when(*direction == SplitDirection::Horizontal, |element| {
+                                element.w(relative(1.0 - *ratio as f32)).h_full()
+                            })
+                            .when(*direction == SplitDirection::Vertical, |element| {
+                                element.h(relative(1.0 - *ratio as f32)).w_full()
+                            })
+                            .child(second_el),
+                    )
+                    .child(handle);
 
                 SplitBoundsRecorder {
                     key,
@@ -1572,6 +1618,7 @@ impl<D: PaneData> MullionView<D> {
                 .entry((pane.clone(), item.clone()))
                 .or_default(),
             MotionKey::Focus(pane) => self.focus_motion.entry(pane.clone()).or_default(),
+            MotionKey::FocusFrame(pane) => self.focus_frame_motion.entry(pane.clone()).or_default(),
         }
     }
 
@@ -1583,8 +1630,9 @@ impl<D: PaneData> MullionView<D> {
         from: Option<f32>,
         cx: &mut Context<Self>,
     ) {
-        let immediate =
-            cx.reduce_motion() || (self.dock_drag_active && !matches!(key, MotionKey::Focus(_)));
+        let immediate = cx.reduce_motion()
+            || (self.dock_drag_active
+                && !matches!(key, MotionKey::Focus(_) | MotionKey::FocusFrame(_)));
         let now = cx.background_executor().now();
         let Some(generation) = self
             .motion_mut(&key)
@@ -1599,7 +1647,8 @@ impl<D: PaneData> MullionView<D> {
             let keep_running = this
                 .update(cx, |this, cx| {
                     let force_endpoint = cx.reduce_motion()
-                        || (this.dock_drag_active && !matches!(key, MotionKey::Focus(_)));
+                        || (this.dock_drag_active
+                            && !matches!(key, MotionKey::Focus(_) | MotionKey::FocusFrame(_)));
                     let now = cx.background_executor().now();
                     let motion = this.motion_mut(&key);
                     if motion.generation != generation {
@@ -1669,12 +1718,21 @@ impl<D: PaneData> MullionView<D> {
         if self.motion_focus == focused {
             return;
         }
-        let initial = self.motion_focus.is_none() && self.focus_motion.is_empty();
+        let initial = self.motion_focus.is_none()
+            && self.focus_motion.is_empty()
+            && self.focus_frame_motion.is_empty();
         if let Some(previous) = self.motion_focus.clone() {
             self.start_motion(
-                MotionKey::Focus(previous),
+                MotionKey::Focus(previous.clone()),
                 false,
                 Duration::from_millis(125),
+                None,
+                cx,
+            );
+            self.start_motion(
+                MotionKey::FocusFrame(previous),
+                false,
+                Duration::from_millis(100),
                 None,
                 cx,
             );
@@ -1682,9 +1740,16 @@ impl<D: PaneData> MullionView<D> {
         if let Some(next) = focused.clone() {
             let from = initial.then_some(1.0);
             self.start_motion(
-                MotionKey::Focus(next),
+                MotionKey::Focus(next.clone()),
                 true,
                 Duration::from_millis(125),
+                from,
+                cx,
+            );
+            self.start_motion(
+                MotionKey::FocusFrame(next),
+                true,
+                Duration::from_millis(100),
                 from,
                 cx,
             );
@@ -2609,12 +2674,11 @@ impl<D: PaneData> MullionView<D> {
         let styles = self
             .styles
             .unwrap_or_else(|| MullionStyles::from_theme(theme));
-        let pane_border = self
+        let host_pane_border = self
             .host
             .pane_border_color
             .as_ref()
-            .and_then(|resolve| resolve(id, data))
-            .unwrap_or(styles.pane.border);
+            .and_then(|resolve| resolve(id, data));
         let id_focus_click = id.clone();
         let id_focus_hover = id.clone();
         let click_focus_handle = self.focus_handle.clone();
@@ -2691,16 +2755,7 @@ impl<D: PaneData> MullionView<D> {
                     .cached(StyleRefinement::default().size_full())
                     .into_any_element()
             })
-            .unwrap_or_else(|| {
-                div()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_color(theme.muted_text)
-                    .child("No activity")
-                    .into_any_element()
-            });
+            .unwrap_or_else(|| div().size_full().into_any_element());
         let mut custom_headers = Vec::new();
         if let Some(custom) = cached.and_then(|(_, header)| header) {
             custom_headers.push(custom.into_any_element());
@@ -2717,7 +2772,14 @@ impl<D: PaneData> MullionView<D> {
         }
         let header = (self.host.header.visible && selected.is_some()).then(|| {
             div()
-                .h(styles.header.height)
+                .debug_selector({
+                    let id = id.clone();
+                    move || format!("pane-header:{}", id.0)
+                })
+                // The reference fixture uses content-box: 28px content plus its
+                // one-pixel bottom rule is a 29px painted outer band.
+                .h(styles.header.height + styles.header.border_width)
+                .min_h(styles.header.height + styles.header.border_width)
                 .flex_shrink_0()
                 .flex()
                 .items_center()
@@ -2728,13 +2790,37 @@ impl<D: PaneData> MullionView<D> {
                 .bg(styles.header.background)
                 .text_color(styles.header.text)
                 .text_size(styles.header.font_size)
+                .overflow_hidden()
+                .whitespace_nowrap()
                 .child(
                     div()
+                        .debug_selector({
+                            let id = id.clone();
+                            move || format!("pane-header-title:{}", id.0)
+                        })
+                        .flex_shrink_0()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
                         .text_color(styles.header.title)
                         .font_weight(gpui::FontWeight(styles.header.title_weight.into()))
                         .child(selected.as_ref().unwrap().name.clone()),
                 )
-                .children(custom_headers)
+                .when(!custom_headers.is_empty(), |header| {
+                    header.child(
+                        div()
+                            .debug_selector({
+                                let id = id.clone();
+                                move || format!("pane-header-content:{}", id.0)
+                            })
+                            .min_w_0()
+                            .overflow_hidden()
+                            .flex()
+                            .items_center()
+                            .gap(styles.header.gap)
+                            .children(custom_headers),
+                    )
+                })
         });
         let app_icon = self
             .host
@@ -2797,6 +2883,12 @@ impl<D: PaneData> MullionView<D> {
         let close_sample = row_sample("close", close_expanded);
         let focus_progress = self
             .focus_motion
+            .get(id)
+            .map_or(ActivityMotion::endpoint(focused), |motion| {
+                motion.resolved(cx.reduce_motion())
+            });
+        let focus_frame_progress = self
+            .focus_frame_motion
             .get(id)
             .map_or(ActivityMotion::endpoint(focused), |motion| {
                 motion.resolved(cx.reduce_motion())
@@ -2955,7 +3047,14 @@ impl<D: PaneData> MullionView<D> {
                 })
                 .when(edge == ActivityBarEdge::Left, |panel| {
                     panel
-                        .left(-panel_extent * (1.0 - reveal_progress))
+                        .left(
+                            -panel_extent * (1.0 - reveal_progress)
+                                + if auto_hide && !self.host.activity_bar.behavior.hover_expand {
+                                    px(0.5)
+                                } else {
+                                    px(0.)
+                                },
+                        )
                         .border_r(styles.activity_bar.border_width)
                         .pr(edge_padding)
                 })
@@ -3116,8 +3215,8 @@ impl<D: PaneData> MullionView<D> {
                 })
                 .aria_label(format!("Pane controls for {}", id.0))
                 .absolute()
-                .top(styles.pane_controls.capsule_inset - styles.pane.border_width)
-                .right(styles.pane_controls.capsule_inset - styles.pane.border_width)
+                .top(styles.pane_controls.capsule_inset)
+                .right(styles.pane_controls.capsule_inset)
                 .p(styles.pane_controls.capsule_padding)
                 .gap(styles.pane_controls.capsule_gap)
                 .rounded(styles.pane_controls.capsule_radius)
@@ -3132,13 +3231,20 @@ impl<D: PaneData> MullionView<D> {
                 .child(split_v)
                 .child(close)
         });
-        let unfocused_opacity = if focused {
-            1.0
-        } else {
-            self.focus_presentation.unfocused_pane_opacity() as f32
-        };
+        let pane_opacity = self.focus_presentation.unfocused_pane_opacity() as f32;
+        let wash_opacity = (1.0 - pane_opacity) * (1.0 - focus_progress);
+        let wash = div()
+            .debug_selector({
+                let id = id.clone();
+                move || format!("pane-unfocused-wash:{}", id.0)
+            })
+            .absolute()
+            .inset_0()
+            .bg(styles.pane.unfocused_wash)
+            .opacity(wash_opacity);
+
         let mut focus_edges = Vec::new();
-        if focused && self.focus_presentation.show_focus_indicator() {
+        if self.focus_presentation.show_focus_indicator() {
             let edge = |name: &'static str| {
                 div()
                     .id(SharedString::from(format!("focus-edge:{}:{name}", id.0)))
@@ -3147,7 +3253,8 @@ impl<D: PaneData> MullionView<D> {
                         move || format!("focus-edge:{}:{name}", id.0)
                     })
                     .absolute()
-                    .bg(pane_border)
+                    .bg(styles.pane.focus_indicator)
+                    .opacity(focus_frame_progress)
             };
             if edges.top {
                 focus_edges.push(
@@ -3186,6 +3293,154 @@ impl<D: PaneData> MullionView<D> {
                 );
             }
         }
+
+        let activity_column = div()
+            .debug_selector({
+                let id = id.clone();
+                move || format!("pane-activity-column:{}", id.0)
+            })
+            .absolute()
+            .inset_0()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .when_some(header, |content, header| content.child(header))
+            .child(
+                div()
+                    .debug_selector({
+                        let id = id.clone();
+                        move || format!("pane-body:{}", id.0)
+                    })
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .overflow_hidden()
+                    .child(body),
+            );
+
+        let host_border = host_pane_border.map(|color| {
+            div()
+                .debug_selector({
+                    let id = id.clone();
+                    move || format!("pane-host-border:{}", id.0)
+                })
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .h(styles.pane.host_border_width)
+                .bg(color)
+        });
+        let content_region = div()
+            .id(SharedString::from(format!("pane-content:{}", id.0)))
+            .debug_selector({
+                let id = id.clone();
+                move || format!("pane-content:{}", id.0)
+            })
+            .relative()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .overflow_hidden()
+            .can_drop({
+                let destination = id_drop.clone();
+                move |value, _, _| {
+                    value
+                        .downcast_ref::<DockDrag>()
+                        .is_some_and(|drag| match &drag.payload {
+                            DockPayload::Pane(source) => source != &destination,
+                            DockPayload::NewActivity(_) => can_create_panes,
+                        })
+                }
+            })
+            .on_drag_move::<DockDrag>(cx.listener(move |this, event, _, cx| {
+                this.handle_dock_move(&id_move, event, cx);
+            }))
+            .on_drop(cx.listener(move |this, drag: &DockDrag, _, cx| {
+                this.handle_dock_drop(drag, &id_drop, cx);
+            }))
+            // Paint order mirrors the reference z bands: activity, wash (4),
+            // focus (6), hidden controls (16), then drop feedback (20).
+            .child(activity_column)
+            .when_some(host_border, |content, border| content.child(border))
+            .child(wash)
+            .children(focus_edges)
+            .when_some(hidden_controls, |content, controls| content.child(controls))
+            .when_some(
+                self.dock_hover
+                    .as_ref()
+                    .filter(|hover| &hover.destination == id)
+                    .map(|hover| hover.edge.normalized_indicator()),
+                |content, indicator| {
+                    let active_edge = self.dock_hover.as_ref().unwrap().edge;
+                    let zones = [
+                        (DropEdge::Top, 0.25_f32, 0.0_f32, 0.5_f32, 0.25_f32),
+                        (DropEdge::Bottom, 0.25, 0.75, 0.5, 0.25),
+                        (DropEdge::Left, 0.0, 0.0, 0.25, 1.0),
+                        (DropEdge::Right, 0.75, 0.0, 0.25, 1.0),
+                        (DropEdge::Center, 0.25, 0.25, 0.5, 0.5),
+                    ];
+                    content
+                        .children(zones.into_iter().map(|(edge, left, top, width, height)| {
+                            let accessibility = crate::MullionAccessibilityNode::drop_target(
+                                edge,
+                                edge == active_edge,
+                            );
+                            div()
+                                .id(SharedString::from(format!("dock-target:{}:{edge:?}", id.0)))
+                                .debug_selector({
+                                    let id = id.clone();
+                                    move || format!("dock-target:{}:{edge:?}", id.0)
+                                })
+                                .role(gpui::Role::Button)
+                                .accessibility_id(format!("mullion-dock-{}-{edge:?}", id.0))
+                                .aria_label(accessibility.label)
+                                .aria_description(accessibility.description)
+                                .aria_selected(edge == active_edge)
+                                .focusable()
+                                .tab_stop(true)
+                                .absolute()
+                                .left(relative(left))
+                                .top(relative(top))
+                                .w(relative(width))
+                                .h(relative(height))
+                        }))
+                        .child(
+                            div()
+                                .debug_selector({
+                                    let id = id.clone();
+                                    move || format!("dock-indicator:{}:{active_edge:?}", id.0)
+                                })
+                                .absolute()
+                                .left(relative(indicator.left as f32))
+                                .top(relative(indicator.top as f32))
+                                .w(relative(indicator.width as f32))
+                                .h(relative(indicator.height as f32))
+                                .bg(styles.drop_overlay.indicator_color),
+                        )
+                },
+            );
+
+        let visual = div()
+            .id(SharedString::from(format!("pane-visual:{}", id.0)))
+            .debug_selector({
+                let id = id.clone();
+                move || format!("pane-visual:{}", id.0)
+            })
+            .size_full()
+            .relative()
+            .flex()
+            .when(horizontal, |visual| visual.flex_col());
+        let visual = if self.host.activity_bar.edge.is_trailing() {
+            visual
+                .child(content_region)
+                .when_some(bar, |visual, bar| visual.child(bar))
+        } else {
+            visual
+                .when_some(bar, |visual, bar| visual.child(bar))
+                .child(content_region)
+        };
+
         div()
             .id(SharedString::from(format!("pane:{}", id.0)))
             .debug_selector({
@@ -3204,10 +3459,9 @@ impl<D: PaneData> MullionView<D> {
             .min_w_0()
             .min_h_0()
             .flex()
+            .overflow_hidden()
             .bg(styles.pane.background)
             .text_color(styles.pane.text)
-            .border(styles.pane.border_width)
-            .border_color(pane_border)
             .on_hover(cx.listener(move |this, hovered, window, cx| {
                 if *hovered && this.settings.focus_behavior() == PaneFocusBehavior::Hover {
                     hover_focus_handle.focus(window, cx);
@@ -3225,112 +3479,7 @@ impl<D: PaneData> MullionView<D> {
                     }
                 }),
             )
-            .can_drop({
-                let destination = id_drop.clone();
-                move |value, _, _| {
-                    value
-                        .downcast_ref::<DockDrag>()
-                        .is_some_and(|drag| match &drag.payload {
-                            DockPayload::Pane(source) => source != &destination,
-                            DockPayload::NewActivity(_) => can_create_panes,
-                        })
-                }
-            })
-            .on_drag_move::<DockDrag>(cx.listener(move |this, event, _, cx| {
-                this.handle_dock_move(&id_move, event, cx);
-            }))
-            .on_drop(cx.listener(move |this, drag: &DockDrag, _, cx| {
-                this.handle_dock_drop(drag, &id_drop, cx);
-            }))
-            .child({
-                let content = div()
-                    .id(SharedString::from(format!("pane-content:{}", id.0)))
-                    .debug_selector({
-                        let id = id.clone();
-                        move || format!("pane-content:{}", id.0)
-                    })
-                    .flex_1()
-                    .min_w_0()
-                    .min_h_0()
-                    .flex()
-                    .flex_col()
-                    .when_some(header, |content, header| content.child(header))
-                    .child(div().flex_1().min_h_0().overflow_hidden().child(body));
-                let visual = div()
-                    .id(SharedString::from(format!("pane-visual:{}", id.0)))
-                    .debug_selector({
-                        let id = id.clone();
-                        move || format!("pane-visual:{}", id.0)
-                    })
-                    .size_full()
-                    .relative()
-                    .flex()
-                    .when(horizontal, |visual| visual.flex_col())
-                    .when(!horizontal, |visual| visual.flex_row())
-                    .opacity(unfocused_opacity);
-                if self.host.activity_bar.edge.is_trailing() {
-                    visual
-                        .child(content)
-                        .when_some(bar, |visual, bar| visual.child(bar))
-                } else {
-                    visual
-                        .when_some(bar, |visual, bar| visual.child(bar))
-                        .child(content)
-                }
-            })
-            .when_some(hidden_controls, |pane, controls| pane.child(controls))
-            .when_some(
-                self.dock_hover
-                    .as_ref()
-                    .filter(|hover| &hover.destination == id)
-                    .map(|hover| hover.edge.normalized_indicator()),
-                |pane, indicator| {
-                    let active_edge = self.dock_hover.as_ref().unwrap().edge;
-                    let zones = [
-                        (DropEdge::Top, 0.25_f32, 0.0_f32, 0.5_f32, 0.25_f32),
-                        (DropEdge::Bottom, 0.25, 0.75, 0.5, 0.25),
-                        (DropEdge::Left, 0.0, 0.0, 0.25, 1.0),
-                        (DropEdge::Right, 0.75, 0.0, 0.25, 1.0),
-                        (DropEdge::Center, 0.25, 0.25, 0.5, 0.5),
-                    ];
-                    pane.children(zones.into_iter().map(|(edge, left, top, width, height)| {
-                        let accessibility =
-                            crate::MullionAccessibilityNode::drop_target(edge, edge == active_edge);
-                        div()
-                            .id(SharedString::from(format!("dock-target:{}:{edge:?}", id.0)))
-                            .debug_selector({
-                                let id = id.clone();
-                                move || format!("dock-target:{}:{edge:?}", id.0)
-                            })
-                            .role(gpui::Role::Button)
-                            .accessibility_id(format!("mullion-dock-{}-{edge:?}", id.0))
-                            .aria_label(accessibility.label)
-                            .aria_description(accessibility.description)
-                            .aria_selected(edge == active_edge)
-                            .focusable()
-                            .tab_stop(true)
-                            .absolute()
-                            .left(relative(left))
-                            .top(relative(top))
-                            .w(relative(width))
-                            .h(relative(height))
-                    }))
-                    .child(
-                        div()
-                            .debug_selector({
-                                let id = id.clone();
-                                move || format!("dock-indicator:{}:{active_edge:?}", id.0)
-                            })
-                            .absolute()
-                            .left(relative(indicator.left as f32))
-                            .top(relative(indicator.top as f32))
-                            .w(relative(indicator.width as f32))
-                            .h(relative(indicator.height as f32))
-                            .bg(styles.drop_overlay.indicator_color),
-                    )
-                },
-            )
-            .children(focus_edges)
+            .child(visual)
             .into_any_element()
     }
 
@@ -3412,16 +3561,32 @@ impl<D: PaneData> MullionView<D> {
             .child(content);
 
         let dismiss = host.on_dismiss().cloned();
-        let blocks_input = !policy.click_through
-            && (policy.tier == crate::OverlayTier::Modal || policy.backdrop.is_some());
-        div()
-            .id(SharedString::from(format!("mullion-overlay:{}", id)))
+        let backdrop = policy.backdrop.map(|backdrop| {
+            div()
+                .debug_selector({
+                    let id = id.clone();
+                    move || format!("mullion-overlay-backdrop:{}", id)
+                })
+                .absolute()
+                .inset_0()
+                .bg(gpui::Rgba {
+                    r: backdrop.rgba[0],
+                    g: backdrop.rgba[1],
+                    b: backdrop.rgba[2],
+                    a: backdrop.rgba[3],
+                })
+        });
+        let content_layer = div()
+            .id(SharedString::from(format!(
+                "mullion-overlay-content-layer:{}",
+                id
+            )))
             .debug_selector({
                 let id = id.clone();
-                move || format!("mullion-overlay:{}", id)
+                move || format!("mullion-overlay-content-layer:{}", id)
             })
-            .absolute()
-            .inset_0()
+            .relative()
+            .size_full()
             .flex()
             .when(
                 policy.placement.horizontal == OverlayAlignment::Start,
@@ -3447,33 +3612,29 @@ impl<D: PaneData> MullionView<D> {
                 policy.placement.vertical == OverlayAlignment::End,
                 |element| element.items_end(),
             )
-            .when_some(policy.backdrop, |element, backdrop| {
-                element.bg(gpui::Rgba {
-                    r: backdrop.rgba[0],
-                    g: backdrop.rgba[1],
-                    b: backdrop.rgba[2],
-                    a: backdrop.rgba[3],
-                })
-            })
-            .when(blocks_input, |element| element.block_mouse_except_scroll())
-            .when(policy.backdrop.is_some(), |element| {
-                element.child(
-                    div()
-                        .debug_selector({
-                            let id = id.clone();
-                            move || format!("mullion-overlay-backdrop:{}", id)
-                        })
-                        .absolute()
-                        .inset_0(),
-                )
-            })
             .when_some(policy.dismiss_on_backdrop.then_some(dismiss).flatten(), {
                 let id = id.clone();
                 move |element, dismiss| {
-                    element.on_click(move |_, window, cx| dismiss(&id, window, cx))
+                    element
+                        .block_mouse_except_scroll()
+                        .on_click(move |_, window, cx| dismiss(&id, window, cx))
                 }
             })
-            .child(content)
+            .child(content);
+
+        div()
+            .id(SharedString::from(format!("mullion-overlay:{}", id)))
+            .debug_selector({
+                let id = id.clone();
+                move || format!("mullion-overlay:{}", id)
+            })
+            .absolute()
+            .inset_0()
+            .when(!policy.click_through, |element| {
+                element.block_mouse_except_scroll()
+            })
+            .when_some(backdrop, |element, backdrop| element.child(backdrop))
+            .child(content_layer)
             .into_any_element()
     }
 
@@ -3555,6 +3716,7 @@ impl<D: PaneData> Render for MullionView<D> {
                         .rounded(styles.workspace_switcher.border_radius)
                         .cursor_pointer()
                         .text_size(styles.workspace_switcher.font_size)
+                        .line_height(styles.workspace_switcher.line_height)
                         .text_color(if selected {
                             styles.workspace_switcher.active_text
                         } else {
@@ -3565,7 +3727,6 @@ impl<D: PaneData> Render for MullionView<D> {
                         } else {
                             styles.workspace_switcher.background
                         })
-                        .hover(|element| element.bg(styles.workspace_switcher.active_background))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.switch_workspace(&id, cx);
                         }))
@@ -3763,24 +3924,25 @@ impl<D: PaneData> Render for MullionView<D> {
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, _| {
-                    this.active_split.borrow_mut().take();
+                cx.listener(|this, _, _, cx| {
+                    let was_active = this.active_split.borrow_mut().take().is_some();
                     this.split_starts.borrow_mut().clear();
+                    if was_active {
+                        cx.notify();
+                    }
                 }),
             )
             .when_some(workspace_tabs, |element, tabs| {
                 element.child(
                     div()
                         .id("mullion-workspace-tabs")
+                        .debug_selector(|| "mullion-workspace-tabs".to_owned())
                         .role(gpui::Role::TabList)
                         .aria_label("Mullion workspaces")
                         .flex_shrink_0()
                         .flex()
                         .items_center()
                         .gap(styles.workspace_switcher.gap)
-                        .border_b(styles.pane.border_width)
-                        .border_color(styles.pane.border)
-                        .bg(styles.workspace_switcher.background)
                         .children(tabs),
                 )
             })
@@ -4606,7 +4768,7 @@ mod tests {
             events.borrow_mut().clear();
 
             let start = cx.debug_bounds("pane-drag-handle:a").unwrap().center();
-            let target = cx.debug_bounds("pane:b").unwrap();
+            let target = cx.debug_bounds("pane-content:b").unwrap();
             let destination = gpui::point(
                 target.left() + target.size.width * x,
                 target.top() + target.size.height * y,
@@ -5736,6 +5898,10 @@ mod tests {
         cx.simulate_resize(gpui::size(px(500.), px(320.)));
         cx.run_until_parked();
         let content = cx.debug_bounds("pane-content:pane").unwrap();
+        // GPUI's test pointer starts at the root origin, over a leading rail.
+        cx.simulate_mouse_move(content.center(), None, gpui::Modifiers::none());
+        cx.executor().advance_clock(Duration::from_millis(200));
+        cx.run_until_parked();
         assert!(cx.debug_bounds("activity-label:pane:activity").is_some());
         let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
         assert_eq!(panel.size.width, px(28.));
@@ -6246,12 +6412,24 @@ mod tests {
                 (view.focus_motion[&PaneId::new("a")].progress - (1.0 - expected)).abs() < 0.0001
             );
             assert!((view.focus_motion[&PaneId::new("b")].progress - expected).abs() < 0.0001);
+            let frame_expected = ease_in_out(60.0 / 100.0);
+            assert!(
+                (view.focus_frame_motion[&PaneId::new("a")].progress - (1.0 - frame_expected))
+                    .abs()
+                    < 0.0001
+            );
+            assert!(
+                (view.focus_frame_motion[&PaneId::new("b")].progress - frame_expected).abs()
+                    < 0.0001
+            );
         });
         cx.executor().advance_clock(Duration::from_millis(75));
         cx.run_until_parked();
         view.read_with(cx, |view, _| {
             assert_eq!(view.focus_motion[&PaneId::new("a")].progress, 0.0);
             assert_eq!(view.focus_motion[&PaneId::new("b")].progress, 1.0);
+            assert_eq!(view.focus_frame_motion[&PaneId::new("a")].progress, 0.0);
+            assert_eq!(view.focus_frame_motion[&PaneId::new("b")].progress, 1.0);
             assert!(view.focus_motion[&PaneId::new("a")].started_at.is_none());
             assert!(view.focus_motion[&PaneId::new("b")].started_at.is_none());
         });
@@ -6491,5 +6669,131 @@ mod tests {
             cx.debug_bounds("activity:a:activity").unwrap().size.width,
             px(28.)
         );
+    }
+
+    #[gpui::test]
+    fn absolute_split_geometry_preserves_exact_ratios_and_nested_edges(cx: &mut TestAppContext) {
+        let nested = split(SplitDirection::Vertical, 0.5, leaf("b"), leaf("c"));
+        let tree = split(SplitDirection::Horizontal, 0.4, leaf("a"), nested);
+        let (_, cx) = cx.add_window_view(move |_, cx| MullionView::new(tree, vec![], cx));
+        cx.simulate_resize(gpui::size(px(1000.), px(700.)));
+        cx.run_until_parked();
+
+        let root = cx.debug_bounds("split-container:b").unwrap();
+        let a = cx.debug_bounds("pane:a").unwrap();
+        let b = cx.debug_bounds("pane:b").unwrap();
+        let c = cx.debug_bounds("pane:c").unwrap();
+        assert_eq!(a.size.width, root.size.width * 0.4);
+        assert_eq!(b.left(), a.right());
+        assert_eq!(c.left(), a.right());
+        assert_eq!(b.size.width, root.size.width * 0.6);
+        assert_eq!(c.size.width, root.size.width * 0.6);
+        assert_eq!(b.bottom(), c.top());
+        assert_eq!(b.size.height, root.size.height * 0.5);
+        assert_eq!(c.size.height, root.size.height * 0.5);
+
+        let root_handle = cx.debug_bounds("split-hit-target:b").unwrap();
+        let root_line = cx.debug_bounds("split-handle:b").unwrap();
+        assert_eq!(root_handle.center().x, a.right());
+        assert_eq!(root_line.center().x, a.right());
+        assert_eq!(root_handle.size.width, px(8.));
+        assert_eq!(root_line.size.width, px(4.));
+        let nested_handle = cx.debug_bounds("split-hit-target:c").unwrap();
+        assert_eq!(nested_handle.center().y, b.bottom());
+        assert_eq!(nested_handle.size.height, px(8.));
+    }
+
+    #[gpui::test]
+    fn pane_header_content_wash_focus_and_host_border_have_reference_bounds(
+        cx: &mut TestAppContext,
+    ) {
+        let activity = rendered_activity("activity", show_activity);
+        let catalog = ActivityCatalog::new(vec![ActivityNode::Activity(activity)]);
+        let tree = PaneNode::leaf_with_activity(
+            PaneId::new("pane"),
+            ActivityId::new("activity"),
+            "data".to_owned(),
+        );
+        let host = ActivityBarHostConfig::new()
+            .with_pane_border_color(|_, _| Some(gpui::rgb(0x123456).into()));
+        let (_, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::try_new_with_catalog(tree, catalog, cx)
+                .unwrap()
+                .with_activity_bar_host(host)
+                .with_focus_presentation(
+                    FocusPresentation::new()
+                        .with_focus_indicator(true)
+                        .with_unfocused_pane_opacity(0.75),
+                )
+        });
+        cx.simulate_resize(gpui::size(px(500.), px(320.)));
+        cx.run_until_parked();
+
+        let pane = cx.debug_bounds("pane:pane").unwrap();
+        let content = cx.debug_bounds("pane-content:pane").unwrap();
+        let column = cx.debug_bounds("pane-activity-column:pane").unwrap();
+        let header = cx.debug_bounds("pane-header:pane").unwrap();
+        let body = cx.debug_bounds("pane-body:pane").unwrap();
+        let wash = cx.debug_bounds("pane-unfocused-wash:pane").unwrap();
+        let host_border = cx.debug_bounds("pane-host-border:pane").unwrap();
+        assert_eq!(column, content);
+        assert_eq!(wash, content);
+        assert_eq!(header.size.height, px(29.));
+        assert_eq!(body.top(), header.bottom());
+        assert_eq!(body.bottom(), content.bottom());
+        assert_eq!(host_border.size.height, px(2.));
+        assert_eq!(host_border.left(), content.left());
+        assert_eq!(host_border.right(), content.right());
+        assert_eq!(host_border.bottom(), pane.bottom());
+        assert!(cx.debug_bounds("pane-header-title:pane").is_some());
+        // A single root pane has no internal focus edges.
+        assert!(cx.debug_bounds("focus-edge:pane:left").is_none());
+    }
+
+    #[gpui::test]
+    fn workspace_switcher_has_only_reference_gap_and_button_content_box(cx: &mut TestAppContext) {
+        let set = WorkspaceSet::try_new(
+            WorkspaceId("one".into()),
+            vec![
+                crate::Workspace {
+                    id: WorkspaceId("one".into()),
+                    name: "One".into(),
+                    tree: leaf("a"),
+                },
+                crate::Workspace {
+                    id: WorkspaceId("two".into()),
+                    name: "Two".into(),
+                    tree: leaf("b"),
+                },
+            ],
+        )
+        .unwrap();
+        let (_, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::new_with_workspaces(set, vec![], cx).unwrap()
+        });
+        cx.run_until_parked();
+        let one = cx.debug_bounds("workspace:one").unwrap();
+        let two = cx.debug_bounds("workspace:two").unwrap();
+        assert_eq!(two.left() - one.right(), px(4.));
+        assert_eq!(one.size.height, px(22.));
+        assert_eq!(two.size.height, px(22.));
+        assert_eq!(
+            cx.debug_bounds("mullion-workspace-tabs")
+                .unwrap()
+                .size
+                .height,
+            px(22.)
+        );
+    }
+
+    #[gpui::test]
+    fn empty_pane_has_no_header_or_placeholder_and_body_fills_content(cx: &mut TestAppContext) {
+        let (_, cx) = cx.add_window_view(move |_, cx| MullionView::new(leaf("empty"), vec![], cx));
+        cx.simulate_resize(gpui::size(px(400.), px(240.)));
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("pane-header:empty").is_none());
+        let content = cx.debug_bounds("pane-content:empty").unwrap();
+        let body = cx.debug_bounds("pane-body:empty").unwrap();
+        assert_eq!(body, content);
     }
 }

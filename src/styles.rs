@@ -13,8 +13,12 @@ pub struct PaneStyle {
     pub background: Hsla,
     pub text: Hsla,
     pub border: Hsla,
+    /// Default panes have no border; host color opts into the bottom edge.
     pub border_width: Pixels,
+    pub host_border_width: Pixels,
     pub focus_indicator_width: Pixels,
+    pub focus_indicator: Hsla,
+    pub unfocused_wash: Hsla,
 }
 
 /// Reference activity-bar geometry and state colors.
@@ -88,6 +92,7 @@ pub struct PaneHeaderStyle {
 pub struct WorkspaceSwitcherStyle {
     pub gap: Pixels,
     pub font_size: Pixels,
+    pub line_height: Pixels,
     pub vertical_padding: Pixels,
     pub horizontal_padding: Pixels,
     pub border_radius: Pixels,
@@ -121,8 +126,11 @@ impl MullionStyles {
                 background: theme.surface,
                 text: theme.text,
                 border: theme.border,
-                border_width: px(1.),
+                border_width: px(0.),
+                host_border_width: px(2.),
                 focus_indicator_width: px(1.),
+                focus_indicator: theme.focus_indicator,
+                unfocused_wash: theme.background,
             },
             activity_bar: ActivityBarStyle {
                 thickness: px(28.),
@@ -191,6 +199,7 @@ impl MullionStyles {
             workspace_switcher: WorkspaceSwitcherStyle {
                 gap: px(4.),
                 font_size: px(12.),
+                line_height: px(14.),
                 vertical_padding: px(4.),
                 horizontal_padding: px(12.),
                 border_radius: px(3.),
@@ -240,9 +249,16 @@ mod tests {
         assert_eq!(styles.activity_bar.font_size, px(11.));
         assert_eq!(styles.split_handle.thickness, px(4.));
         assert_eq!(styles.split_handle.hover_target_thickness, px(8.));
+        assert_eq!(styles.pane.border_width, px(0.));
+        assert_eq!(styles.pane.host_border_width, px(2.));
+        assert_eq!(styles.pane.focus_indicator_width, px(1.));
         assert_eq!(styles.header.height, px(28.));
+        assert_eq!(styles.header.border_width, px(1.));
         assert_eq!(styles.header.horizontal_padding, px(8.));
         assert_eq!(styles.workspace_switcher.font_size, px(12.));
+        assert_eq!(styles.workspace_switcher.line_height, px(14.));
+        assert_eq!(styles.workspace_switcher.vertical_padding, px(4.));
+        assert_eq!(styles.workspace_switcher.horizontal_padding, px(12.));
     }
 
     #[test]
@@ -253,5 +269,9 @@ mod tests {
         assert_eq!(styles.pane.background, theme.surface);
         assert_eq!(styles.activity_bar.category_label, theme.muted_text);
         assert_eq!(styles.drop_overlay.indicator_color, theme.drop_target);
+        assert_eq!(styles.split_handle.color, theme.border);
+        assert_eq!(styles.split_handle.hover_color, theme.focused);
+        assert_eq!(styles.pane.focus_indicator, theme.focus_indicator);
+        assert_eq!(styles.pane.unfocused_wash, theme.background);
     }
 }
