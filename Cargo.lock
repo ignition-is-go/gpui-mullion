@@ -2148,10 +2148,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui-command-palette"
+version = "0.1.0"
+source = "git+https://github.com/ignition-is-go/gpui-command-palette.git?rev=2a8986a431b2990d37e550748c9f7554716f205b#2a8986a431b2990d37e550748c9f7554716f205b"
+dependencies = [
+ "gpui",
+ "gpui_platform",
+ "web-sys",
+]
+
+[[package]]
 name = "gpui-mullion"
 version = "0.1.0"
 dependencies = [
  "gpui",
+ "gpui-command-palette",
  "gpui_platform",
  "scheduler",
  "serde",

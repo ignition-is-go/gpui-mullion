@@ -468,6 +468,7 @@ pub struct MullionView<D: PaneData> {
     dock_hover: Option<DockHover>,
     overlay_host: Option<OverlayHostConfig>,
     last_overlay_error: Option<OverlayError>,
+    command_palette: Option<gpui::Entity<gpui_command_palette::CommandPalette<PaletteInvocation>>>,
     #[cfg(test)]
     routed_commands: Vec<crate::PaneCommand>,
     #[cfg(test)]
@@ -525,6 +526,7 @@ impl<D: PaneData> MullionView<D> {
             dock_hover: None,
             overlay_host: None,
             last_overlay_error: None,
+            command_palette: None,
             #[cfg(test)]
             routed_commands: Vec::new(),
             #[cfg(test)]
@@ -631,6 +633,20 @@ impl<D: PaneData> MullionView<D> {
     /// Return the validation error from the most recent overlay snapshot.
     pub fn last_overlay_error(&self) -> Option<&OverlayError> {
         self.last_overlay_error.as_ref()
+    }
+    /// Attach the standalone command-palette widget to this root view.
+    pub fn set_command_palette(
+        &mut self,
+        palette: Option<gpui::Entity<gpui_command_palette::CommandPalette<PaletteInvocation>>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.command_palette = palette;
+        cx.notify();
+    }
+    pub fn command_palette(
+        &self,
+    ) -> Option<&gpui::Entity<gpui_command_palette::CommandPalette<PaletteInvocation>>> {
+        self.command_palette.as_ref()
     }
     /// Configure activity-to-new-pane docking.
     pub fn with_dock_config(mut self, config: DockConfig<D>) -> Self {
@@ -840,7 +856,7 @@ impl<D: PaneData> MullionView<D> {
                 let visible = crate::activity_palette_entries(&self.catalog, &pane, data)
                     .into_iter()
                     .any(|entry| {
-                        entry.invocation
+                        entry.metadata
                             == PaletteInvocation::SelectActivity {
                                 pane: pane.clone(),
                                 activity: activity.clone(),
@@ -3664,6 +3680,22 @@ impl<D: PaneData> Render for MullionView<D> {
         if let Some(mode) = self.theme_mode {
             self.theme = mode.resolve(window.appearance());
         }
+        if let Some(palette) = &self.command_palette {
+            let registry = palette.read(cx).registry().clone();
+            let entries = self.palette_entries();
+            let live_ids = entries
+                .iter()
+                .map(|entry| entry.id.clone())
+                .collect::<HashSet<_>>();
+            for entry in entries {
+                registry.register(entry).forget();
+            }
+            for id in registry.commands().into_iter().map(|entry| entry.id) {
+                if !live_ids.contains(&id) {
+                    registry.unregister_command(&id);
+                }
+            }
+        }
         let styles = self
             .styles
             .unwrap_or_else(|| MullionStyles::from_theme(self.theme));
@@ -3755,6 +3787,13 @@ impl<D: PaneData> Render for MullionView<D> {
         };
         div()
             .key_context(key_context)
+            .on_action(cx.listener(
+                |this, _: &gpui_command_palette::ToggleCommandPalette, window, cx| {
+                    if let Some(palette) = this.command_palette.clone() {
+                        palette.update(cx, |palette, cx| palette.toggle(window, cx));
+                    }
+                },
+            ))
             .track_focus(&self.focus_handle)
             .size_full()
             .relative()
@@ -3960,6 +3999,9 @@ impl<D: PaneData> Render for MullionView<D> {
                     .inset_0()
                     .children(overlays),
             )
+            .when_some(self.command_palette.clone(), |element, palette| {
+                element.child(palette)
+            })
     }
 }
 
@@ -5971,7 +6013,7 @@ mod tests {
             assert_eq!(
                 entries
                     .iter()
-                    .filter(|entry| matches!(entry.invocation, PaletteInvocation::PaneCommand(_)))
+                    .filter(|entry| matches!(entry.metadata, PaletteInvocation::PaneCommand(_)))
                     .count(),
                 39
             );

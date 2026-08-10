@@ -146,3 +146,8 @@ CI runs native gates on Ubuntu, macOS, and Windows, checks the shared view for `
 ## License
 
 MIT
+
+
+## Command palette
+
+Generic command registration, deterministic search, keyboard state, shortcuts, theme, and modal rendering live in [`gpui-command-palette`](https://github.com/ignition-is-go/gpui-command-palette). Mullion retains only `PaletteInvocation`, invocation errors, and adapters for live pane/activity commands. Call `gpui_command_palette::init(cx)` once and `command_palette_for_view(&view, cx)` after constructing the Mullion entity; the shared widget then refreshes live entries and routes typed selections back through `MullionView::invoke_palette`.

@@ -2,8 +2,7 @@ use gpui::{div, prelude::*, px, rgb, size, App, Bounds, WindowBounds, WindowOpti
 use gpui_mullion::{
     register_key_bindings, Activity, ActivityBarHostConfig, ActivityBarSlots, ActivityCatalog,
     ActivityCategory, ActivityChrome, ActivityIcon, ActivityId, ActivityNode, CategoryChrome,
-    CategoryId, DropEdge, FocusPresentation, MullionOverlay, MullionSettings, MullionStyles,
-    MullionView, OverlayAlignment, OverlayHostConfig, OverlayLength, OverlayStack,
+    CategoryId, DropEdge, FocusPresentation, MullionSettings, MullionStyles, MullionView,
     PaneFocusBehavior, PaneId, PaneNode, SplitDirection, Workspace, WorkspaceId, WorkspaceSet,
 };
 use serde::{Deserialize, Serialize};
@@ -434,71 +433,6 @@ impl DemoControl {
     }
 }
 
-fn palette_overlay(control: Arc<DemoControl>) -> OverlayHostConfig {
-    OverlayHostConfig::controlled(move || {
-        if !control.palette_open.load(Ordering::SeqCst) {
-            return OverlayStack::new();
-        }
-        let query = control.palette_query.lock().unwrap().clone();
-        let overlay = MullionOverlay::new("demo-command-palette", move |_, _| {
-            div()
-                .w(px(520.))
-                .max_h(px(430.))
-                .p_4()
-                .rounded_md()
-                .border_1()
-                .border_color(rgb(0x333333))
-                .bg(rgb(0x161616))
-                .text_color(rgb(0xeeeeee))
-                .shadow_lg()
-                .child(div().text_lg().child("Mullion commands"))
-                .child(
-                    div()
-                        .mt_2()
-                        .p_2()
-                        .bg(rgb(0x222222))
-                        .child(format!("Search: {query}")),
-                )
-                .child(
-                    div()
-                        .mt_3()
-                        .text_size(px(12.))
-                        .child("Focus Pane Left · Alt+Left"),
-                )
-                .child(
-                    div()
-                        .mt_2()
-                        .text_size(px(12.))
-                        .child("Split Pane Right · Ctrl+Alt+Shift+Right"),
-                )
-                .child(
-                    div()
-                        .mt_2()
-                        .text_size(px(12.))
-                        .child("Toggle Pane Zoom · Ctrl+Shift+Enter"),
-                )
-                .child(
-                    div()
-                        .mt_4()
-                        .text_size(px(10.))
-                        .text_color(rgb(0x888888))
-                        .child("Ctrl/⌘+K · all commands   Esc · close"),
-                )
-                .into_any_element()
-        })
-        .with_placement(gpui_mullion::OverlayPlacement::new(
-            OverlayAlignment::Center,
-            OverlayAlignment::Start,
-        ))
-        .with_size(gpui_mullion::OverlaySize::new(
-            OverlayLength::Pixels(520.),
-            OverlayLength::Content,
-        ))
-        .with_a11y_label("Mullion command palette");
-        OverlayStack::from_overlays([overlay]).expect("demo palette overlay is valid")
-    })
-}
-
 fn host_config(control: Arc<DemoControl>) -> ActivityBarHostConfig<DemoData> {
     let palette = control.clone();
     let hairline = || {
@@ -525,10 +459,13 @@ fn host_config(control: Arc<DemoControl>) -> ActivityBarHostConfig<DemoData> {
                     .text_size(px(9.))
                     .cursor_pointer()
                     .child("⌘K")
-                    .on_click(move |_, _, cx| {
+                    .on_click(move |_, window, cx| {
+                        window.dispatch_action(
+                            Box::new(gpui_command_palette::ToggleCommandPalette),
+                            cx,
+                        );
                         let next = !palette.palette_open.load(Ordering::SeqCst);
                         palette.palette_open.store(next, Ordering::SeqCst);
-                        cx.refresh_windows();
                     })
                     .into_any_element()
             }),
@@ -546,6 +483,7 @@ fn demo_styles() -> MullionStyles {
 
 fn launch(cx: &mut App) {
     register_key_bindings(cx);
+    gpui_command_palette::init(cx);
     let control = Arc::new(DemoControl::default());
     control.reset();
     let bounds = Bounds::centered(None, size(px(1100.), px(720.)), cx);
@@ -615,8 +553,8 @@ fn launch(cx: &mut App) {
                     )
                     .with_styles(demo_styles())
                     .with_activity_bar_host(host_config(control.clone()))
-                    .with_overlay_host(palette_overlay(control.clone()))
             });
+            gpui_mullion::command_palette_for_view(&view, cx);
             view.read(cx).focus_handle().clone().focus(window, cx);
             #[cfg(target_family = "wasm")]
             {
