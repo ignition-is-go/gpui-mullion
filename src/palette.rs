@@ -64,7 +64,7 @@ fn entry(
     group: String,
     invocation: PaletteInvocation,
 ) -> PaletteEntry {
-    Command::with_metadata(id, name, invocation, |_, _| {})
+    Command::with_metadata(id, name, invocation, || {})
         .description(description)
         .group(group)
 }
@@ -264,13 +264,14 @@ mod tests {
         );
     }
     #[test]
-    fn external_search_is_tokenized_and_stable() {
+    fn external_search_uses_case_insensitive_substrings_and_stable_order() {
         let entries = pane_command_palette_entries(true);
         assert_eq!(
-            search_palette(&entries, "focus LEFT")[0].entry.id,
+            search_palette(&entries, "PANE LEFT")[0].entry.id,
             "mullion.focus.left"
         );
-        assert!(search_palette(&entries, "left missing").is_empty());
+        assert!(search_palette(&entries, "focus missing").is_empty());
+        assert!(search_palette(&entries, "mullion.focus.left").is_empty());
     }
     #[test]
     fn invocation_serde_round_trips() {
