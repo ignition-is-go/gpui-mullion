@@ -7,11 +7,12 @@ This repository is the GPUI successor to the Leptos `mullion` library and is int
 ## Current implementation baseline
 
 > [!IMPORTANT]
-> The model and interaction contracts have broad GPUI-native coverage, but the port is **not yet
-> feature-complete or pixel-compatible** with the Leptos reference. Visible split controls,
-> activity-to-pane affordances in the shared demo, activity-label flyouts, and the remaining exact
-> chrome/layout reproduction are active blockers. Native pane detachment remains an additive,
-> explicit non-goal—not reference parity.
+> The shared GPUI implementation now covers the reference pane, activity-bar, flyout, scrolling,
+> docking, workspace, and command interactions on native and WebAssembly. Pre-1.0 architectural
+> hardening is still active: public API curation, render/lifecycle separation, focused controller
+> boundaries, and scaling instrumentation are not yet frozen. See
+> [the GPUI architecture notes](docs/GPUI_ARCHITECTURE.md). Native pane detachment remains an
+> additive, explicit non-goal—not reference parity.
 
 - Portable, validated, serde-compatible `PaneNode<D>` with stable string pane/activity/category IDs and reference command/event semantics.
 - Split, close, move, swap, proportional resize, rotate, balance, five standard layouts, geometric navigation, five-zone pane docking, and activity-to-new-pane docking.

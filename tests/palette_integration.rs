@@ -139,3 +139,31 @@ fn installed_palette_accepts_text_and_arrow_navigation(cx: &mut TestAppContext) 
         1
     );
 }
+
+#[gpui::test]
+fn detaching_palette_drops_only_mullion_owned_registrations(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        MullionView::new(PaneNode::leaf(PaneId::new("only"), true), Vec::new(), cx)
+    });
+    let palette = cx.update(|window, app| install_command_palette_for_view(&view, window, app));
+    cx.run_until_parked();
+
+    let registry = palette.read_with(cx, |palette, _| palette.registry().clone());
+    let _host_registration = registry.register(gpui_command_palette::Command::with_metadata(
+        "host.command",
+        "Host Command",
+        PaletteInvocation::PaneCommand(PaneCommand::Balance),
+        || {},
+    ));
+    assert!(registry
+        .commands()
+        .iter()
+        .any(|entry| entry.id.starts_with("mullion.")));
+
+    view.update(cx, |view, cx| view.set_command_palette(None, cx));
+    cx.run_until_parked();
+
+    let remaining = registry.commands();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].id, "host.command");
+}

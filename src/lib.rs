@@ -1,24 +1,38 @@
 //! Native, cross-platform GPUI split panes.
-mod accessibility;
-mod activity;
-mod activity_bar;
-mod activity_catalog;
-mod command;
-mod command_actions;
-mod drag;
-mod events;
-mod focus;
-mod keybindings;
-mod model;
-mod overlay;
-mod palette;
-mod platform;
-mod settings;
-mod styles;
-mod theme;
-mod tree;
-mod view;
-mod workspace;
+pub mod accessibility;
+pub mod activity;
+pub mod activity_bar;
+pub mod activity_catalog;
+pub mod command;
+pub mod command_actions;
+pub mod drag;
+pub mod events;
+pub mod focus;
+pub mod keybindings;
+pub mod model;
+pub mod overlay;
+pub mod palette;
+pub mod platform;
+pub mod settings;
+pub mod styles;
+pub mod theme;
+pub mod tree;
+pub mod view;
+pub mod workspace;
+
+/// Common imports for applications embedding Mullion.
+///
+/// The prelude intentionally contains only the primary model, activity, view,
+/// workspace, configuration, and event types. Advanced adapters remain
+/// available from their named modules.
+pub mod prelude {
+    pub use crate::{
+        Activity, ActivityBarConfig, ActivityCatalog, ActivityFactoryRegistry, ActivityId,
+        ActivityInstance, ActivityNode, MullionConfig, MullionModel, MullionSettings,
+        MullionStyles, MullionTheme, MullionThemeMode, MullionView, PaneData, PaneEvent, PaneId,
+        PaneNode, SplitDirection, Workspace, WorkspaceId, WorkspaceSet,
+    };
+}
 pub use accessibility::*;
 pub use activity::*;
 pub use activity_bar::*;

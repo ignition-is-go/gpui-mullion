@@ -7,7 +7,6 @@ use std::fmt;
 pub struct WorkspaceId(pub String);
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(bound = "")]
 pub struct Workspace<D: PaneData> {
     pub id: WorkspaceId,
     pub name: String,
@@ -15,7 +14,6 @@ pub struct Workspace<D: PaneData> {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(bound = "")]
 pub struct WorkspaceSet<D: PaneData> {
     pub active: WorkspaceId,
     pub workspaces: Vec<Workspace<D>>,
@@ -276,6 +274,24 @@ impl<D: PaneData> WorkspaceSet<D> {
     /// Replace the stored tree of the active workspace, retaining the original bool API.
     pub fn persist_active(&mut self, tree: PaneNode<D>) -> bool {
         self.try_persist_active(tree).is_ok()
+    }
+
+    /// Persist a snapshot produced by an already-validated [`crate::MullionModel`].
+    ///
+    /// This deliberately skips whole-set and tree validation. It is crate-private
+    /// because accepting arbitrary host data here would violate `WorkspaceSet`'s
+    /// invariants; the view uses it only for snapshots from model mutations, which
+    /// preserve those invariants by construction.
+    pub(crate) fn persist_model_snapshot(&mut self, tree: PaneNode<D>) -> bool {
+        let Some(workspace) = self
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == self.active)
+        else {
+            return false;
+        };
+        workspace.tree = tree;
+        true
     }
 }
 

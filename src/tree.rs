@@ -103,19 +103,14 @@ impl DropEdge {
     }
 }
 
-/// Trait bound alias for consumer-defined pane data.
+/// Minimal trait bound for consumer-defined pane data.
 ///
-/// `Send + Sync` keeps pane snapshots and host callbacks safe to move between
-/// GPUI executors. Plain owned application data normally satisfies these bounds.
-pub trait PaneData:
-    Clone + PartialEq + Serialize + for<'de> Deserialize<'de> + Send + Sync + 'static
-{
-}
+/// Mullion keeps pane state on GPUI's foreground thread, so UI-local data does
+/// not need to be `Send`, `Sync`, or serializable. Serialization bounds are
+/// required only when a pane tree or workspace snapshot is actually encoded.
+pub trait PaneData: Clone + PartialEq + 'static {}
 
-impl<T> PaneData for T where
-    T: Clone + PartialEq + Serialize + for<'de> Deserialize<'de> + Send + Sync + 'static
-{
-}
+impl<T> PaneData for T where T: Clone + PartialEq + 'static {}
 
 /// One step from a split node to one of its children.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -206,7 +201,6 @@ impl std::error::Error for PaneValidationError {}
 
 /// A node in the pane tree — either a leaf pane or a split containing two children.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(bound = "")]
 pub enum PaneNode<D: PaneData> {
     Leaf {
         id: PaneId,
@@ -877,6 +871,18 @@ mod tests {
 
     #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
     struct D(u32);
+
+    #[derive(Clone, PartialEq)]
+    struct UiLocalData(std::rc::Rc<String>);
+
+    #[test]
+    fn pane_data_can_be_ui_local_and_non_serializable() {
+        let tree = PaneNode::leaf(
+            PaneId::new("local"),
+            UiLocalData(std::rc::Rc::new("state".into())),
+        );
+        assert!(tree.validate().is_ok());
+    }
 
     fn sample() -> PaneNode<D> {
         PaneNode::Split {

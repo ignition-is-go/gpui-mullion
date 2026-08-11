@@ -490,7 +490,7 @@ pub struct MullionView<D: PaneData> {
     workspace_switcher_visible: bool,
     activity_factories: ActivityFactoryRegistry<D>,
     activity_cache: ActivityCache<D>,
-    activity_render_cache: HashMap<(Option<WorkspaceId>, PaneId), PaneActivityRenderData<D>>,
+    activity_render_cache: HashMap<(Option<WorkspaceId>, PaneId), Rc<PaneActivityRenderData<D>>>,
     activity_cache_dirty: bool,
     split_bounds: SplitBounds,
     split_starts: Rc<RefCell<HashMap<PaneId, Point<Pixels>>>>,
@@ -502,6 +502,7 @@ pub struct MullionView<D: PaneData> {
     overlay_host: Option<OverlayHostConfig>,
     last_overlay_error: Option<OverlayError>,
     command_palette: Option<gpui::Entity<gpui_command_palette::CommandPalette<PaletteInvocation>>>,
+    palette_registrations: Vec<gpui_command_palette::Registration<PaletteInvocation>>,
     palette_dirty: bool,
     #[cfg(test)]
     routed_commands: Vec<crate::PaneCommand>,
@@ -571,6 +572,7 @@ impl<D: PaneData> MullionView<D> {
             overlay_host: None,
             last_overlay_error: None,
             command_palette: None,
+            palette_registrations: Vec::new(),
             palette_dirty: true,
             #[cfg(test)]
             routed_commands: Vec::new(),
@@ -765,6 +767,9 @@ impl<D: PaneData> MullionView<D> {
         palette: Option<gpui::Entity<gpui_command_palette::CommandPalette<PaletteInvocation>>>,
         cx: &mut Context<Self>,
     ) {
+        // Registration handles own the entries in the old palette. Dropping them
+        // before replacing the entity prevents stale commands from outliving this view.
+        self.palette_registrations.clear();
         self.command_palette = palette;
         self.palette_dirty = true;
         cx.notify();
@@ -1202,7 +1207,9 @@ impl<D: PaneData> MullionView<D> {
                 self.activity_cache_dirty = true;
             }
             if let Some(workspaces) = &mut self.workspaces {
-                workspaces.persist_active(self.model.snapshot());
+                // Model mutations already preserve pane-tree invariants. Avoid
+                // revalidating every inactive workspace on each live resize frame.
+                workspaces.persist_model_snapshot(self.model.snapshot());
             }
         }
         let notify = !events.is_empty();
@@ -1409,10 +1416,10 @@ impl<D: PaneData> MullionView<D> {
             let projection = self.catalog.visible(data, active.as_ref());
             render_cache.insert(
                 (workspace.clone(), pane.clone()),
-                PaneActivityRenderData {
+                Rc::new(PaneActivityRenderData {
                     activities,
                     projection,
-                },
+                }),
             );
             pane_data.insert((workspace.clone(), pane.clone()), data.clone());
         }
@@ -1850,9 +1857,9 @@ impl<D: PaneData> MullionView<D> {
     }
 
     fn animation_now(cx: &Context<Self>) -> scheduler::Instant {
-        // gpui_web's dispatcher clock currently falls through to std's unsupported
-        // WASM clock on some browser/thread configurations. web_time (re-exported by
-        // scheduler) reads Performance.now directly and avoids that panic.
+        // GPUI's test/native executor provides a controllable monotonic clock. The
+        // browser dispatcher currently falls through to std's unsupported WASM clock,
+        // so use scheduler's web-time-backed clock there, as AnimationElement does.
         #[cfg(target_family = "wasm")]
         {
             let _ = cx;
@@ -1884,47 +1891,38 @@ impl<D: PaneData> MullionView<D> {
             return;
         }
 
-        // One ticker advances every active motion and invalidates the root once per frame.
-        // A task per bar/item/focus motion caused redundant full-tree renders on WASM.
+        // The render loop advances every active motion from GPUI animation frames.
+        // Starting a stopped loop needs one invalidation; subsequent frames are
+        // requested by render and stay synchronized with the window compositor.
         self.motion_tick_running = true;
         #[cfg(test)]
         {
             self.motion_tick_starts += 1;
         }
-        cx.spawn(async move |this, cx| loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(15))
-                .await;
-            let keep_running = this
-                .update(cx, |this, cx| {
-                    let reduce_motion = cx.reduce_motion();
-                    let force_dock_motion = reduce_motion || this.dock_drag_active;
-                    let now = Self::animation_now(cx);
-                    let mut active = false;
-                    for motion in this
-                        .bar_motion
-                        .values_mut()
-                        .chain(this.item_motion.values_mut())
-                    {
-                        active |= Self::advance_motion(motion, now, force_dock_motion);
-                    }
-                    for motion in this
-                        .focus_motion
-                        .values_mut()
-                        .chain(this.focus_frame_motion.values_mut())
-                    {
-                        active |= Self::advance_motion(motion, now, reduce_motion);
-                    }
-                    this.motion_tick_running = active;
-                    cx.notify();
-                    active
-                })
-                .unwrap_or(false);
-            if !keep_running {
-                break;
-            }
-        })
-        .detach();
+        cx.notify();
+    }
+
+    fn advance_motions(&mut self, cx: &Context<Self>) -> bool {
+        let reduce_motion = cx.reduce_motion();
+        let force_dock_motion = reduce_motion || self.dock_drag_active;
+        let now = Self::animation_now(cx);
+        let mut active = false;
+        for motion in self
+            .bar_motion
+            .values_mut()
+            .chain(self.item_motion.values_mut())
+        {
+            active |= Self::advance_motion(motion, now, force_dock_motion);
+        }
+        for motion in self
+            .focus_motion
+            .values_mut()
+            .chain(self.focus_frame_motion.values_mut())
+        {
+            active |= Self::advance_motion(motion, now, reduce_motion);
+        }
+        self.motion_tick_running = active;
+        active
     }
 
     fn set_dock_drag_active(&mut self, active: bool, cx: &mut Context<Self>) {
@@ -2960,9 +2958,11 @@ impl<D: PaneData> MullionView<D> {
             .activity_render_cache
             .get(&(self.workspace_namespace(), id.clone()))
             .cloned()
-            .unwrap_or_else(|| PaneActivityRenderData {
-                activities: Vec::new(),
-                projection: self.catalog.visible(data, active),
+            .unwrap_or_else(|| {
+                Rc::new(PaneActivityRenderData {
+                    activities: Vec::new(),
+                    projection: self.catalog.visible(data, active),
+                })
             });
         let active_name = active.and_then(|active| {
             render_data
@@ -3004,7 +3004,7 @@ impl<D: PaneData> MullionView<D> {
                     .cloned()
             })
             .or_else(|| render_data.activities.first().cloned());
-        let projection = render_data.projection;
+        let projection = &render_data.projection;
         if self.expansion_active.get(id) != Some(&active.cloned()) {
             self.expansion
                 .entry(id.clone())
@@ -3984,21 +3984,12 @@ impl<D: PaneData> Render for MullionView<D> {
         }
         let sync_palette = std::mem::take(&mut self.palette_dirty);
         if sync_palette {
+            // CommandRegistry registrations are RAII. Retain the handles for exactly
+            // as long as this Mullion view owns the corresponding palette entries.
+            self.palette_registrations.clear();
             if let Some(palette) = &self.command_palette {
                 let registry = palette.read(cx).registry().clone();
-                let entries = self.palette_entries();
-                let live_ids = entries
-                    .iter()
-                    .map(|entry| entry.id.clone())
-                    .collect::<HashSet<_>>();
-                for entry in entries {
-                    registry.register(entry).forget();
-                }
-                for id in registry.commands().into_iter().map(|entry| entry.id) {
-                    if !live_ids.contains(&id) {
-                        registry.unregister_command(&id);
-                    }
-                }
+                self.palette_registrations = registry.register_many(self.palette_entries());
             }
         }
         let styles = self
@@ -4009,6 +4000,9 @@ impl<D: PaneData> Render for MullionView<D> {
             self.set_dock_drag_active(false, cx);
         }
         self.sync_focus_motion(cx);
+        if self.motion_tick_running && self.advance_motions(cx) {
+            window.request_animation_frame();
+        }
         self.sync_activity_cache(window, cx);
         let tree = self
             .model
@@ -6096,6 +6090,9 @@ mod tests {
                     && motion.progress == 0.0));
         });
         cx.executor().advance_clock(Duration::from_millis(20));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
         cx.run_until_parked();
         assert!(!view.read_with(cx, |view, _| view
             .activity_bar_is_expanded(&PaneId::new("pane"))));
@@ -6343,6 +6340,9 @@ mod tests {
         cx.simulate_mouse_move(trigger.center(), None, gpui::Modifiers::none());
         cx.simulate_mouse_move(content_before.center(), None, gpui::Modifiers::none());
         cx.executor().advance_clock(Duration::from_millis(60));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
         cx.run_until_parked();
         assert_eq!(
             cx.debug_bounds("activity-bar:pane").unwrap().size.width,
@@ -6359,6 +6359,9 @@ mod tests {
         cx.simulate_mouse_move(trigger.center(), None, gpui::Modifiers::none());
         cx.run_until_parked();
         cx.executor().advance_clock(Duration::from_millis(200));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
         cx.run_until_parked();
         let expanded = cx.debug_bounds("activity-bar-panel:pane").unwrap();
         assert_eq!(
@@ -6416,6 +6419,9 @@ mod tests {
         // GPUI's test pointer starts at the root origin, over a leading rail.
         cx.simulate_mouse_move(content.center(), None, gpui::Modifiers::none());
         cx.executor().advance_clock(Duration::from_millis(200));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
         cx.run_until_parked();
         assert!(cx.debug_bounds("activity-label:pane:activity").is_some());
         let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
@@ -6423,6 +6429,9 @@ mod tests {
         cx.simulate_mouse_move(panel.center(), None, gpui::Modifiers::none());
         cx.run_until_parked();
         cx.executor().advance_clock(Duration::from_millis(200));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
         cx.run_until_parked();
         let expanded_panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
         assert_eq!(expanded_panel.size.width, px(158.));
@@ -6503,6 +6512,9 @@ mod tests {
         cx.simulate_mouse_move(item.center(), None, gpui::Modifiers::none());
         cx.run_until_parked();
         cx.executor().advance_clock(Duration::from_millis(49));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
         cx.run_until_parked();
         assert_eq!(
             cx.debug_bounds("activity:pane:descriptive-activity-name")
@@ -6512,6 +6524,9 @@ mod tests {
             px(28.)
         );
         cx.executor().advance_clock(Duration::from_millis(1));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
         cx.run_until_parked();
         assert_eq!(
             cx.debug_bounds("activity:pane:descriptive-activity-name")
@@ -6895,6 +6910,9 @@ mod tests {
             cx.simulate_mouse_move(trigger.center(), None, gpui::Modifiers::none());
             cx.run_until_parked();
             cx.executor().advance_clock(Duration::from_millis(200));
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+            });
             cx.run_until_parked();
             let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
             match edge {
@@ -7081,6 +7099,9 @@ mod tests {
             "initial and changed focus motions share one animation ticker",
         );
         cx.executor().advance_clock(Duration::from_millis(60));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
         cx.run_until_parked();
         let expected = ease_in_out(60.0 / 125.0);
         view.read_with(cx, |view, _| {
@@ -7100,6 +7121,9 @@ mod tests {
             );
         });
         cx.executor().advance_clock(Duration::from_millis(75));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
         cx.run_until_parked();
         view.read_with(cx, |view, _| {
             assert_eq!(view.focus_motion[&PaneId::new("a")].progress, 0.0);
@@ -7110,6 +7134,9 @@ mod tests {
             assert!(view.focus_motion[&PaneId::new("b")].started_at.is_none());
         });
         cx.executor().advance_clock(Duration::from_millis(300));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
         cx.run_until_parked();
         view.read_with(cx, |view, _| {
             assert!(view
@@ -7189,11 +7216,17 @@ mod tests {
         cx.simulate_mouse_move(trigger.center(), None, gpui::Modifiers::none());
         cx.run_until_parked();
         cx.executor().advance_clock(Duration::from_millis(150));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
         cx.run_until_parked();
         let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
         assert_eq!(panel.size.width, px(93.));
         assert_eq!(panel.left(), pane.left() - px(46.5));
         cx.executor().advance_clock(Duration::from_millis(150));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
         cx.run_until_parked();
         assert_eq!(
             cx.debug_bounds("activity-bar-panel:pane").unwrap().left(),
@@ -7206,11 +7239,17 @@ mod tests {
             pane.left()
         );
         cx.executor().advance_clock(Duration::from_millis(150));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
         cx.run_until_parked();
         let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
         assert_eq!(panel.size.width, px(93.));
         assert_eq!(panel.left(), pane.left() - px(46.5));
         cx.executor().advance_clock(Duration::from_millis(150));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
         cx.run_until_parked();
         let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
         assert_eq!(panel.size.width, px(28.));
@@ -7239,6 +7278,9 @@ mod tests {
         assert_eq!(panel.size.width, px(28.));
         cx.simulate_mouse_move(panel.center(), None, gpui::Modifiers::none());
         cx.executor().advance_clock(Duration::from_millis(75));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
         cx.run_until_parked();
         let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
         let row = cx.debug_bounds("activity:pane:activity").unwrap();
@@ -7246,6 +7288,9 @@ mod tests {
         assert_eq!(row.size.width, px(92.));
         assert_eq!(panel.size.width - row.size.width, px(1.));
         cx.executor().advance_clock(Duration::from_millis(75));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
         cx.run_until_parked();
         let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
         let row = cx.debug_bounds("activity:pane:activity").unwrap();
@@ -7265,6 +7310,9 @@ mod tests {
         assert_eq!(control.size.width, px(28.));
         cx.simulate_mouse_move(control.center(), None, gpui::Modifiers::none());
         cx.executor().advance_clock(Duration::from_millis(75));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
         cx.run_until_parked();
         assert_eq!(
             cx.debug_bounds("pane-control:split-h:pane")
@@ -7274,6 +7322,9 @@ mod tests {
             px(89.)
         );
         cx.executor().advance_clock(Duration::from_millis(75));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
         cx.run_until_parked();
         assert_eq!(
             cx.debug_bounds("pane-control:split-h:pane")
@@ -7373,12 +7424,18 @@ mod tests {
             px(150.)
         );
         cx.executor().advance_clock(Duration::from_millis(75));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
         cx.run_until_parked();
         assert_eq!(
             cx.debug_bounds("activity:a:activity").unwrap().size.width,
             px(89.)
         );
         cx.executor().advance_clock(Duration::from_millis(75));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
         cx.run_until_parked();
         assert_eq!(
             cx.debug_bounds("activity:a:activity").unwrap().size.width,

@@ -10,7 +10,6 @@ use crate::{ActivityId, DropEdge, PaneData, PaneId, PaneNode, SplitDirection, Wo
 /// [`PaneEvent::ZoomChanged`] are **transient view events** and must not be
 /// persisted as part of the pane tree.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(bound = "")]
 pub enum PaneEvent<D: PaneData> {
     Split {
         target: PaneId,
@@ -86,7 +85,6 @@ impl<D: PaneData> PaneEvent<D> {
 /// replay a second workspace mutation language. Transient pane focus/zoom events are
 /// emitted separately and are not represented here.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(bound = "")]
 pub enum WorkspaceEvent<D: PaneData> {
     SnapshotChanged { workspaces: crate::WorkspaceSet<D> },
 }
