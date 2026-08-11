@@ -495,8 +495,8 @@ pub struct MullionView<D: PaneData> {
     activity_reconcile_scheduled: bool,
     split_bounds: SplitBounds,
     split_starts: Rc<RefCell<HashMap<PaneId, Point<Pixels>>>>,
+    split_focus_handles: HashMap<PaneId, FocusHandle>,
     active_split: ActiveSplit,
-    keyboard_split: Option<PaneId>,
     pending_split_resize: Option<(PaneId, f64)>,
     split_resize_tick_running: bool,
     dock_hover: Option<DockHover>,
@@ -565,8 +565,8 @@ impl<D: PaneData> MullionView<D> {
             activity_reconcile_scheduled: false,
             split_bounds: Rc::default(),
             split_starts: Rc::default(),
+            split_focus_handles: HashMap::new(),
             active_split: Rc::default(),
-            keyboard_split: None,
             pending_split_resize: None,
             split_resize_tick_running: false,
             dock_hover: None,
@@ -1338,12 +1338,9 @@ impl<D: PaneData> MullionView<D> {
             .execute_with_options(command, &self.command_options);
         self.finish(cx);
     }
-    fn resize_keyboard_split(&mut self, delta: f64, cx: &mut Context<Self>) {
-        let Some(key) = self.keyboard_split.clone() else {
-            return;
-        };
-        if let Some(ratio) = crate::tree::find_ratio(self.model.tree(), &key) {
-            self.model.resize(&key, ratio + delta);
+    fn resize_split(&mut self, key: &PaneId, delta: f64, cx: &mut Context<Self>) {
+        if let Some(ratio) = crate::tree::find_ratio(self.model.tree(), key) {
+            self.model.resize(key, ratio + delta);
             self.finish(cx);
         }
     }
@@ -1519,13 +1516,6 @@ impl<D: PaneData> MullionView<D> {
             self.motion_focus = None;
         }
         if self
-            .keyboard_split
-            .as_ref()
-            .is_some_and(|split| !live_splits.contains(split))
-        {
-            self.keyboard_split = None;
-        }
-        if self
             .pending_split_resize
             .as_ref()
             .is_some_and(|(split, _)| !live_splits.contains(split))
@@ -1537,6 +1527,8 @@ impl<D: PaneData> MullionView<D> {
             .retain(|split, _| live_splits.contains(split));
         self.split_starts
             .borrow_mut()
+            .retain(|split, _| live_splits.contains(split));
+        self.split_focus_handles
             .retain(|split, _| live_splits.contains(split));
         if self
             .active_split
@@ -1621,6 +1613,11 @@ impl<D: PaneData> MullionView<D> {
                 // The first leaf of the second subtree is a collision-free key that
                 // survives ratio changes and rerenders.
                 let key = second.leftmost_leaf_id().clone();
+                let split_focus_handle = self
+                    .split_focus_handles
+                    .entry(key.clone())
+                    .or_insert_with(|| cx.focus_handle())
+                    .clone();
                 let (first_edges, second_edges) = match direction {
                     SplitDirection::Horizontal => (
                         InternalEdges {
@@ -1664,10 +1661,13 @@ impl<D: PaneData> MullionView<D> {
                 let drag_direction = *direction;
                 let drag_ratio = *ratio;
                 let mouse_key = key.clone();
+                let mouse_focus_handle = split_focus_handle.clone();
                 let drag_start_cursor = Rc::new(Cell::new(None));
                 let mouse_starts = self.split_starts.clone();
                 let decrement_key = key.clone();
                 let increment_key = key.clone();
+                let resize_decrease_key = key.clone();
+                let resize_increase_key = key.clone();
                 let arrow_key = key.clone();
                 let split_accessibility =
                     crate::MullionAccessibilityNode::split(*direction, *ratio, false);
@@ -1741,6 +1741,8 @@ impl<D: PaneData> MullionView<D> {
                             .absolute()
                             .focusable()
                             .tab_stop(true)
+                            .track_focus(&split_focus_handle)
+                            .key_context(MULLION_SPLITTER_KEY_CONTEXT)
                             .role(gpui::Role::Splitter)
                             .accessibility_id(format!("mullion-splitter-{}", key.0))
                             .aria_label(split_accessibility.label)
@@ -1779,13 +1781,22 @@ impl<D: PaneData> MullionView<D> {
                             .block_mouse_except_scroll()
                             .on_mouse_down(
                                 MouseButton::Left,
-                                cx.listener(move |this, event: &gpui::MouseDownEvent, _, _| {
+                                move |event: &gpui::MouseDownEvent, window, cx| {
                                     mouse_starts
                                         .borrow_mut()
                                         .insert(mouse_key.clone(), event.position);
-                                    this.keyboard_split = Some(mouse_key.clone());
-                                }),
+                                    mouse_focus_handle.focus(window, cx);
+                                },
                             )
+                            .on_action(cx.listener(move |this, _: &ResizeSplitDecrease, _, cx| {
+                                this.resize_split(&resize_decrease_key, -KEYBOARD_RESIZE_STEP, cx);
+                            }))
+                            .on_action(cx.listener(move |this, _: &ResizeSplitIncrease, _, cx| {
+                                this.resize_split(&resize_increase_key, KEYBOARD_RESIZE_STEP, cx);
+                            }))
+                            .on_action(cx.listener(|this, _: &CancelSplitResize, window, cx| {
+                                this.cancel_split_resize(window, cx);
+                            }))
                             .on_key_down(cx.listener(
                                 move |this, event: &gpui::KeyDownEvent, _, cx| {
                                     let delta = match event.keystroke.key.as_str() {
@@ -3907,7 +3918,14 @@ impl<D: PaneData> MullionView<D> {
             .bg(styles.pane.background)
             .text_color(styles.pane.text)
             .on_hover(cx.listener(move |this, hovered, window, cx| {
-                if *hovered && this.settings.focus_behavior() == PaneFocusBehavior::Hover {
+                let splitter_has_focus = this
+                    .split_focus_handles
+                    .values()
+                    .any(|handle| handle.is_focused(window));
+                if *hovered
+                    && !splitter_has_focus
+                    && this.settings.focus_behavior() == PaneFocusBehavior::Hover
+                {
                     hover_focus_handle.focus(window, cx);
                     this.model.focus(&id_focus_hover);
                     this.finish(cx);
@@ -4211,14 +4229,9 @@ impl<D: PaneData> Render for MullionView<D> {
                     .collect::<Vec<_>>()
             });
         let overlays = self.render_overlays(window, cx);
-        let key_context = if self.keyboard_split.is_some() {
-            "Mullion MullionSplitter"
-        } else {
-            crate::MULLION_KEY_CONTEXT
-        };
         let active_split_on_drop = self.active_split.clone();
         div()
-            .key_context(key_context)
+            .key_context(crate::MULLION_KEY_CONTEXT)
             .track_focus(&self.focus_handle)
             .size_full()
             .relative()
@@ -4377,12 +4390,6 @@ impl<D: PaneData> Render for MullionView<D> {
             .on_action(cx.listener(|this, _: &crate::ToggleZoom, _, cx| {
                 this.command(crate::PaneCommand::ToggleZoom, cx)
             }))
-            .on_action(cx.listener(|this, _: &ResizeSplitDecrease, _, cx| {
-                this.resize_keyboard_split(-KEYBOARD_RESIZE_STEP, cx)
-            }))
-            .on_action(cx.listener(|this, _: &ResizeSplitIncrease, _, cx| {
-                this.resize_keyboard_split(KEYBOARD_RESIZE_STEP, cx)
-            }))
             .on_action(cx.listener(|this, _: &CancelSplitResize, window, cx| {
                 this.cancel_split_resize(window, cx)
             }))
@@ -4484,7 +4491,7 @@ pub fn register_key_bindings(cx: &mut App) {
         .expect("the built-in Mullion keymap must compile");
 
     // Splitter-local manipulation is intentionally not part of PaneCommand or
-    // MullionKeymap: these actions operate on the last directly manipulated bar.
+    // MullionKeymap: these actions are scoped to the splitter that owns focus.
     cx.bind_keys([
         gpui::KeyBinding::new(
             "ctrl-alt-[",
@@ -4767,6 +4774,8 @@ mod tests {
             )
         });
         cx.run_until_parked();
+        let root_focus = view.read_with(cx, |view, _| view.focus_handle().clone());
+        cx.update(|window, cx| root_focus.focus(window, cx));
 
         cx.dispatch_action(crate::FocusLeft);
         cx.dispatch_action(crate::FocusRight);
@@ -4850,6 +4859,8 @@ mod tests {
         let (view, cx) = cx
             .add_window_view(move |_, cx| MullionView::new(tree, vec![], cx).with_resize_step(0.2));
         cx.run_until_parked();
+        let root_focus = view.read_with(cx, |view, _| view.focus_handle().clone());
+        cx.update(|window, cx| root_focus.focus(window, cx));
 
         // No factory means unavailable and is inert.
         cx.dispatch_action(crate::SplitPaneVertical);
@@ -5569,8 +5580,15 @@ mod tests {
         assert_eq!(ratio(&view, "b", cx), 0.5);
 
         cx.simulate_click(start, gpui::Modifiers::none());
+        assert!(cx.update(
+            |window, cx| view.read(cx).split_focus_handles[&PaneId::new("b")].is_focused(window)
+        ));
         cx.dispatch_action(ResizeSplitIncrease);
         assert_eq!(ratio(&view, "b", cx), 0.55);
+        cx.run_until_parked();
+        assert!(cx.update(
+            |window, cx| view.read(cx).split_focus_handles[&PaneId::new("b")].is_focused(window)
+        ));
         cx.dispatch_action(ResizeSplitDecrease);
         assert_eq!(ratio(&view, "b", cx), 0.5);
 
