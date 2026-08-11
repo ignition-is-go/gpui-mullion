@@ -177,7 +177,12 @@ pub struct WorkspaceSwitcherStyle {
 /// Constructing the set from a [`MullionTheme`] keeps color ownership in Rust
 /// while leaving each component's geometry independently tunable.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct MullionStyles {
+pub struct MullionAppearance {
+    /// Semantic colors exposed to host-rendered Mullion chrome.
+    ///
+    /// Component-specific colors below are fully resolved and may intentionally
+    /// diverge from this source palette.
+    pub theme: MullionTheme,
     /// Tokens for the root surface.
     pub root: MullionRootStyle,
     /// Tokens for pane surfaces and focus state.
@@ -196,13 +201,14 @@ pub struct MullionStyles {
     pub workspace_switcher: WorkspaceSwitcherStyle,
 }
 
-impl MullionStyles {
+impl MullionAppearance {
     /// Build the reference component geometry using colors from `theme`.
     ///
     /// Geometry values are expressed in GPUI logical pixels. The supplied
     /// theme provides component colors without otherwise changing sizing.
     pub fn from_theme(theme: MullionTheme) -> Self {
         Self {
+            theme,
             root: MullionRootStyle {
                 background: theme.background,
             },
@@ -296,7 +302,7 @@ impl MullionStyles {
     }
 }
 
-impl Default for MullionStyles {
+impl Default for MullionAppearance {
     fn default() -> Self {
         Self::from_theme(MullionTheme::default())
     }
@@ -306,7 +312,7 @@ macro_rules! component_default {
     ($component:ident, $field:ident) => {
         impl Default for $component {
             fn default() -> Self {
-                MullionStyles::default().$field
+                MullionAppearance::default().$field
             }
         }
     };
@@ -326,7 +332,7 @@ mod tests {
 
     #[test]
     fn defaults_match_reference_geometry() {
-        let styles = MullionStyles::default();
+        let styles = MullionAppearance::default();
         assert_eq!(styles.activity_bar.thickness, px(28.));
         assert_eq!(styles.activity_bar.expanded_extent, px(150.));
         assert_eq!(styles.activity_bar.icon_size, px(14.));
@@ -348,7 +354,7 @@ mod tests {
     #[test]
     fn theme_colors_flow_into_every_component() {
         let theme = MullionTheme::default();
-        let styles = MullionStyles::from_theme(theme);
+        let styles = MullionAppearance::from_theme(theme);
         assert_eq!(styles.root.background, theme.background);
         assert_eq!(styles.pane.background, theme.surface);
         assert_eq!(styles.activity_bar.category_label, theme.muted_text);

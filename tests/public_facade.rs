@@ -24,11 +24,11 @@ fn prelude_supports_the_documented_core_vocabulary() {
     assert_eq!(PaneFocusBehavior::default(), PaneFocusBehavior::Hover);
     let _ = FocusPresentation::default();
     let _ = MullionConfig::default();
-    let look = MullionAppearance::system();
-    assert!(matches!(
-        look,
-        MullionAppearance::Mode(MullionThemeMode::System)
-    ));
+    let theme = MullionTheme::light();
+    let look = MullionAppearance::from_theme(theme);
+    assert_eq!(look.theme, theme);
+    let _provider: MullionThemeProvider = std::rc::Rc::new(|_| MullionTheme::dark());
+    assert_eq!(MullionThemeMode::default(), MullionThemeMode::System);
 }
 
 #[gpui_mullion::gpui::test]

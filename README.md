@@ -44,24 +44,26 @@ let view = cx.new(|cx| {
 
 ## Appearance
 
-`MullionView::with_appearance` is the only canonical entry point for setting the look:
+`MullionTheme` is the semantic color source and `MullionAppearance` is the one fully resolved
+visual/geometry bundle:
 
 ```rust
-// Follow the GPUI window appearance.
-let view = view.with_appearance(MullionAppearance::system());
+// Follow the GPUI window appearance (also the default).
+let view = view.with_theme_mode(MullionThemeMode::System);
 
-// Or install one exact resolved token snapshot.
-let mut styles = MullionStyles::from_theme(MullionTheme::dark());
-styles.activity_bar.thickness = gpui::px(52.0);
-let view = view.with_appearance(MullionAppearance::styles(styles));
+// Live-map an application theme; Mullion derives every component token internally.
+let view = view.with_theme_provider(|cx| pulse_mullion_theme(cx));
+
+// Or install one exact resolved bundle when component geometry must differ.
+let mut appearance = MullionAppearance::from_theme(MullionTheme::dark());
+appearance.activity_bar.thickness = gpui::px(52.0);
+let view = view.with_appearance(appearance);
 ```
 
-Use `MullionAppearance::light()`, `dark()`, or `theme(custom_palette)` for standard geometry.
-Use `MullionAppearance::custom(theme, styles)` when host-rendered chrome needs a custom semantic
-palette alongside exact component tokens. `with_appearance_provider(|cx| ...)` resolves app-global
-theme state once per root render; the host must invalidate windows when that state changes. Fixed and
-provider setters are last-wins. The older theme/style-specific view builders remain hidden migration
-wrappers.
+`with_theme` derives standard geometry from a fixed semantic theme. The advanced
+`with_appearance_provider` supports live exact bundles. Fixed appearance/theme/mode calls and both
+provider families are mutually exclusive and last-wins; clearing a provider restores the last fixed
+source. Hosts must invalidate windows when provider state changes.
 
 For durable content, keep the catalog `Activity` descriptor and add a view-owned UI-local factory registry:
 

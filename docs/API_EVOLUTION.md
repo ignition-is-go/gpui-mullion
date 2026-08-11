@@ -10,10 +10,26 @@ Mullion is pre-1.0, but its public surface is designed for use by multiple appli
 - Use `MullionView::try_new`, `try_new_with_catalog`, or `try_new_with_workspaces` for persisted or
   untrusted input. Infallible `new` is reserved for host-built input and panics on invalid identity
   or topology.
-- Configure the complete look through `MullionView::with_appearance`; theme modes, custom palettes,
-  and exact style snapshots are variants of that one appearance source.
+- `MullionTheme` is the semantic color source. `MullionAppearance` is the only complete resolved
+  visual/geometry bundle; `MullionView::with_theme[_provider]` derives it internally, while
+  `with_appearance[_provider]` installs exact component tokens.
 - Mullion re-exports its exact `gpui` and `gpui_command_palette` revisions for type-identity-safe
   downstream integration.
+
+## Single-look migration
+
+The resolved look API intentionally has no compatibility alias:
+
+- Replace `MullionStyles` with `MullionAppearance`.
+- Replace `MullionAppearance::system/light/dark` with
+  `MullionView::with_theme_mode(MullionThemeMode::System/Light/Dark)`.
+- Replace `MullionAppearance::theme(theme)` with `MullionView::with_theme(theme)`.
+- Replace `MullionAppearance::styles(styles)` with `MullionView::with_appearance(appearance)`.
+- Replace `MullionAppearance::custom(theme, styles)` by starting with
+  `MullionAppearance::from_theme(theme)`, modifying its public component fields, and installing it.
+- Application theme adapters should return only `MullionTheme` and connect through
+  `with_theme_provider`; exact appearance providers are reserved for live geometry or
+  component-specific overrides.
 
 ## Stability classes
 
