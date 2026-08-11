@@ -68,7 +68,7 @@ All 37 static `PaneCommand`s and dynamic `FocusPane { index }` actions route thr
 
 Default bindings cooperatively avoid editable descendants. Mullion installs `Mullion` on its root; hosts should install the additional `MullionEditable` key context on text fields, editors, and other controls that must retain editing shortcuts. A custom map can explicitly opt into capturing those shortcuts with `capture_editable_targets(true)`. Splitter-local resize/cancel actions remain separate from `PaneCommand` and become active only in the `MullionSplitter` context after direct splitter selection.
 
-Subscribe to `PaneEvent<D>` for pane/model changes. `MullionView::new_with_workspaces` optionally gives the view ownership of a `WorkspaceSet`; every `TreeChanged` snapshot is persisted into its active workspace, the built-in tab strip switches trees in the same window/canvas, and `WorkspaceChanged` is emitted after a successful switch. Use `workspaces()` to inspect the current set and `switch_workspace(...)` to switch programmatically.
+Subscribe to `PaneEvent<D>` for pane/model changes. `MullionView::try_new_with_workspaces` optionally gives the view ownership of a `WorkspaceSet`; every `TreeChanged` snapshot is persisted into its active workspace, the built-in tab strip switches trees in the same window/canvas, and `WorkspaceChanged` is emitted after a successful switch. Use `workspaces()` to inspect the current set and `try_switch_workspace(...)` to switch programmatically.
 
 ## Window architecture
 

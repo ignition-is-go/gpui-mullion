@@ -62,6 +62,9 @@ while (
 ) {
   await sleep(100);
 }
+// The bridge is installed during application bootstrap. Let GPUI finish its
+// first compositor frame before invoking an application update through it.
+await sleep(3000);
 let state = await action("reset");
 assert(state.activeWorkspace === "default", "reset selects Default", state);
 assert(

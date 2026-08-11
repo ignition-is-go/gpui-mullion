@@ -18,48 +18,83 @@ pub const MULLION_KEY_CONTEXT: &str = "Mullion";
 gpui::actions!(
     mullion,
     [
+        /// GPUI action corresponding to [`PaneCommand::FocusFirst`].
         FocusFirst,
+        /// GPUI action corresponding to [`PaneCommand::FocusLast`].
         FocusLast,
+        /// GPUI action for a left/right split.
         SplitPaneHorizontal,
+        /// GPUI action for a top/bottom split.
         SplitPaneVertical,
+        /// GPUI action that moves the focused pane left.
         MovePaneLeft,
+        /// GPUI action that moves the focused pane right.
         MovePaneRight,
+        /// GPUI action that moves the focused pane up.
         MovePaneUp,
+        /// GPUI action that moves the focused pane down.
         MovePaneDown,
+        /// GPUI action that swaps the focused pane with its left neighbor.
         SwapPaneLeft,
+        /// GPUI action that swaps the focused pane with its right neighbor.
         SwapPaneRight,
+        /// GPUI action that swaps the focused pane with its upper neighbor.
         SwapPaneUp,
+        /// GPUI action that swaps the focused pane with its lower neighbor.
         SwapPaneDown,
+        /// GPUI action that swaps with the next pane in layout order.
         SwapPaneNext,
+        /// GPUI action that swaps with the previous pane in layout order.
         SwapPanePrevious,
+        /// GPUI action that grows the focused pane toward the left.
         ResizePaneLeft,
+        /// GPUI action that grows the focused pane toward the right.
         ResizePaneRight,
+        /// GPUI action that grows the focused pane upward.
         ResizePaneUp,
+        /// GPUI action that grows the focused pane downward.
         ResizePaneDown,
+        /// GPUI action that arranges the focused pane's parent left/right.
         SetParentSplitHorizontal,
+        /// GPUI action that arranges the focused pane's parent top/bottom.
         SetParentSplitVertical,
+        /// GPUI action that toggles the focused pane's parent split axis.
         ToggleParentSplitDirection,
+        /// GPUI action that rotates panes forward through layout slots.
         RotatePanesForward,
+        /// GPUI action that rotates panes backward through layout slots.
         RotatePanesBackward,
+        /// GPUI action that applies equal-width columns.
         ApplyEvenHorizontalLayout,
+        /// GPUI action that applies equal-height rows.
         ApplyEvenVerticalLayout,
+        /// GPUI action that places a large pane above secondary panes.
         ApplyMainHorizontalLayout,
+        /// GPUI action that places a large pane left of secondary panes.
         ApplyMainVerticalLayout,
+        /// GPUI action that applies a balanced, alternating grid.
         ApplyTiledLayout
     ]
 );
 
-/// Parameterized action for the dynamic, zero-based `FocusIndex` command.
+/// Parameterized GPUI action for the dynamic, zero-based
+/// [`PaneCommand::FocusIndex`] command.
+///
+/// It is intentionally declared with GPUI's `no_json` option: persisted
+/// bindings should identify the portable command with [`PaneCommand::id`]
+/// rather than relying on GPUI action JSON.
 #[derive(Clone, Debug, PartialEq, gpui::Action)]
 #[action(namespace = mullion, no_json)]
 pub struct FocusPane {
+    /// Zero-based target in depth-first pane layout order.
     pub index: usize,
 }
 
-/// Convert every portable pane command into its GPUI action.
+/// Converts a portable pane command into the GPUI action dispatched by views.
 ///
 /// The nine action types historically exported by `view` are reused rather
-/// than redeclared here.
+/// than redeclared here. Static commands map to registered unit actions;
+/// [`PaneCommand::FocusIndex`] maps to a [`FocusPane`] carrying its index.
 pub fn action_for_command(command: PaneCommand) -> Box<dyn Action> {
     use PaneCommand::*;
     use PaneDirection::*;
@@ -106,7 +141,9 @@ pub fn action_for_command(command: PaneCommand) -> Box<dyn Action> {
     }
 }
 
-/// Recover the portable command represented by a Mullion GPUI action.
+/// Recovers the portable command represented by a Mullion GPUI action.
+///
+/// Returns `None` for actions owned by hosts, GPUI, or other components.
 pub fn command_for_action(action: &dyn Action) -> Option<PaneCommand> {
     use PaneCommand::*;
     use PaneDirection::*;
@@ -183,7 +220,10 @@ pub fn command_for_action(action: &dyn Action) -> Option<PaneCommand> {
     None
 }
 
-/// Stable reference identifier, deliberately independent of GPUI action names.
+/// Returns the stable persisted reference for a command.
+///
+/// This deliberately delegates to [`PaneCommand::id`] rather than exposing
+/// GPUI action type names, which are an integration detail.
 pub fn action_reference_id(command: PaneCommand) -> String {
     command.id()
 }
@@ -191,8 +231,16 @@ pub fn action_reference_id(command: PaneCommand) -> String {
 /// Failure while compiling a portable keymap into GPUI bindings.
 #[derive(Debug)]
 pub enum KeymapCompileError {
-    InvalidContext(String),
-    InvalidKeystroke(gpui::InvalidKeystrokeError),
+    /// GPUI rejected the supplied context predicate.
+    InvalidContext(
+        /// GPUI's human-readable predicate parse error.
+        String,
+    ),
+    /// GPUI rejected a normalized key sequence from the portable keymap.
+    InvalidKeystroke(
+        /// The original GPUI key parser error.
+        gpui::InvalidKeystrokeError,
+    ),
 }
 
 impl fmt::Display for KeymapCompileError {
@@ -206,7 +254,17 @@ impl fmt::Display for KeymapCompileError {
 
 impl Error for KeymapCompileError {}
 
-/// Compile normalized direct or prefixed sequences with an explicit context.
+/// Compiles a portable keymap into GPUI bindings under an explicit context.
+///
+/// Each normalized sequence is paired with [`action_for_command`]. Unless the
+/// keymap explicitly captures editable targets, the compiled predicate also
+/// excludes `MullionEditable` so pane shortcuts do not consume text input.
+///
+/// # Errors
+///
+/// Returns [`KeymapCompileError::InvalidContext`] when `context` cannot be
+/// parsed as a GPUI predicate, or [`KeymapCompileError::InvalidKeystroke`] when
+/// any normalized sequence is not a valid GPUI key sequence.
 pub fn compile_keymap(
     keymap: &MullionKeymap,
     context: &str,

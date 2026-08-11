@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// The operation represented by a dock drag.
+///
+/// Serde uses its default externally tagged enum representation: the variant
+/// name (`Pane` or `NewActivity`) wraps the corresponding identifier.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DockPayload {
     /// Relocate an existing pane.
@@ -18,6 +21,7 @@ pub enum DockPayload {
 }
 
 impl DockPayload {
+    /// Returns the source pane for a pane relocation.
     pub fn pane(&self) -> Option<&PaneId> {
         match self {
             Self::Pane(pane) => Some(pane),
@@ -25,6 +29,7 @@ impl DockPayload {
         }
     }
 
+    /// Returns the requested activity for a new-pane drag.
     pub fn activity(&self) -> Option<&ActivityId> {
         match self {
             Self::Pane(_) => None,
@@ -40,47 +45,65 @@ impl DockPayload {
         self.pane() == Some(destination)
     }
 
+    /// Returns whether `destination` is not the source pane.
     pub fn can_drop_on(&self, destination: &PaneId) -> bool {
         !self.is_self_drop(destination)
     }
 }
 
 /// Typed state placed in a frontend's native drag system.
+///
+/// Its serialized form is an object containing a `payload` value.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DockDrag {
+    /// Portable operation carried by the frontend's drag object.
+    ///
+    /// Serde represents `DockDrag` as an object with this `payload` field.
     pub payload: DockPayload,
 }
 
 impl DockDrag {
+    /// Creates a drag that relocates `pane`.
     pub fn pane(pane: PaneId) -> Self {
         Self {
             payload: DockPayload::Pane(pane),
         }
     }
 
+    /// Creates a drag that requests a new pane for `activity`.
     pub fn new_activity(activity: ActivityId) -> Self {
         Self {
             payload: DockPayload::NewActivity(activity),
         }
     }
 
+    /// Returns whether dropping here would target the relocated source pane.
     pub fn is_self_drop(&self, destination: &PaneId) -> bool {
         self.payload.is_self_drop(destination)
     }
 
+    /// Returns whether the drag can target `destination` under self-drop rules.
     pub fn can_drop_on(&self, destination: &PaneId) -> bool {
         self.payload.can_drop_on(destination)
     }
 }
 
 /// The resolved pane and zone currently under a dock drag.
+///
+/// Serde stores this as an object with `destination` and `edge` fields.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DockHover {
+    /// Pane currently beneath the pointer.
     pub destination: PaneId,
+    /// Five-zone docking region within the destination.
     pub edge: DropEdge,
 }
 
 impl DockHover {
+    /// Resolves a hover from target-normalized coordinates.
+    ///
+    /// Coordinates use fractions where `(0, 0)` is the target's top-left and
+    /// `(1, 1)` its bottom-right. Returns `None` for non-finite coordinates.
     pub fn from_normalized(destination: PaneId, x: f64, y: f64) -> Option<Self> {
         Some(Self {
             destination,
@@ -88,6 +111,9 @@ impl DockHover {
         })
     }
 
+    /// Resolves a hover from a point and bounds in the same pixel coordinate space.
+    ///
+    /// Returns `None` for non-finite values or non-positive bounds extents.
     pub fn from_point(destination: PaneId, point: DockPoint, bounds: DockBounds) -> Option<Self> {
         Some(Self {
             destination,
@@ -95,34 +121,50 @@ impl DockHover {
         })
     }
 
+    /// Returns whether `drag` may be dropped on this hover's destination.
     pub fn accepts(&self, drag: &DockDrag) -> bool {
         drag.can_drop_on(&self.destination)
     }
 }
 
 /// A pointer position in an adapter-defined pixel coordinate space.
+///
+/// Serde stores the two floating-point components as `x` and `y`.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DockPoint {
+    /// Horizontal pixel coordinate in the adapter's coordinate space.
     pub x: f64,
+    /// Vertical pixel coordinate in the adapter's coordinate space.
     pub y: f64,
 }
 
 impl DockPoint {
+    /// Creates a point in adapter-defined pixel units.
     pub const fn new(x: f64, y: f64) -> Self {
         Self { x, y }
     }
 }
 
 /// Pixel bounds for a pane drop target.
+///
+/// Serde stores `left`, `top`, `width`, and `height` without validation.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DockBounds {
+    /// Horizontal coordinate of the target's left edge, in adapter pixels.
     pub left: f64,
+    /// Vertical coordinate of the target's top edge, in adapter pixels.
     pub top: f64,
+    /// Target width in adapter pixels; geometry operations require it to be positive.
     pub width: f64,
+    /// Target height in adapter pixels; geometry operations require it to be positive.
     pub height: f64,
 }
 
 impl DockBounds {
+    /// Creates bounds in adapter-defined pixel units.
+    ///
+    /// Construction does not validate values; geometry methods return `None`
+    /// when a component is non-finite or an extent is not positive.
     pub const fn new(left: f64, top: f64, width: f64, height: f64) -> Self {
         Self {
             left,
@@ -143,15 +185,27 @@ impl DockBounds {
 }
 
 /// Rectangle used to paint the active drop indicator.
+///
+/// Serde stores `left`, `top`, `width`, and `height`; their units depend on
+/// whether the rectangle is normalized or translated into target pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DockIndicator {
+    /// Horizontal coordinate of the indicator's left edge.
     pub left: f64,
+    /// Vertical coordinate of the indicator's top edge.
     pub top: f64,
+    /// Indicator width.
     pub width: f64,
+    /// Indicator height.
     pub height: f64,
 }
 
 impl DockIndicator {
+    /// Creates indicator geometry.
+    ///
+    /// Values are normalized fractions when returned by
+    /// [`DropEdge::normalized_indicator`] and adapter pixels when returned by
+    /// [`DropEdge::indicator_in`].
     pub const fn new(left: f64, top: f64, width: f64, height: f64) -> Self {
         Self {
             left,
@@ -251,10 +305,14 @@ impl<D: PaneData> Default for DockConfig<D> {
 }
 
 impl<D: PaneData> DockConfig<D> {
+    /// Creates a configuration with no new-pane factory.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Installs a host factory and returns the configuration.
+    ///
+    /// Returning `None` from the factory refuses the drop without mutation.
     pub fn with_new_pane_factory(
         mut self,
         factory: impl Fn(&ActivityId, &PaneId, DropEdge) -> Option<(PaneId, D)> + Send + Sync + 'static,
@@ -263,20 +321,27 @@ impl<D: PaneData> DockConfig<D> {
         self
     }
 
+    /// Returns the installed factory, if activity drops can create panes.
     pub fn new_pane_factory(&self) -> Option<&NewPaneFactory<D>> {
         self.new_pane_factory.as_ref()
     }
 
+    /// Replaces or removes the host factory.
     pub fn set_new_pane_factory(&mut self, factory: Option<NewPaneFactory<D>>) {
         self.new_pane_factory = factory;
     }
 
+    /// Returns whether a new-pane factory is installed.
     pub fn can_create_panes(&self) -> bool {
         self.new_pane_factory.is_some()
     }
 
     /// Ask the host to mint a pane, then pass it to
     /// [`MullionModel::drop_activity`].
+    ///
+    /// Returns `false` if no factory is installed, the factory refuses, or the
+    /// model rejects the generated pane; refusal leaves factory creation policy
+    /// and model validation as the only error channel.
     pub fn drop_activity(
         &self,
         model: &mut MullionModel<D>,

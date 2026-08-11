@@ -4,16 +4,26 @@ use crate::{PaneCommand, PaneDirection, PaneLayout, PaneRotation, SplitDirection
 use serde::{Deserialize, Serialize};
 
 /// A platform-neutral keyboard event snapshot.
+///
+/// Serde represents this as an object with `key`, `control`, `alt`, `shift`,
+/// and `meta` fields. Deserialization does not fill omitted modifiers; callers
+/// producing configuration must serialize all five fields.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyStroke {
+    /// Key name reported by the frontend, compared case-insensitively.
     pub key: String,
+    /// Whether the Control modifier was held.
     pub control: bool,
+    /// Whether the Alt/Option modifier was held.
     pub alt: bool,
+    /// Whether the Shift modifier was held.
     pub shift: bool,
+    /// Whether the platform modifier (Command on macOS) was held.
     pub meta: bool,
 }
 
 impl KeyStroke {
+    /// Creates a stroke with `key` and no modifiers.
     pub fn new(key: impl Into<String>) -> Self {
         Self {
             key: key.into(),
@@ -26,16 +36,25 @@ impl KeyStroke {
 }
 
 /// A key plus its exact modifier set.
+///
+/// The serialized object uses the same five fields as [`KeyStroke`]. Modifier
+/// booleans are requirements, not a bit mask, and omitted fields are errors.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyChord {
+    /// Key name to match, compared case-insensitively after normalization.
     pub key: String,
+    /// Whether an exact match requires Control.
     pub control: bool,
+    /// Whether an exact match requires Alt/Option.
     pub alt: bool,
+    /// Whether an exact match requires Shift.
     pub shift: bool,
+    /// Whether an exact match requires the platform modifier.
     pub meta: bool,
 }
 
 impl KeyChord {
+    /// Creates a chord for `key` with no required modifiers.
     pub fn new(key: impl Into<String>) -> Self {
         Self {
             key: key.into(),
@@ -46,26 +65,31 @@ impl KeyChord {
         }
     }
 
+    /// Adds Control to the required modifier set.
     pub fn control(mut self) -> Self {
         self.control = true;
         self
     }
 
+    /// Adds Alt/Option to the required modifier set.
     pub fn alt(mut self) -> Self {
         self.alt = true;
         self
     }
 
+    /// Adds Shift to the required modifier set.
     pub fn shift(mut self) -> Self {
         self.shift = true;
         self
     }
 
+    /// Adds the platform modifier to the required modifier set.
     pub fn meta(mut self) -> Self {
         self.meta = true;
         self
     }
 
+    /// Returns whether `stroke` has the normalized key and exact modifier set.
     pub fn matches(&self, stroke: &KeyStroke) -> bool {
         normalize_key(&self.key) == normalize_key(&stroke.key)
             && self.control == stroke.control
@@ -127,6 +151,10 @@ impl fmt::Display for KeyChord {
     }
 }
 
+/// Returns the canonical comparison spelling for a frontend key name.
+///
+/// Case is folded through Unicode lowercase conversion, and the legacy
+/// `" "` and `"Spacebar"` spellings become `"space"`.
 pub fn normalize_key(key: &str) -> String {
     match key {
         " " | "Spacebar" => "space".into(),
@@ -137,11 +165,18 @@ pub fn normalize_key(key: &str) -> String {
 /// One command sequence after a keymap's optional prefix.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MullionKeyBinding {
+    /// Ordered chords entered after the map's optional prefix.
+    ///
+    /// The vector is serialized as the `sequence` array. Public constructors
+    /// and [`MullionKeymap::bind_sequence`] are the supported way to avoid an
+    /// empty sequence, although deserialization itself does not validate it.
     pub sequence: Vec<KeyChord>,
+    /// Command dispatched after every chord in [`Self::sequence`] matches.
     pub command: PaneCommand,
 }
 
 impl MullionKeyBinding {
+    /// Creates a one-chord binding.
     pub fn new(chord: KeyChord, command: PaneCommand) -> Self {
         Self {
             sequence: vec![chord],
@@ -149,6 +184,10 @@ impl MullionKeyBinding {
         }
     }
 
+    /// Creates a binding from an already ordered post-prefix sequence.
+    ///
+    /// This constructor preserves an empty vector; adding bindings through
+    /// [`MullionKeymap::bind_sequence`] instead ignores empty sequences.
     pub fn from_sequence(sequence: Vec<KeyChord>, command: PaneCommand) -> Self {
         Self { sequence, command }
     }
@@ -159,6 +198,10 @@ impl MullionKeyBinding {
 /// Direct maps resolve bindings immediately. Prefixed maps may contain more
 /// than one chord after their prefix, which supports terminal-muxer-style and
 /// application-specific command modes without constraining Mullion's default.
+///
+/// Serde stores the private state as an object with `prefix`, `bindings`, and
+/// `ignore_editable_targets`. This stable configuration contract includes the
+/// editable-target policy; deserialization performs no binding validation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MullionKeymap {
     prefix: Option<KeyChord>,
@@ -167,6 +210,7 @@ pub struct MullionKeymap {
 }
 
 impl MullionKeymap {
+    /// Creates an empty prefixed map that ignores editable targets.
     pub fn new(prefix: KeyChord) -> Self {
         Self {
             prefix: Some(prefix),
@@ -332,10 +376,12 @@ impl MullionKeymap {
         map
     }
 
+    /// Returns the chord required before every binding, or `None` for a direct map.
     pub fn prefix(&self) -> Option<&KeyChord> {
         self.prefix.as_ref()
     }
 
+    /// Returns bindings in insertion order.
     pub fn bindings(&self) -> &[MullionKeyBinding] {
         &self.bindings
     }
@@ -360,11 +406,15 @@ impl MullionKeymap {
             .push(MullionKeyBinding::from_sequence(sequence, command));
     }
 
+    /// Adds or replaces a one-chord binding and returns the map.
     pub fn with_binding(mut self, chord: KeyChord, command: PaneCommand) -> Self {
         self.bind(chord, command);
         self
     }
 
+    /// Adds or replaces a post-prefix chord sequence and returns the map.
+    ///
+    /// An empty iterator leaves the map unchanged.
     pub fn with_sequence(
         mut self,
         sequence: impl IntoIterator<Item = KeyChord>,
@@ -419,6 +469,9 @@ impl MullionKeymap {
         !self.ignore_editable_targets
     }
 
+    /// Classifies a post-prefix stroke sequence against the configured bindings.
+    ///
+    /// Exact matches take precedence over a longer binding with the same prefix.
     pub fn match_sequence(&self, strokes: &[KeyStroke]) -> KeySequenceMatch {
         if let Some(binding) = self.bindings.iter().find(|binding| {
             binding.sequence.len() == strokes.len()
@@ -446,10 +499,14 @@ impl MullionKeymap {
     }
 }
 
+/// Result of matching a post-prefix stroke sequence against a keymap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeySequenceMatch {
+    /// The complete sequence resolves to this command.
     Command(PaneCommand),
+    /// The strokes are a proper prefix of at least one binding.
     Pending,
+    /// No binding starts with the strokes.
     NoMatch,
 }
 

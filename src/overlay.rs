@@ -18,10 +18,16 @@ use std::rc::Rc;
 pub struct OverlayId(String);
 
 impl OverlayId {
+    /// Creates an identity from an application-defined string.
+    ///
+    /// The value is preserved verbatim. In particular, this constructor does not reject an
+    /// empty string; call [`OverlayPolicy::validate`] (directly or through an
+    /// [`OverlayStack`]) before rendering.
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
 
+    /// Returns the application-defined identity as a string slice.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -51,14 +57,21 @@ impl fmt::Display for OverlayId {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum OverlayTier {
+    /// Modal content, painted below notifications and drag affordances.
     #[default]
     Modal,
+    /// Transient notification content, painted above modals and below drag affordances.
     Toast,
+    /// Drag-and-drop affordances, painted above every other tier.
     Drag,
 }
 
 impl OverlayTier {
-    /// A stable sort key. Hosts may map this to their own concrete z values.
+    /// Returns the stable, unitless primary paint-order key for this tier.
+    ///
+    /// The keys are `10` for [`Self::Modal`], `20` for [`Self::Toast`], and `30` for
+    /// [`Self::Drag`]. Hosts sort ascending, painting larger keys above smaller keys, and may map
+    /// these keys to their own concrete z values.
     pub const fn z_order(self) -> u8 {
         match self {
             Self::Modal => 10,
@@ -72,24 +85,33 @@ impl OverlayTier {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OverlayAlignment {
+    /// Aligns the content with the beginning of the axis.
     Start,
+    /// Centers the content on the axis.
     #[default]
     Center,
+    /// Aligns the content with the end of the axis.
     End,
+    /// Expands the content to the available extent on the axis.
     Stretch,
 }
 
 /// Viewport placement for overlay content.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OverlayPlacement {
+    /// Alignment along the viewport's horizontal axis.
     pub horizontal: OverlayAlignment,
+    /// Alignment along the viewport's vertical axis.
     pub vertical: OverlayAlignment,
 }
 
 impl OverlayPlacement {
+    /// Placement centered on both viewport axes.
     pub const CENTER: Self = Self::new(OverlayAlignment::Center, OverlayAlignment::Center);
+    /// Placement stretched across both viewport axes.
     pub const FILL: Self = Self::new(OverlayAlignment::Stretch, OverlayAlignment::Stretch);
 
+    /// Creates a placement from independent horizontal and vertical alignments.
     pub const fn new(horizontal: OverlayAlignment, vertical: OverlayAlignment) -> Self {
         Self {
             horizontal,
@@ -102,10 +124,18 @@ impl OverlayPlacement {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "value")]
 pub enum OverlayLength {
+    /// Uses the content's intrinsic extent on the axis.
     #[default]
     Content,
+    /// Uses all space available from the viewport on the axis.
     Fill,
+    /// Requests a logical-pixel extent.
+    ///
+    /// Validation accepts only finite, non-negative values.
     Pixels(f32),
+    /// Requests a fraction of the available viewport extent.
+    ///
+    /// Validation accepts only finite values in the inclusive range `0.0..=1.0`.
     Fraction(f32),
 }
 
@@ -126,14 +156,22 @@ impl OverlayLength {
 /// Requested overlay content size.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OverlaySize {
+    /// Requested horizontal extent.
     pub width: OverlayLength,
+    /// Requested vertical extent.
     pub height: OverlayLength,
 }
 
 impl OverlaySize {
+    /// A size using the content's intrinsic extent on both axes.
     pub const CONTENT: Self = Self::new(OverlayLength::Content, OverlayLength::Content);
+    /// A size using all available viewport space on both axes.
     pub const FILL: Self = Self::new(OverlayLength::Fill, OverlayLength::Fill);
 
+    /// Creates a size from independent width and height requests.
+    ///
+    /// Values are not checked here; [`OverlayPolicy::validate`] enforces the finite and range
+    /// requirements of [`OverlayLength::Pixels`] and [`OverlayLength::Fraction`].
     pub const fn new(width: OverlayLength, height: OverlayLength) -> Self {
         Self { width, height }
     }
@@ -147,6 +185,7 @@ impl OverlaySize {
 /// Serializable backdrop color in straight-alpha sRGB.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OverlayBackdrop {
+    /// Red, green, blue, and alpha channels, each in the inclusive range `0.0..=1.0`.
     pub rgba: [f32; 4],
 }
 
@@ -159,6 +198,10 @@ impl Default for OverlayBackdrop {
 }
 
 impl OverlayBackdrop {
+    /// Creates a backdrop from straight-alpha sRGB channels.
+    ///
+    /// Channels are not checked here; [`OverlayPolicy::validate`] rejects non-finite values and
+    /// values outside the inclusive range `0.0..=1.0`.
     pub const fn new(rgba: [f32; 4]) -> Self {
         Self { rgba }
     }
@@ -179,18 +222,40 @@ impl OverlayBackdrop {
 /// Cloneable and serializable overlay behavior, separate from GPUI content.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OverlayPolicy {
+    /// Stable identity used for lookup, mutation, and dismissal callbacks.
     pub id: OverlayId,
+    /// Stacking band used as the primary paint-order key.
     pub tier: OverlayTier,
+    /// Alignment of the overlay content within the viewport.
     pub placement: OverlayPlacement,
+    /// Requested content dimensions.
     pub size: OverlaySize,
+    /// Optional straight-alpha sRGB backdrop painted behind the content.
     pub backdrop: Option<OverlayBackdrop>,
+    /// Whether a click on the backdrop outside the content requests dismissal through the host
+    /// callback.
+    ///
+    /// This requires [`Self::backdrop`] to be present and [`Self::click_through`] to be `false`.
+    /// A backdrop click is only a request: the controlled source must remove the overlay.
     pub dismiss_on_backdrop: bool,
+    /// Whether the host wrapper permits otherwise-unhandled pointer input to reach underlying UI.
+    ///
+    /// Interactive elements supplied by the renderer may still handle their own input.
+    /// Click-through is incompatible with backdrop dismissal and with [`Self::a11y_modal`].
     pub click_through: bool,
+    /// Whether assistive technology should treat the overlay as modal.
+    ///
+    /// An accessible modal cannot be click-through.
     pub a11y_modal: bool,
+    /// Optional non-empty accessible label for the overlay.
     pub a11y_label: Option<String>,
 }
 
 impl OverlayPolicy {
+    /// Creates a policy with centered, intrinsic-size modal defaults and no backdrop.
+    ///
+    /// Backdrop dismissal, click-through, and accessible-modal behavior are disabled. The
+    /// identity is preserved without validation; call [`Self::validate`] before rendering.
     pub fn new(id: impl Into<OverlayId>) -> Self {
         Self {
             id: id.into(),
@@ -205,46 +270,72 @@ impl OverlayPolicy {
         }
     }
 
+    /// Sets the stacking tier used to order the overlay for painting.
     pub fn with_tier(mut self, tier: OverlayTier) -> Self {
         self.tier = tier;
         self
     }
 
+    /// Sets the overlay's alignment within the viewport.
     pub fn with_placement(mut self, placement: OverlayPlacement) -> Self {
         self.placement = placement;
         self
     }
 
+    /// Sets the requested content size.
+    ///
+    /// Dimension ranges are checked by [`Self::validate`], not by this builder.
     pub fn with_size(mut self, size: OverlaySize) -> Self {
         self.size = size;
         self
     }
 
+    /// Sets the backdrop painted behind the overlay content.
+    ///
+    /// Channel ranges are checked by [`Self::validate`], not by this builder.
     pub fn with_backdrop(mut self, backdrop: OverlayBackdrop) -> Self {
         self.backdrop = Some(backdrop);
         self
     }
 
+    /// Enables or disables dismissal requests when the backdrop outside the content is clicked.
+    ///
+    /// Enabling this requires a backdrop and forbids click-through. The host invokes its
+    /// dismissal callback; removal remains the controlled source's responsibility.
     pub fn dismiss_on_backdrop(mut self, dismiss: bool) -> Self {
         self.dismiss_on_backdrop = dismiss;
         self
     }
 
+    /// Enables or disables passing otherwise-unhandled pointer input through the host wrapper.
+    ///
+    /// Renderer-provided interactive elements may still handle input. Click-through cannot be
+    /// combined with backdrop dismissal or accessible-modal behavior.
     pub fn click_through(mut self, click_through: bool) -> Self {
         self.click_through = click_through;
         self
     }
 
+    /// Sets whether assistive technology should treat the overlay as modal.
+    ///
+    /// Accessible-modal behavior cannot be combined with click-through.
     pub fn a11y_modal(mut self, modal: bool) -> Self {
         self.a11y_modal = modal;
         self
     }
 
+    /// Sets the overlay's accessible label.
+    ///
+    /// Empty labels are rejected by [`Self::validate`].
     pub fn with_a11y_label(mut self, label: impl Into<String>) -> Self {
         self.a11y_label = Some(label.into());
         self
     }
 
+    /// Validates identity, dimensions, backdrop channels, and interaction coherence.
+    ///
+    /// Validation rejects empty identities and labels; invalid pixel, fractional, or color
+    /// values; dismissal without a backdrop; and incompatible click-through combinations.
     pub fn validate(&self) -> Result<(), OverlayError> {
         if self.id.as_str().is_empty() {
             return Err(OverlayError::EmptyId);
@@ -280,6 +371,10 @@ pub struct MullionOverlay {
 }
 
 impl MullionOverlay {
+    /// Creates an overlay with [`OverlayPolicy::new`] defaults and a UI-local renderer.
+    ///
+    /// The resulting policy is not validated until explicitly validated or inserted into a
+    /// validated stack.
     pub fn new(
         id: impl Into<OverlayId>,
         render: impl Fn(&mut Window, &mut App) -> AnyElement + 'static,
@@ -287,6 +382,10 @@ impl MullionOverlay {
         Self::from_policy(OverlayPolicy::new(id), render)
     }
 
+    /// Pairs an existing portable policy with a UI-local renderer.
+    ///
+    /// This constructor does not validate `policy`; controlled hosts validate their snapshots
+    /// before returning them for painting.
     pub fn from_policy(
         policy: OverlayPolicy,
         render: impl Fn(&mut Window, &mut App) -> AnyElement + 'static,
@@ -297,53 +396,73 @@ impl MullionOverlay {
         }
     }
 
+    /// Returns the portable policy associated with this renderer.
     pub fn policy(&self) -> &OverlayPolicy {
         &self.policy
     }
 
+    /// Returns the UI-local rendering callback.
     pub fn renderer(&self) -> &OverlayRenderer {
         &self.renderer
     }
 
+    /// Invokes the rendering callback for the given GPUI window and application.
     pub fn render(&self, window: &mut Window, cx: &mut App) -> AnyElement {
         (self.renderer)(window, cx)
     }
 
+    /// Sets the policy's stacking tier used as the primary paint-order key.
     pub fn with_tier(mut self, tier: OverlayTier) -> Self {
         self.policy.tier = tier;
         self
     }
 
+    /// Sets the policy's viewport alignment.
     pub fn with_placement(mut self, placement: OverlayPlacement) -> Self {
         self.policy.placement = placement;
         self
     }
 
+    /// Sets the requested content size; validation is deferred.
     pub fn with_size(mut self, size: OverlaySize) -> Self {
         self.policy.size = size;
         self
     }
 
+    /// Sets the straight-alpha sRGB backdrop; channel validation is deferred.
     pub fn with_backdrop(mut self, backdrop: OverlayBackdrop) -> Self {
         self.policy.backdrop = Some(backdrop);
         self
     }
 
+    /// Enables or disables dismissal requests on backdrop clicks outside the content.
+    ///
+    /// Enabling this requires a backdrop and disables no fields automatically; validation rejects
+    /// a conflicting click-through policy. A dismissal callback only requests that controlled
+    /// application state remove the overlay.
     pub fn dismiss_on_backdrop(mut self, dismiss: bool) -> Self {
         self.policy.dismiss_on_backdrop = dismiss;
         self
     }
 
+    /// Enables or disables passing otherwise-unhandled pointer input through the host wrapper.
+    ///
+    /// Renderer-provided interactive elements may still handle input. Validation rejects
+    /// click-through combined with backdrop dismissal or accessible modality.
     pub fn click_through(mut self, click_through: bool) -> Self {
         self.policy.click_through = click_through;
         self
     }
 
+    /// Sets whether assistive technology should treat the overlay as modal.
+    ///
+    /// Validation rejects accessible modality combined with click-through.
     pub fn a11y_modal(mut self, modal: bool) -> Self {
         self.policy.a11y_modal = modal;
         self
     }
 
+    /// Sets the accessible label; empty labels are rejected during validation.
     pub fn with_a11y_label(mut self, label: impl Into<String>) -> Self {
         self.policy.a11y_label = Some(label.into());
         self
@@ -363,10 +482,18 @@ impl fmt::Debug for MullionOverlay {
 /// Ordered changes accepted by [`OverlayStack::apply_atomic`].
 #[derive(Clone, Debug)]
 pub enum OverlayMutation {
+    /// Appends a new, uniquely identified overlay to insertion order.
     Push(MullionOverlay),
+    /// Removes the overlay with the given identity, or fails if it is absent.
     Remove(OverlayId),
+    /// Replaces the matching overlay in place, preserving its insertion-order position.
     Replace(MullionOverlay),
+    /// Moves the matching overlay to the end of insertion order.
+    ///
+    /// This brings it to the front only among overlays in the same tier; tier remains the primary
+    /// paint-order key.
     MoveToFront(OverlayId),
+    /// Removes every overlay.
     Clear,
 }
 
@@ -377,10 +504,14 @@ pub struct OverlayStack {
 }
 
 impl OverlayStack {
+    /// Creates an empty overlay stack.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Builds a stack in iterator order and validates all policies and identity uniqueness.
+    ///
+    /// Returns the first policy error in insertion order, or a duplicate-identity error.
     pub fn from_overlays(
         overlays: impl IntoIterator<Item = MullionOverlay>,
     ) -> Result<Self, OverlayError> {
@@ -400,24 +531,31 @@ impl OverlayStack {
         }
     }
 
+    /// Returns the number of overlays in the stack.
     pub fn len(&self) -> usize {
         self.overlays.len()
     }
 
+    /// Returns `true` when the stack contains no overlays.
     pub fn is_empty(&self) -> bool {
         self.overlays.is_empty()
     }
 
+    /// Returns the overlay with `id`, if present.
     pub fn get(&self, id: &OverlayId) -> Option<&MullionOverlay> {
         self.overlays
             .iter()
             .find(|overlay| &overlay.policy.id == id)
     }
 
+    /// Returns overlays in insertion order, before tier-based paint sorting.
     pub fn insertion_order(&self) -> &[MullionOverlay] {
         &self.overlays
     }
 
+    /// Validates every policy and requires identities to be unique.
+    ///
+    /// Policies are checked in insertion order; the first error is returned.
     pub fn validate(&self) -> Result<(), OverlayError> {
         let mut ids = HashSet::with_capacity(self.overlays.len());
         for overlay in &self.overlays {
@@ -429,7 +567,10 @@ impl OverlayStack {
         Ok(())
     }
 
-    /// Clones overlays in paint order: tier first, insertion order within a tier.
+    /// Clones overlays in paint order: ascending tier z-order first, then insertion order.
+    ///
+    /// Sorting is stable, so overlays in the same [`OverlayTier`] retain insertion order. Later
+    /// items in the returned vector are intended to paint above earlier items.
     pub fn sorted_render_snapshot(&self) -> Vec<MullionOverlay> {
         let mut snapshot = self.overlays.clone();
         snapshot.sort_by_key(|overlay| overlay.policy.tier.z_order());
@@ -437,6 +578,9 @@ impl OverlayStack {
     }
 
     /// Applies all changes or none. Mutations are evaluated in the supplied order.
+    ///
+    /// Each mutation observes preceding mutations. If any mutation fails, or final validation
+    /// fails, the original stack and its insertion order remain unchanged.
     pub fn apply_atomic(
         &mut self,
         mutations: impl IntoIterator<Item = OverlayMutation>,
@@ -450,10 +594,16 @@ impl OverlayStack {
         Ok(())
     }
 
+    /// Atomically appends a validated overlay with a unique identity.
+    ///
+    /// On error the stack is unchanged.
     pub fn push(&mut self, overlay: MullionOverlay) -> Result<(), OverlayError> {
         self.apply_atomic([OverlayMutation::Push(overlay)])
     }
 
+    /// Atomically removes the overlay with `id` while preserving all other relative order.
+    ///
+    /// Returns [`OverlayError::UnknownId`] and leaves the stack unchanged if `id` is absent.
     pub fn remove(&mut self, id: impl Into<OverlayId>) -> Result<(), OverlayError> {
         self.apply_atomic([OverlayMutation::Remove(id.into())])
     }
@@ -510,10 +660,15 @@ impl OverlayStack {
 pub struct ControlledOverlaySource(Rc<dyn Fn() -> OverlayStack>);
 
 impl ControlledOverlaySource {
+    /// Creates a pull-based source from a UI-thread callback.
+    ///
+    /// The callback is invoked for each requested snapshot; returned stacks are not validated by
+    /// this type itself.
     pub fn new(source: impl Fn() -> OverlayStack + 'static) -> Self {
         Self(Rc::new(source))
     }
 
+    /// Invokes the source and returns its current insertion-ordered stack.
     pub fn snapshot(&self) -> OverlayStack {
         (self.0)()
     }
@@ -536,6 +691,7 @@ pub struct OverlayHostConfig {
 }
 
 impl OverlayHostConfig {
+    /// Creates host inputs from a controlled source with no dismissal handler.
     pub fn new(source: ControlledOverlaySource) -> Self {
         Self {
             source,
@@ -543,10 +699,16 @@ impl OverlayHostConfig {
         }
     }
 
+    /// Creates host inputs directly from a pull-based stack callback.
     pub fn controlled(source: impl Fn() -> OverlayStack + 'static) -> Self {
         Self::new(ControlledOverlaySource::new(source))
     }
 
+    /// Installs the callback invoked after a dismissible backdrop is clicked.
+    ///
+    /// Invocation requests a state change only: because the source is controlled, the handler is
+    /// responsible for arranging removal of the identified overlay. Click-through overlays cannot
+    /// be backdrop-dismissible and therefore never produce this backdrop-dismiss interaction.
     pub fn with_dismiss_handler(
         mut self,
         handler: impl Fn(&OverlayId, &mut Window, &mut App) + 'static,
@@ -555,14 +717,20 @@ impl OverlayHostConfig {
         self
     }
 
+    /// Returns the pull-based controlled source.
     pub fn source(&self) -> &ControlledOverlaySource {
         &self.source
     }
 
+    /// Returns the optional backdrop-dismiss request callback.
     pub fn on_dismiss(&self) -> Option<&OverlayDismissHandler> {
         self.on_dismiss.as_ref()
     }
 
+    /// Pulls, validates, and sorts the current stack into paint order.
+    ///
+    /// The primary key is ascending tier z-order and the stable secondary key is insertion order.
+    /// No overlays are returned if any policy or identity fails validation.
     pub fn sorted_render_snapshot(&self) -> Result<Vec<MullionOverlay>, OverlayError> {
         let snapshot = self.source.snapshot();
         snapshot.validate()?;
@@ -580,16 +748,31 @@ impl fmt::Debug for OverlayHostConfig {
     }
 }
 
+/// Failure to validate or mutate an overlay policy or stack.
 #[derive(Clone, Debug, PartialEq)]
 pub enum OverlayError {
+    /// An overlay identity is empty.
     EmptyId,
+    /// More than one overlay has the contained identity.
     DuplicateId(OverlayId),
+    /// A mutation refers to an identity not present in the stack.
     UnknownId(OverlayId),
-    InvalidDimension { field: &'static str, value: f32 },
+    /// A requested dimension is non-finite or outside the range allowed for its kind.
+    InvalidDimension {
+        /// The invalid policy field, currently `"width"` or `"height"`.
+        field: &'static str,
+        /// The rejected pixel or fractional value.
+        value: f32,
+    },
+    /// A backdrop contains a non-finite channel or a channel outside `0.0..=1.0`.
     InvalidBackdrop,
+    /// The identified overlay requests backdrop dismissal without having a backdrop.
     DismissWithoutBackdrop(OverlayId),
+    /// The identified overlay combines click-through with backdrop dismissal.
     ClickThroughDismiss(OverlayId),
+    /// The identified overlay combines click-through with accessible-modal behavior.
     ClickThroughModal(OverlayId),
+    /// The identified overlay has an empty accessible label.
     EmptyA11yLabel(OverlayId),
 }
 

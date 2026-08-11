@@ -1,3 +1,9 @@
+//! Typed live settings and serializable focus presentation preferences.
+//!
+//! [`MullionSettings`] can either be controlled by a host application's source
+//! of truth or backed by local shared state. [`MullionConfig`] combines the
+//! behavior setting with visual presentation values suitable for persistence.
+
 use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Deserializer, Serialize};
@@ -16,6 +22,7 @@ pub struct MullionSettingOption<T: 'static> {
 }
 
 impl<T: 'static> MullionSettingOption<T> {
+    /// Creates an option with its typed value and static user-facing metadata.
     pub const fn new(value: T, label: &'static str, description: &'static str) -> Self {
         Self {
             value,
@@ -24,14 +31,17 @@ impl<T: 'static> MullionSettingOption<T> {
         }
     }
 
+    /// Returns the typed value selected by this option.
     pub const fn value(&self) -> &T {
         &self.value
     }
 
+    /// Returns the short user-facing name shown for this option.
     pub const fn label(&self) -> &'static str {
         self.label
     }
 
+    /// Returns the user-facing explanation of this option's behavior.
     pub const fn description(&self) -> &'static str {
         self.description
     }
@@ -83,18 +93,22 @@ impl<T: Clone + Send + Sync + 'static> MullionSetting<T> {
         }
     }
 
+    /// Returns the stable identifier used to register or persist the setting.
     pub const fn id(&self) -> &'static str {
         self.id
     }
 
+    /// Returns the user-facing name of the setting.
     pub const fn label(&self) -> &'static str {
         self.label
     }
 
+    /// Returns the user-facing explanation of what the setting controls.
     pub const fn description(&self) -> &'static str {
         self.description
     }
 
+    /// Returns every value offered by this setting, in display order.
     pub const fn options(&self) -> &'static [MullionSettingOption<T>] {
         self.options
     }
@@ -127,6 +141,7 @@ const FOCUS_BEHAVIOR_OPTIONS: [MullionSettingOption<PaneFocusBehavior>; 2] = [
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MullionSettingsConfig {
+    /// Controls whether clicking or pointer hover transfers focus between panes.
     pub focus_behavior: PaneFocusBehavior,
 }
 
@@ -140,6 +155,11 @@ pub struct MullionSettings {
 }
 
 impl MullionSettings {
+    /// Creates settings controlled by a host-owned source of truth.
+    ///
+    /// Every read invokes `get_focus_behavior`, and every write invokes
+    /// `set_focus_behavior`. Calling a setter does not itself retain the value;
+    /// the getter must subsequently expose any update accepted by the host.
     pub fn controlled(
         get_focus_behavior: impl Fn() -> PaneFocusBehavior + Send + Sync + 'static,
         set_focus_behavior: impl Fn(PaneFocusBehavior) + Send + Sync + 'static,
@@ -156,6 +176,10 @@ impl MullionSettings {
         }
     }
 
+    /// Creates a self-contained setting initialized to `focus_behavior`.
+    ///
+    /// Clones share the same thread-safe in-memory value. This is convenient
+    /// when no application-level settings store controls the value.
     pub fn local(focus_behavior: PaneFocusBehavior) -> Self {
         let value = Arc::new(RwLock::new(focus_behavior));
         let read_value = value.clone();
@@ -167,18 +191,27 @@ impl MullionSettings {
         )
     }
 
+    /// Creates locally backed live settings initialized from persisted `config`.
     pub fn from_config(config: MullionSettingsConfig) -> Self {
         Self::local(config.focus_behavior)
     }
 
+    /// Returns the live descriptor for the pane focus behavior setting.
+    ///
+    /// The returned clone remains connected to the same getter and setter.
     pub fn focus_behavior_setting(&self) -> MullionSetting<PaneFocusBehavior> {
         self.focus_behavior.clone()
     }
 
+    /// Reads the current pane focus behavior from the backing source of truth.
     pub fn focus_behavior(&self) -> PaneFocusBehavior {
         self.focus_behavior.get()
     }
 
+    /// Requests that the backing source set the pane focus behavior.
+    ///
+    /// For controlled settings, whether the request is retained is determined
+    /// by the host-provided callback.
     pub fn set_focus_behavior(&self, focus_behavior: PaneFocusBehavior) {
         self.focus_behavior.set(focus_behavior);
     }
@@ -210,6 +243,7 @@ pub struct FocusPresentation {
 }
 
 impl FocusPresentation {
+    /// Creates the compatibility-safe presentation with no indicator or dimming.
     pub const fn new() -> Self {
         Self {
             show_focus_indicator: false,
@@ -217,10 +251,15 @@ impl FocusPresentation {
         }
     }
 
+    /// Returns whether the focused pane should display an internal-edge indicator.
     pub const fn show_focus_indicator(&self) -> bool {
         self.show_focus_indicator
     }
 
+    /// Returns the opacity applied to panes that do not hold focus.
+    ///
+    /// The value is a unitless alpha fraction in `0.0..=1.0`, where `0.0` is
+    /// fully transparent and `1.0` is fully opaque (no dimming).
     pub const fn unfocused_pane_opacity(&self) -> f64 {
         self.unfocused_pane_opacity
     }
@@ -274,13 +313,17 @@ impl<'de> Deserialize<'de> for FocusPresentation {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MullionConfig {
+    /// Persistable interaction behavior controlled through [`MullionSettings`].
     pub settings: MullionSettingsConfig,
+    /// Visual treatment of focused and unfocused panes.
     pub presentation: FocusPresentation,
 }
 
 /// Descriptive alias for hosts which name persisted values "configuration".
+#[doc(hidden)]
 pub type MullionConfiguration = MullionConfig;
 /// Compatibility-friendly alias for the presentation portion of the config.
+#[doc(hidden)]
 pub type MullionPresentation = FocusPresentation;
 
 fn normalize_pane_opacity(opacity: f64) -> f64 {

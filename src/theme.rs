@@ -1,21 +1,35 @@
 use gpui::{rgb, Hsla, WindowAppearance};
 use serde::{Deserialize, Serialize};
 
+/// Colors used to render Mullion chrome and pane state.
+///
+/// All values are GPUI HSLA colors, including their alpha component. The
+/// built-in palettes are fully opaque except where a translucent overlay is
+/// explicitly useful, such as [`Self::drop_target`].
 #[derive(Clone, Copy, Debug)]
 pub struct MullionTheme {
+    /// Background behind the workspace and its panes.
     pub background: Hsla,
+    /// Background of pane surfaces and other raised content.
     pub surface: Hsla,
+    /// Color of pane borders and separators.
     pub border: Hsla,
+    /// Background used for emphasized controls and chrome.
     pub accent: Hsla,
+    /// Primary foreground color for labels and content.
     pub text: Hsla,
+    /// Secondary foreground color for de-emphasized labels.
     pub muted_text: Hsla,
+    /// Background used to distinguish a focused pane.
     pub focused: Hsla,
     /// Dedicated focus fallback: 65% #00a4ef mixed with #1a1a1a in sRGB.
     pub focus_indicator: Hsla,
+    /// Overlay used to preview a drag-and-drop destination.
     pub drop_target: Hsla,
 }
 
 impl MullionTheme {
+    /// Return the built-in dark palette.
     pub fn dark() -> Self {
         Self {
             background: rgb(0x0e0e0e).into(),
@@ -35,6 +49,7 @@ impl MullionTheme {
         }
     }
 
+    /// Return the built-in light palette.
     pub fn light() -> Self {
         Self {
             background: rgb(0xf4f4f4).into(),
@@ -60,13 +75,20 @@ impl Default for MullionTheme {
 /// appearance, including vibrant light/dark variants.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MullionThemeMode {
+    /// Always use the built-in light palette.
     Light,
+    /// Always use the built-in dark palette.
     Dark,
+    /// Follow the current GPUI window appearance.
     #[default]
     System,
 }
 
 impl MullionThemeMode {
+    /// Resolve this policy to a concrete palette for `appearance`.
+    ///
+    /// Explicit light and dark policies ignore `appearance`; [`Self::System`]
+    /// maps both regular and vibrant appearances to their matching palette.
     pub fn resolve(self, appearance: WindowAppearance) -> MullionTheme {
         match self {
             Self::Light => MullionTheme::light(),

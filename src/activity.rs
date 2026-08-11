@@ -25,13 +25,18 @@ pub type ActivityDispose = Rc<dyn Fn(&mut App)>;
 /// when Mullion explicitly evicts the instance. Cache eviction includes GPUI
 /// releasing the Mullion root entity.
 pub struct ActivityInstance<D: PaneData> {
+    /// The persistent main content view for this activity instance.
     pub body: AnyView,
+    /// An optional persistent view rendered as activity-specific header chrome.
     pub header: Option<AnyView>,
+    /// An optional hook that receives new pane data after it changes.
     pub update: Option<ActivityUpdate<D>>,
+    /// An optional hook invoked once when Mullion explicitly evicts the instance.
     pub dispose: Option<ActivityDispose>,
 }
 
 impl<D: PaneData> ActivityInstance<D> {
+    /// Creates an instance whose durable body is `body` and whose optional hooks are unset.
     pub fn new(body: impl Into<AnyView>) -> Self {
         Self {
             body: body.into(),
@@ -41,16 +46,25 @@ impl<D: PaneData> ActivityInstance<D> {
         }
     }
 
+    /// Adds a durable header view that shares this instance's cache lifetime.
     pub fn with_header(mut self, header: impl Into<AnyView>) -> Self {
         self.header = Some(header.into());
         self
     }
 
+    /// Sets the callback run when this instance's pane data changes by [`PartialEq`].
+    ///
+    /// The callback runs with the new data and may update the cached GPUI entities. It
+    /// is not called for the initial value or for equal values.
     pub fn with_update(mut self, update: impl Fn(&D, &mut Window, &mut App) + 'static) -> Self {
         self.update = Some(Rc::new(update));
         self
     }
 
+    /// Sets the callback run immediately before Mullion discards this cached instance.
+    ///
+    /// Use this to detach application-level resources that are not owned by the GPUI
+    /// views themselves. Dropping an instance outside Mullion cannot trigger this hook.
     pub fn with_dispose(mut self, dispose: impl Fn(&mut App) + 'static) -> Self {
         self.dispose = Some(Rc::new(dispose));
         self
@@ -71,10 +85,15 @@ impl<D: PaneData> Default for ActivityFactoryRegistry<D> {
 }
 
 impl<D: PaneData> ActivityFactoryRegistry<D> {
+    /// Creates an empty registry; activities continue to use their legacy renderers.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Registers the lazy factory for `id`, returning the factory it replaces.
+    ///
+    /// Registration affects only future cache misses. An already-created instance keeps
+    /// its entity identity and lifecycle hooks until normal eviction.
     pub fn register(
         &mut self,
         id: ActivityId,
@@ -83,6 +102,9 @@ impl<D: PaneData> ActivityFactoryRegistry<D> {
         self.factories.insert(id, Rc::new(factory))
     }
 
+    /// Registers a factory and returns the registry for builder-style construction.
+    ///
+    /// As with [`Self::register`], replacing a factory does not evict existing instances.
     pub fn with_factory(
         mut self,
         id: ActivityId,
@@ -92,10 +114,12 @@ impl<D: PaneData> ActivityFactoryRegistry<D> {
         self
     }
 
+    /// Returns the factory used for future instances of `id`, if one is registered.
     pub fn get(&self, id: &ActivityId) -> Option<&ActivityFactory<D>> {
         self.factories.get(id)
     }
 
+    /// Reports whether `id` has a stateful factory registered.
     pub fn contains(&self, id: &ActivityId) -> bool {
         self.factories.contains_key(id)
     }
@@ -110,12 +134,16 @@ impl<D: PaneData> ActivityFactoryRegistry<D> {
 /// Stable namespace for a cached per-pane activity.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ActivityCacheKey {
+    /// The workspace namespace, or `None` for panes outside a workspace.
     pub workspace: Option<WorkspaceId>,
+    /// The pane that owns the cached instance.
     pub pane: PaneId,
+    /// The activity definition instantiated in the pane.
     pub activity: ActivityId,
 }
 
 impl ActivityCacheKey {
+    /// Creates a key from all identity scopes that determine an instance's lifetime.
     pub fn new(workspace: Option<WorkspaceId>, pane: PaneId, activity: ActivityId) -> Self {
         Self {
             workspace,
@@ -203,9 +231,13 @@ impl<D: PaneData> ActivityCache<D> {
 /// A native activity definition. Rendering stays adapter-specific; IDs and pane state remain portable.
 #[derive(Clone)]
 pub struct Activity<D: PaneData> {
+    /// Stable identity used by selection, factories, chrome, and cache keys.
     pub id: ActivityId,
+    /// Human-readable label presented by host navigation.
     pub name: SharedString,
+    /// Predicate deciding whether this activity is visible for a pane's current data.
     pub filter: fn(&D) -> bool,
+    /// Stateless compatibility renderer used when no stateful factory is registered.
     pub render: ActivityRenderer<D>,
 }
 
@@ -234,11 +266,19 @@ impl<D: PaneData> Activity<D> {
     }
 }
 
+/// A named, recursively nestable group of activities.
+///
+/// Category identity must be unique across an [`ActivityCatalog`](crate::ActivityCatalog),
+/// including both primary and trailing trees. Empty categories are pruned from projections.
 #[derive(Clone)]
 pub struct ActivityCategory<D: PaneData> {
+    /// Stable identity used by catalog validation, chrome, and active ancestry.
     pub id: CategoryId,
+    /// Human-readable label presented by host navigation.
     pub name: SharedString,
+    /// Legacy category color, used unless catalog chrome overrides it.
     pub color: gpui::Hsla,
+    /// Ordered activities and nested categories in this group.
     pub children: Vec<ActivityNode<D>>,
 }
 
@@ -259,9 +299,12 @@ impl<D: PaneData> ActivityCategory<D> {
     }
 }
 
+/// A node in the recursive activity information architecture.
 #[derive(Clone)]
 pub enum ActivityNode<D: PaneData> {
+    /// A selectable leaf activity.
     Activity(Activity<D>),
+    /// A nested category whose children are projected recursively.
     Category(ActivityCategory<D>),
 }
 

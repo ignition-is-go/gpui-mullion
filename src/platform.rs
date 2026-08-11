@@ -9,6 +9,7 @@ use std::sync::Arc;
 /// this value from the service actually installed by the host.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WindowCapabilities {
+    /// Whether panes can be moved into host-managed detached windows.
     pub detached_windows: bool,
 }
 impl WindowCapabilities {
@@ -19,6 +20,7 @@ impl WindowCapabilities {
         }
     }
 
+    /// Derive capabilities from the detached-window service installed by the host.
     pub fn for_service(service: &dyn DetachedWindowService) -> Self {
         Self {
             detached_windows: service.is_available(),
@@ -26,9 +28,12 @@ impl WindowCapabilities {
     }
 }
 
+/// Failure to move a pane into a detached window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DetachError {
+    /// The application host has no detached-window integration.
     Unavailable,
+    /// The host integration declined the request with an explanatory reason.
     Refused(String),
 }
 impl std::fmt::Display for DetachError {
@@ -45,10 +50,26 @@ impl std::error::Error for DetachError {}
 /// implementation can actually call `open_window`; the shared Mullion view
 /// remains independent of window policy.
 pub trait DetachedWindowService: Send + Sync {
+    /// Report whether this service can currently handle detach requests.
     fn is_available(&self) -> bool;
+
+    /// Ask the host to move `pane` into a detached window.
+    ///
+    /// The service receives the active GPUI application context so it can open
+    /// a window. Returning an error must leave handling of the failure to the
+    /// caller; implementations should not report success until the host has
+    /// accepted the request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DetachError::Unavailable`] when integration is unavailable,
+    /// or [`DetachError::Refused`] when the host rejects this particular pane.
     fn detach(&self, pane: &PaneId, cx: &mut App) -> Result<(), DetachError>;
 }
 
+/// Portable service implementation that rejects every detach request.
+///
+/// Use this when the host has not installed detached-window integration.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UnavailableDetachedWindows;
 impl DetachedWindowService for UnavailableDetachedWindows {
@@ -74,6 +95,10 @@ type DetachCallback = dyn Fn(&PaneId, &mut App) -> Result<(), DetachError> + Sen
 
 #[cfg(not(target_family = "wasm"))]
 impl NativeDetachedWindowService {
+    /// Create a service backed by the host's window-opening callback.
+    ///
+    /// Availability is reported as `true`; any request-specific rejection must
+    /// be returned by `open` as a [`DetachError`].
     pub fn new(
         open: impl Fn(&PaneId, &mut App) -> Result<(), DetachError> + Send + Sync + 'static,
     ) -> Self {

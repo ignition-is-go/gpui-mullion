@@ -7,21 +7,31 @@ use std::sync::Arc;
 /// Main/cross axis used by activity-bar layout code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ActivityBarAxis {
+    /// The main axis runs left-to-right and the cross axis runs top-to-bottom.
     Horizontal,
+    /// The main axis runs top-to-bottom and the cross axis runs left-to-right.
     Vertical,
 }
 
 /// Edge of a pane occupied by its activity bar.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ActivityBarEdge {
+    /// A vertical bar attached to the pane's left edge.
     #[default]
     Left,
+    /// A vertical bar attached to the pane's right edge.
     Right,
+    /// A horizontal bar attached to the pane's top edge.
     Top,
+    /// A horizontal bar attached to the pane's bottom edge.
     Bottom,
 }
 
 impl ActivityBarEdge {
+    /// Returns the bar's main layout axis.
+    ///
+    /// Left and right edges produce a vertical bar; top and bottom edges produce
+    /// a horizontal bar.
     pub const fn axis(self) -> ActivityBarAxis {
         match self {
             Self::Left | Self::Right => ActivityBarAxis::Vertical,
@@ -29,6 +39,7 @@ impl ActivityBarEdge {
         }
     }
 
+    /// Returns whether items along this edge are laid out left-to-right.
     pub const fn is_horizontal(self) -> bool {
         matches!(self.axis(), ActivityBarAxis::Horizontal)
     }
@@ -38,6 +49,7 @@ impl ActivityBarEdge {
         matches!(self, Self::Right | Self::Bottom)
     }
 
+    /// Returns the corresponding edge on the other side of the pane.
     pub const fn opposite(self) -> Self {
         match self {
             Self::Left => Self::Right,
@@ -51,13 +63,18 @@ impl ActivityBarEdge {
 /// Built-in pane management controls, in their reference render order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaneControl {
+    /// The pane drag handle used to move or dock the pane.
     Move,
+    /// The command that splits the pane horizontally.
     SplitHorizontal,
+    /// The command that splits the pane vertically.
     SplitVertical,
+    /// The command that closes the pane.
     Close,
 }
 
 impl PaneControl {
+    /// All built-in controls in their canonical render and traversal order.
     pub const ORDER: [Self; 4] = [
         Self::Move,
         Self::SplitHorizontal,
@@ -65,6 +82,7 @@ impl PaneControl {
         Self::Close,
     ];
 
+    /// Returns the stable, lowercase key used in selectors and internal item ids.
     pub const fn key(self) -> &'static str {
         match self {
             Self::Move => "move",
@@ -74,6 +92,7 @@ impl PaneControl {
         }
     }
 
+    /// Returns the short human-readable label used for accessibility.
     pub const fn label(self) -> &'static str {
         match self {
             Self::Move => "Move",
@@ -83,10 +102,16 @@ impl PaneControl {
         }
     }
 
+    /// Builds the GPUI debug selector for this control in `pane`.
+    ///
+    /// The result has the form `pane-control:<control-key>:<pane-id>`.
     pub fn debug_selector(self, pane: &PaneId) -> String {
         format!("pane-control:{}:{}", self.key(), pane.0)
     }
 
+    /// Builds the accessibility element id for this control in `pane`.
+    ///
+    /// The result has the form `mullion-pane-<control-key>-<pane-id>`.
     pub fn accessibility_id(self, pane: &PaneId) -> String {
         format!("mullion-pane-{}-{}", self.key(), pane.0)
     }
@@ -95,9 +120,12 @@ impl PaneControl {
 /// Per-pane visibility policy for an activity bar.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ActivityBarMode {
+    /// The bar remains visible and occupies layout space beside pane content.
     #[default]
     Pinned,
+    /// The bar is not rendered.
     Hidden,
+    /// The bar overlays pane content and reveals from its configured edge on hover.
     AutoHide,
 }
 
@@ -122,11 +150,18 @@ impl Default for ActivityBarHoverIntent {
 }
 
 impl ActivityBarHoverIntent {
+    /// Sets the opening hover-intent delay, in milliseconds.
+    ///
+    /// A value of zero makes a valid pointer entry logically expand immediately.
     pub const fn with_expand_delay_ms(mut self, delay_ms: u32) -> Self {
         self.expand_delay_ms = delay_ms;
         self
     }
 
+    /// Sets the opening and closing animation duration, in milliseconds.
+    ///
+    /// This does not delay logical collapse on pointer leave; it controls only
+    /// the visual transition to the collapsed endpoint.
     pub const fn with_transition_duration_ms(mut self, duration_ms: u32) -> Self {
         self.transition_duration_ms = duration_ms;
         self
@@ -137,7 +172,9 @@ impl ActivityBarHoverIntent {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ActivityBarBehavior {
+    /// Whether hovering a collapsed rail may reveal its expanded labels or flyout.
     pub hover_expand: bool,
+    /// Delay and animation timing applied to hover-driven expansion.
     pub hover_intent: ActivityBarHoverIntent,
 }
 
@@ -154,8 +191,11 @@ impl Default for ActivityBarBehavior {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ActivityBarConfig {
+    /// Pane edge to which the bar is attached, determining its layout axis and side.
     pub edge: ActivityBarEdge,
+    /// Base visibility and overlay policy used when no per-pane resolver overrides it.
     pub mode: ActivityBarMode,
+    /// Hover interaction policy for rendered bars.
     pub behavior: ActivityBarBehavior,
 }
 
@@ -167,9 +207,13 @@ pub type PaneBorderColor<D> = Arc<dyn Fn(&PaneId, &D) -> Option<Hsla> + Send + S
 /// Host-owned positions around the trailing activity group.
 #[derive(Clone)]
 pub struct ActivityBarSlots<D: PaneData> {
+    /// Optional application icon placed in the bar's primary group.
     pub app_icon: Option<crate::ActivityIcon>,
+    /// Host renderer inserted at the start of the trailing activity group.
     pub leading: Option<ChromeRenderer<D>>,
+    /// Host renderer inserted after the trailing activity nodes.
     pub trailing: Option<ChromeRenderer<D>>,
+    /// Pane-specific host renderer inserted after `trailing` and before pane controls.
     pub pane_accessory: Option<ChromeRenderer<D>>,
 }
 
@@ -185,15 +229,21 @@ impl<D: PaneData> Default for ActivityBarSlots<D> {
 }
 
 impl<D: PaneData> ActivityBarSlots<D> {
+    /// Creates empty host slots.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Sets the optional application icon rendered in the bar's primary group.
     pub fn with_app_icon(mut self, icon: crate::ActivityIcon) -> Self {
         self.app_icon = Some(icon);
         self
     }
 
+    /// Installs content immediately before the trailing activity nodes.
+    ///
+    /// The callback runs while each pane is rendered and receives that pane's
+    /// stable id and data plus the current GPUI window and application contexts.
     pub fn with_leading(
         mut self,
         render: impl Fn(&PaneId, &D, &mut Window, &mut App) -> gpui::AnyElement + 'static,
@@ -202,6 +252,9 @@ impl<D: PaneData> ActivityBarSlots<D> {
         self
     }
 
+    /// Installs content immediately after the trailing activity nodes.
+    ///
+    /// The callback runs while each pane is rendered with the pane id and data.
     pub fn with_trailing(
         mut self,
         render: impl Fn(&PaneId, &D, &mut Window, &mut App) -> gpui::AnyElement + 'static,
@@ -210,6 +263,10 @@ impl<D: PaneData> ActivityBarSlots<D> {
         self
     }
 
+    /// Installs pane-specific content between the trailing slot and pane controls.
+    ///
+    /// The callback is invoked during rendering for every pane; it may derive the
+    /// returned element from both the pane id and its host-owned data.
     pub fn with_pane_accessory(
         mut self,
         render: impl Fn(&PaneId, &D, &mut Window, &mut App) -> gpui::AnyElement + 'static,
@@ -222,15 +279,19 @@ impl<D: PaneData> ActivityBarSlots<D> {
 /// Header-band behavior and an optional host-wide accessory.
 #[derive(Clone)]
 pub struct PaneHeaderConfig<D: PaneData> {
+    /// Whether the fixed-height header band is rendered for panes with a selected activity.
     pub visible: bool,
+    /// Optional host renderer appended after activity-provided header content.
     pub accessory: Option<ChromeRenderer<D>>,
 }
 
 impl<D: PaneData> PaneHeaderConfig<D> {
+    /// Creates a visible header with no host accessory.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Creates a hidden header with no host accessory.
     pub fn hidden() -> Self {
         Self {
             visible: false,
@@ -238,11 +299,17 @@ impl<D: PaneData> PaneHeaderConfig<D> {
         }
     }
 
+    /// Sets whether the header band is rendered.
+    ///
+    /// The band is still omitted when a pane has no selected activity.
     pub fn with_visible(mut self, visible: bool) -> Self {
         self.visible = visible;
         self
     }
 
+    /// Installs host content after the selected activity's header content.
+    ///
+    /// The callback runs during each pane render with that pane's id and data.
     pub fn with_accessory(
         mut self,
         render: impl Fn(&PaneId, &D, &mut Window, &mut App) -> gpui::AnyElement + 'static,
@@ -264,10 +331,15 @@ impl<D: PaneData> Default for PaneHeaderConfig<D> {
 /// Non-view host configuration for pane-specific activity chrome.
 #[derive(Clone)]
 pub struct ActivityBarHostConfig<D: PaneData> {
+    /// Default edge, mode, and hover behavior for all panes.
     pub activity_bar: ActivityBarConfig,
+    /// Optional per-pane mode callback, taking precedence over `activity_bar.mode`.
     pub mode: Option<ActivityBarModeResolver<D>>,
+    /// Host-provided elements placed around built-in activity and pane controls.
     pub slots: ActivityBarSlots<D>,
+    /// Pane header visibility and host accessory configuration.
     pub header: PaneHeaderConfig<D>,
+    /// Optional per-pane border-color callback; `None` preserves the normal style color.
     pub pane_border_color: Option<PaneBorderColor<D>>,
 }
 
@@ -284,15 +356,21 @@ impl<D: PaneData> Default for ActivityBarHostConfig<D> {
 }
 
 impl<D: PaneData> ActivityBarHostConfig<D> {
+    /// Creates the default pinned-left host configuration.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Replaces the default activity-bar policy.
     pub fn with_activity_bar(mut self, config: ActivityBarConfig) -> Self {
         self.activity_bar = config;
         self
     }
 
+    /// Installs a thread-safe callback that selects a mode for each pane.
+    ///
+    /// The resolver receives the pane id and borrowed host data whenever its
+    /// effective mode is requested, and overrides [`ActivityBarConfig::mode`].
     pub fn with_mode_resolver(
         mut self,
         resolver: impl Fn(&PaneId, &D) -> ActivityBarMode + Send + Sync + 'static,
@@ -301,16 +379,21 @@ impl<D: PaneData> ActivityBarHostConfig<D> {
         self
     }
 
+    /// Replaces all host-rendered activity-bar slots.
     pub fn with_slots(mut self, slots: ActivityBarSlots<D>) -> Self {
         self.slots = slots;
         self
     }
 
+    /// Replaces pane-header visibility and accessory configuration.
     pub fn with_header(mut self, header: PaneHeaderConfig<D>) -> Self {
         self.header = header;
         self
     }
 
+    /// Installs a thread-safe callback that selects an optional pane border color.
+    ///
+    /// Returning `None` requests the normal theme/style border for that pane.
     pub fn with_pane_border_color(
         mut self,
         color: impl Fn(&PaneId, &D) -> Option<Hsla> + Send + Sync + 'static,
@@ -319,6 +402,10 @@ impl<D: PaneData> ActivityBarHostConfig<D> {
         self
     }
 
+    /// Resolves the effective activity-bar mode for a pane.
+    ///
+    /// Calls the configured resolver when present; otherwise returns the base
+    /// [`ActivityBarConfig::mode`].
     pub fn mode_for(&self, pane: &PaneId, data: &D) -> ActivityBarMode {
         self.mode
             .as_ref()
@@ -333,10 +420,12 @@ pub struct ActivityExpansionState {
 }
 
 impl ActivityExpansionState {
+    /// Returns whether the category id is currently expanded.
     pub fn is_expanded(&self, id: &crate::CategoryId) -> bool {
         self.expanded.contains(id)
     }
 
+    /// Toggles a category and returns its new expansion state.
     pub fn toggle(&mut self, id: crate::CategoryId) -> bool {
         if self.expanded.remove(&id) {
             false
@@ -351,10 +440,12 @@ impl ActivityExpansionState {
         self.expanded.extend(path.into_iter().cloned());
     }
 
+    /// Collapses every category, including categories expanded by active-path reveal.
     pub fn clear(&mut self) {
         self.expanded.clear();
     }
 
+    /// Borrows the complete set of expanded stable category ids.
     pub fn expanded(&self) -> &HashSet<crate::CategoryId> {
         &self.expanded
     }
@@ -363,8 +454,16 @@ impl ActivityExpansionState {
 /// Token returned on pointer entry. A delayed callback may expand only while
 /// its token is still current, preventing stale timers from reopening the bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct HoverGeneration(pub u64);
+pub struct HoverGeneration(
+    /// Monotonically wrapping token value used to reject obsolete callbacks.
+    pub u64,
+);
 
+/// Logical hover-intent state for one bar or bar item.
+///
+/// Entry issues a generation token for a possibly delayed open. Leaving
+/// immediately clears logical expansion and invalidates all outstanding tokens;
+/// animation timing is intentionally owned by the caller.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ActivityBarHoverState {
     generation: u64,
@@ -373,6 +472,9 @@ pub struct ActivityBarHoverState {
 }
 
 impl ActivityBarHoverState {
+    /// Records pointer entry and returns the only token currently allowed to open.
+    ///
+    /// Calling this again invalidates any token returned by an earlier entry.
     pub fn enter(&mut self) -> HoverGeneration {
         self.generation = self.generation.wrapping_add(1);
         self.hovered = true;
@@ -386,6 +488,10 @@ impl ActivityBarHoverState {
         self.expanded = false;
     }
 
+    /// Applies a delayed open only if its token is current and the pointer remains inside.
+    ///
+    /// Returns `true` when the open is accepted (including an already-expanded
+    /// state), and `false` for stale tokens or after pointer leave.
     pub fn apply_open(&mut self, generation: HoverGeneration) -> bool {
         if self.hovered && generation.0 == self.generation {
             self.expanded = true;
@@ -395,14 +501,17 @@ impl ActivityBarHoverState {
         }
     }
 
+    /// Returns whether the logical pointer state is inside the tracked region.
     pub const fn is_hovered(self) -> bool {
         self.hovered
     }
 
+    /// Returns whether a valid open callback has expanded this logical state.
     pub const fn is_expanded(self) -> bool {
         self.expanded
     }
 
+    /// Returns the current token, primarily for diagnostics and state inspection.
     pub const fn generation(self) -> HoverGeneration {
         HoverGeneration(self.generation)
     }

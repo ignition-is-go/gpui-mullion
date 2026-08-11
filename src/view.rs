@@ -27,17 +27,29 @@ use std::{
 actions!(
     mullion,
     [
+        /// Focus the pane visually left of the current pane.
         FocusLeft,
+        /// Focus the pane visually right of the current pane.
         FocusRight,
+        /// Focus the pane visually above the current pane.
         FocusUp,
+        /// Focus the pane visually below the current pane.
         FocusDown,
+        /// Focus the next pane in traversal order.
         FocusNext,
+        /// Focus the previous pane in traversal order.
         FocusPrevious,
+        /// Close the focused pane.
         ClosePane,
+        /// Toggle zoom for the focused pane.
         ToggleZoom,
+        /// Reset all split ratios to equal allocation.
         BalancePanes,
+        /// Decrease the focused splitter's ratio by one keyboard step.
         ResizeSplitDecrease,
+        /// Increase the focused splitter's ratio by one keyboard step.
         ResizeSplitIncrease,
+        /// Cancel the active split or dock drag and restore its starting state.
         CancelSplitResize
     ]
 );
@@ -525,6 +537,7 @@ impl<D: PaneData> EventEmitter<WorkspaceChanged> for MullionView<D> {}
 impl<D: PaneData> EventEmitter<WorkspaceEvent<D>> for MullionView<D> {}
 
 impl<D: PaneData> MullionView<D> {
+    /// Construct a shared GPUI view around one validated pane tree and activity list.
     pub fn new(
         tree: PaneNode<D>,
         activities: Vec<ActivityNode<D>>,
@@ -532,7 +545,7 @@ impl<D: PaneData> MullionView<D> {
     ) -> Self {
         cx.on_release(|this, cx| this.dispose_all_activities(cx))
             .detach();
-        Self {
+        let mut view = Self {
             model: MullionModel::new(tree),
             dock_config: DockConfig::default(),
             command_options: PaneCommandExecutionOptions::default(),
@@ -589,7 +602,9 @@ impl<D: PaneData> MullionView<D> {
             notifications: 0,
             #[cfg(test)]
             motion_tick_starts: 0,
-        }
+        };
+        view.sync_focus_motion(cx);
+        view
     }
 
     /// Construct from a validated catalog while keeping [`Self::new`] source-compatible.
@@ -606,6 +621,7 @@ impl<D: PaneData> MullionView<D> {
 
     /// Construct a view which owns and renders a set of internal workspaces.
     /// Returns `None` when validation fails, preserving the original optional API.
+    #[doc(hidden)]
     pub fn new_with_workspaces(
         workspaces: WorkspaceSet<D>,
         activities: Vec<ActivityNode<D>>,
@@ -630,6 +646,7 @@ impl<D: PaneData> MullionView<D> {
         view.workspaces = Some(workspaces);
         Ok(view)
     }
+    /// Use a fixed theme and disable system appearance resolution.
     pub fn with_theme(mut self, theme: MullionTheme) -> Self {
         self.theme = theme;
         self.theme_mode = None;
@@ -640,13 +657,16 @@ impl<D: PaneData> MullionView<D> {
         self.theme_mode = Some(mode);
         self
     }
+    /// Return the configured appearance-resolved theme policy, if any.
     pub fn theme_mode(&self) -> Option<MullionThemeMode> {
         self.theme_mode
     }
+    /// Override derived theme geometry and chrome styles.
     pub fn with_styles(mut self, styles: MullionStyles) -> Self {
         self.styles = Some(styles);
         self
     }
+    /// Return explicit styles, or `None` when styles derive from the theme.
     pub fn styles(&self) -> Option<&MullionStyles> {
         self.styles.as_ref()
     }
@@ -702,9 +722,11 @@ impl<D: PaneData> MullionView<D> {
         self.workspace_switcher_visible = visible;
         self
     }
+    /// Whether the built-in workspace tab strip is visible.
     pub const fn workspace_switcher_visible(&self) -> bool {
         self.workspace_switcher_visible
     }
+    /// Replace activities with a validated recursive catalog.
     pub fn with_activity_catalog(
         mut self,
         catalog: ActivityCatalog<D>,
@@ -713,13 +735,16 @@ impl<D: PaneData> MullionView<D> {
         self.catalog = catalog;
         Ok(self)
     }
+    /// Borrow the recursive activity catalog.
     pub fn activity_catalog(&self) -> &ActivityCatalog<D> {
         &self.catalog
     }
+    /// Configure activity-bar policy and host-rendered chrome.
     pub fn with_activity_bar_host(mut self, host: ActivityBarHostConfig<D>) -> Self {
         self.host = host;
         self
     }
+    /// Borrow the activity-bar host configuration.
     pub fn activity_bar_host(&self) -> &ActivityBarHostConfig<D> {
         &self.host
     }
@@ -791,6 +816,7 @@ impl<D: PaneData> MullionView<D> {
         }
     }
 
+    /// Return the attached command-palette entity, if installed.
     pub fn command_palette(
         &self,
     ) -> Option<&gpui::Entity<gpui_command_palette::CommandPalette<PaletteInvocation>>> {
@@ -893,13 +919,16 @@ impl<D: PaneData> MullionView<D> {
     pub fn resize_step(&self) -> f64 {
         self.command_options.resize_step()
     }
+    /// Configure how pointer input moves pane focus.
     pub fn with_focus_behavior(mut self, behavior: PaneFocusBehavior) -> Self {
         self.settings = MullionSettings::local(behavior);
         self
     }
+    /// Return the current pointer focus policy.
     pub fn focus_behavior(&self) -> PaneFocusBehavior {
         self.settings.focus_behavior()
     }
+    /// Replace the pointer focus policy and notify GPUI.
     pub fn set_focus_behavior(&mut self, behavior: PaneFocusBehavior, cx: &mut Context<Self>) {
         self.settings.set_focus_behavior(behavior);
         cx.notify();
@@ -910,15 +939,20 @@ impl<D: PaneData> MullionView<D> {
         self
     }
     /// Compatibility alias for hosts that call the visual configuration simply presentation.
+    #[doc(hidden)]
     pub fn with_presentation(self, presentation: FocusPresentation) -> Self {
         self.with_focus_presentation(presentation)
     }
+    /// Return visual focus presentation settings.
     pub const fn focus_presentation(&self) -> FocusPresentation {
         self.focus_presentation
     }
+    /// Compatibility alias for [`Self::focus_presentation`].
+    #[doc(hidden)]
     pub const fn presentation(&self) -> FocusPresentation {
         self.focus_presentation()
     }
+    /// Replace visual focus presentation settings and notify GPUI.
     pub fn set_focus_presentation(
         &mut self,
         presentation: FocusPresentation,
@@ -927,6 +961,7 @@ impl<D: PaneData> MullionView<D> {
         self.focus_presentation = presentation;
         cx.notify();
     }
+    /// Configure visibility of built-in pane headers.
     pub fn with_headers(mut self, visible: bool) -> Self {
         self.host.header.visible = visible;
         self
@@ -956,6 +991,7 @@ impl<D: PaneData> MullionView<D> {
             }
         }
     }
+    /// Borrow the portable pane model.
     pub fn model(&self) -> &MullionModel<D> {
         &self.model
     }
@@ -1025,12 +1061,15 @@ impl<D: PaneData> MullionView<D> {
         self.workspaces.as_ref()
     }
     /// Compatibility-explicit alias for hosts which call the aggregate a workspace set.
+    #[doc(hidden)]
     pub fn workspace_set(&self) -> Option<&WorkspaceSet<D>> {
         self.workspaces()
     }
+    /// Return the active owned workspace, if workspace mode is enabled.
     pub fn active_workspace(&self) -> Option<&crate::Workspace<D>> {
         self.workspaces.as_ref()?.active()
     }
+    /// Find an owned workspace by stable identity.
     pub fn workspace(&self, id: &WorkspaceId) -> Option<&crate::Workspace<D>> {
         self.workspaces
             .as_ref()?
@@ -1083,6 +1122,7 @@ impl<D: PaneData> MullionView<D> {
         Ok(removed)
     }
 
+    /// Rename an owned workspace and emit its complete workspace snapshot.
     pub fn rename_workspace(
         &mut self,
         id: &WorkspaceId,
@@ -1096,6 +1136,7 @@ impl<D: PaneData> MullionView<D> {
         Ok(previous)
     }
 
+    /// Move an owned workspace to a new tab index.
     pub fn reorder_workspace(
         &mut self,
         id: &WorkspaceId,
@@ -1170,6 +1211,7 @@ impl<D: PaneData> MullionView<D> {
 
     /// Compatibility boolean switching API. A same-workspace request succeeds without
     /// mutation or notification.
+    #[doc(hidden)]
     pub fn switch_workspace(&mut self, id: &WorkspaceId, cx: &mut Context<Self>) -> bool {
         match self.try_switch_workspace(id, cx) {
             Ok(changed) => {
@@ -1232,6 +1274,7 @@ impl<D: PaneData> MullionView<D> {
         if palette_changed {
             self.sync_command_palette(cx);
         }
+        self.sync_focus_motion(cx);
         let notify = !events.is_empty();
         for event in events {
             cx.emit(event)
@@ -1549,6 +1592,11 @@ impl<D: PaneData> MullionView<D> {
         self.split_starts
             .borrow_mut()
             .retain(|split, _| live_splits.contains(split));
+        for split in &live_splits {
+            self.split_focus_handles
+                .entry(split.clone())
+                .or_insert_with(|| cx.focus_handle());
+        }
         self.split_focus_handles
             .retain(|split, _| live_splits.contains(split));
         if self
@@ -1636,9 +1684,9 @@ impl<D: PaneData> MullionView<D> {
                 let key = second.leftmost_leaf_id().clone();
                 let split_focus_handle = self
                     .split_focus_handles
-                    .entry(key.clone())
-                    .or_insert_with(|| cx.focus_handle())
-                    .clone();
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_else(|| cx.focus_handle());
                 let (first_edges, second_edges) = match direction {
                     SplitDirection::Horizontal => (
                         InternalEdges {
@@ -4155,7 +4203,6 @@ impl<D: PaneData> Render for MullionView<D> {
                 }
             });
         }
-        self.sync_focus_motion(cx);
         if self.motion_tick_running && self.advance_motions(cx) {
             window.request_animation_frame();
         }

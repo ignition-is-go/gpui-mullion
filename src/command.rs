@@ -2,27 +2,51 @@ use crate::{PaneDirection, PaneLayout, PaneRotation, SplitDirection};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-/// Focus-relative command understood by every frontend.
+/// Focus-relative operation understood by every Mullion frontend.
+///
+/// Commands are serializable with Serde's default externally tagged enum
+/// representation. For persisted keymaps and cross-frontend registries, prefer
+/// the stable string returned by [`PaneCommand::id`] over Rust or GPUI type
+/// names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PaneCommand {
+    /// Focus the visually nearest pane in the given screen-space direction.
     Focus(PaneDirection),
+    /// Focus the next pane in depth-first layout order, wrapping at the end.
     FocusNext,
+    /// Focus the previous pane in depth-first layout order, wrapping at the start.
     FocusPrevious,
+    /// Focus the first pane in depth-first layout order.
     FocusFirst,
+    /// Focus the last pane in depth-first layout order.
     FocusLast,
+    /// Focus the pane at the given zero-based depth-first layout index.
     FocusIndex(usize),
+    /// Split the focused pane along the specified child-arrangement axis.
     Split(SplitDirection),
+    /// Close the focused pane unless it is the only pane.
     Close,
+    /// Relocate the focused pane beside its nearest directional neighbor.
     Move(PaneDirection),
+    /// Exchange the focused pane with its nearest directional neighbor.
     Swap(PaneDirection),
+    /// Exchange the focused pane with the next pane in layout order.
     SwapNext,
+    /// Exchange the focused pane with the previous pane in layout order.
     SwapPrevious,
+    /// Grow the focused pane toward its nearest boundary in this direction.
     Resize(PaneDirection),
+    /// Set the axis of the split immediately containing the focused pane.
     SetParentSplitDirection(SplitDirection),
+    /// Toggle the focused pane's parent split between horizontal and vertical.
     ToggleParentSplitDirection,
+    /// Reset every split to an equal `0.5` ratio.
     Balance,
+    /// Rotate all panes through the existing layout slots.
     Rotate(PaneRotation),
+    /// Rebuild the split topology according to a standard layout.
     ApplyLayout(PaneLayout),
+    /// Toggle whether the focused pane temporarily fills the Mullion view.
     ToggleZoom,
 }
 
@@ -102,6 +126,7 @@ impl PaneCommand {
         }
     }
 
+    /// Returns the concise, user-facing command name used in menus and palettes.
     pub fn name(self) -> String {
         use PaneCommand::*;
         match self {
@@ -134,6 +159,7 @@ impl PaneCommand {
         }
     }
 
+    /// Returns the command-palette section to which this command belongs.
     pub fn group(self) -> PaneCommandGroup {
         use PaneCommand::*;
         match self {
@@ -151,6 +177,7 @@ impl PaneCommand {
         }
     }
 
+    /// Returns a user-facing explanation of the command's effect.
     pub fn description(self) -> &'static str {
         use PaneCommand::*;
         match self {
@@ -174,17 +201,25 @@ impl PaneCommand {
     }
 }
 
+/// User-facing category used to organize pane commands in command palettes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PaneCommandGroup {
+    /// Commands that change keyboard focus without changing the layout.
     Focus,
+    /// Commands that create or close panes.
     Pane,
+    /// Commands that move pane contents between existing layout positions.
     Arrange,
+    /// Commands that adjust split ratios.
     Resize,
+    /// Commands that change or rebuild split geometry.
     Layout,
+    /// Commands that alter presentation without changing the pane tree.
     View,
 }
 
 impl PaneCommandGroup {
+    /// Returns the stable, user-facing command-palette section label.
     pub const fn label(self) -> &'static str {
         match self {
             Self::Focus => "Mullion · Focus",
@@ -248,10 +283,19 @@ fn layout_label(layout: PaneLayout) -> &'static str {
 }
 
 /// Host hook used by focus-relative split commands.
+///
+/// The callback receives the focused pane id, requested split axis, and a
+/// reference to the focused pane's data. Returning `Some((id, data))` supplies
+/// the new leaf; returning `None` refuses the operation with
+/// [`PaneCommandError::SplitRefused`]. Implementations must provide an id that
+/// remains unique within the pane tree.
 pub type PaneSplitFactory<D> =
     Arc<dyn Fn(&crate::PaneId, SplitDirection, &D) -> Option<(crate::PaneId, D)> + Send + Sync>;
 
 /// Host-configurable behavior for command execution.
+///
+/// The default disables [`PaneCommand::Split`] and grows panes by `0.05` of a
+/// split's axis per [`PaneCommand::Resize`] invocation.
 #[derive(Clone)]
 pub struct PaneCommandExecutionOptions<D> {
     pub(crate) split_factory: Option<PaneSplitFactory<D>>,
@@ -268,6 +312,7 @@ impl<D> Default for PaneCommandExecutionOptions<D> {
 }
 
 impl<D> PaneCommandExecutionOptions<D> {
+    /// Enables split commands with a shared, type-erased host callback.
     pub fn with_split_factory(mut self, factory: PaneSplitFactory<D>) -> Self {
         self.split_factory = Some(factory);
         self
@@ -283,6 +328,9 @@ impl<D> PaneCommandExecutionOptions<D> {
         self.split_factory = factory;
     }
 
+    /// Enables split commands with the supplied host callback.
+    ///
+    /// This is the closure-friendly equivalent of [`Self::with_split_factory`].
     pub fn with_split_factory_fn(
         mut self,
         factory: impl Fn(&crate::PaneId, SplitDirection, &D) -> Option<(crate::PaneId, D)>
@@ -294,6 +342,10 @@ impl<D> PaneCommandExecutionOptions<D> {
         self
     }
 
+    /// Sets the resize increment when `step` is finite and strictly positive.
+    ///
+    /// The step is a dimensionless split-ratio delta, not a pixel distance.
+    /// Invalid values leave the existing setting unchanged.
     pub fn with_resize_step(mut self, step: f64) -> Self {
         if step.is_finite() && step > 0.0 {
             self.resize_step = step;
@@ -301,17 +353,21 @@ impl<D> PaneCommandExecutionOptions<D> {
         self
     }
 
+    /// Returns whether a split factory is configured.
     pub fn can_split(&self) -> bool {
         self.split_factory.is_some()
     }
 
-    /// Replace the resize increment when it is finite and positive.
+    /// Replaces the dimensionless resize increment when it is finite and positive.
+    ///
+    /// Invalid values leave the current increment unchanged.
     pub fn set_resize_step(&mut self, step: f64) {
         if step.is_finite() && step > 0.0 {
             self.resize_step = step;
         }
     }
 
+    /// Returns the positive, finite split-ratio delta used by resize commands.
     pub fn resize_step(&self) -> f64 {
         self.resize_step
     }
@@ -320,12 +376,19 @@ impl<D> PaneCommandExecutionOptions<D> {
 /// Why a pane command could not be applied.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaneCommandError {
+    /// The operation requires focus, but the model has no focused pane.
     NoFocusedPane,
+    /// No pane or resizable boundary exists in the requested direction.
     NoNeighbor,
+    /// A split was requested without a configured [`PaneSplitFactory`].
     SplitUnavailable,
+    /// The configured [`PaneSplitFactory`] returned `None`.
     SplitRefused,
+    /// Closing the only remaining pane would violate the nonempty-tree invariant.
     CannotCloseLastPane,
+    /// A zero-based [`PaneCommand::FocusIndex`] target is outside layout order.
     InvalidPaneIndex,
+    /// The current pane tree makes the requested structural operation meaningless.
     NotApplicable,
 }
 impl std::fmt::Display for PaneCommandError {
@@ -343,4 +406,5 @@ impl std::fmt::Display for PaneCommandError {
     }
 }
 impl std::error::Error for PaneCommandError {}
+/// Result of applying a [`PaneCommand`] to a Mullion model.
 pub type PaneCommandResult = Result<(), PaneCommandError>;

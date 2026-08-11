@@ -11,14 +11,23 @@ use std::rc::Rc;
 /// applications use GPUI's `svg`, `img`, text, or a custom element.
 type ActivityIconRenderer = Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>;
 
+/// Cloneable UI-local factory for one activity or category icon element.
+/// Cloneable UI-local factory for one activity or category icon element.
+/// Cloneable UI-local factory for one activity or category icon element.
 #[derive(Clone)]
 pub struct ActivityIcon(ActivityIconRenderer);
 
 impl ActivityIcon {
+    /// Wrap an element factory invoked when icon chrome is projected.
+    /// Wrap an element factory invoked when icon chrome is projected.
+    /// Wrap an element factory invoked when icon chrome is projected.
     pub fn new(render: impl Fn(&mut Window, &mut App) -> AnyElement + 'static) -> Self {
         Self(Rc::new(render))
     }
 
+    /// Invoke the host factory in the current window and application contexts.
+    /// Invoke the host factory in the current window and application contexts.
+    /// Invoke the host factory in the current window and application contexts.
     pub fn render(&self, window: &mut Window, cx: &mut App) -> AnyElement {
         (self.0)(window, cx)
     }
@@ -36,7 +45,10 @@ pub type ChromeRenderer<D> = Rc<dyn Fn(&PaneId, &D, &mut Window, &mut App) -> An
 /// Additive visual metadata for a legacy [`Activity`].
 #[derive(Clone)]
 pub struct ActivityChrome<D: PaneData> {
+    /// Optional icon displayed by the activity bar.
     pub icon: Option<ActivityIcon>,
+    /// Optional pane-header chrome rendered with current pane data.
+    /// Optional pane-header chrome rendered with current pane data.
     pub header: Option<ChromeRenderer<D>>,
 }
 
@@ -50,6 +62,7 @@ impl<D: PaneData> Default for ActivityChrome<D> {
 }
 
 impl<D: PaneData> ActivityChrome<D> {
+    /// Construct chrome with an icon and no custom header.
     pub fn new(icon: ActivityIcon) -> Self {
         Self {
             icon: Some(icon),
@@ -57,11 +70,13 @@ impl<D: PaneData> ActivityChrome<D> {
         }
     }
 
+    /// Set or replace the icon factory.
     pub fn with_icon(mut self, icon: ActivityIcon) -> Self {
         self.icon = Some(icon);
         self
     }
 
+    /// Install UI-local header chrome rendered for each owning pane.
     pub fn with_header(
         mut self,
         render: impl Fn(&PaneId, &D, &mut Window, &mut App) -> AnyElement + 'static,
@@ -71,15 +86,17 @@ impl<D: PaneData> ActivityChrome<D> {
     }
 }
 
-/// Additive visual metadata for a legacy [`ActivityCategory`].
+/// Additive visual metadata for a legacy [`crate::ActivityCategory`].
 #[derive(Clone, Default)]
 pub struct CategoryChrome {
+    /// Optional icon displayed beside the category label.
     pub icon: Option<ActivityIcon>,
     /// Overrides the category's legacy `color` when present.
     pub color: Option<Hsla>,
 }
 
 impl CategoryChrome {
+    /// Construct chrome with an icon and no color override.
     pub fn new(icon: ActivityIcon) -> Self {
         Self {
             icon: Some(icon),
@@ -87,11 +104,13 @@ impl CategoryChrome {
         }
     }
 
+    /// Set or replace the icon factory.
     pub fn with_icon(mut self, icon: ActivityIcon) -> Self {
         self.icon = Some(icon);
         self
     }
 
+    /// Override the legacy category color used by descendants.
     pub fn with_color(mut self, color: Hsla) -> Self {
         self.color = Some(color);
         self
@@ -124,6 +143,7 @@ impl<D: PaneData> From<Vec<ActivityNode<D>>> for ActivityCatalog<D> {
 }
 
 impl<D: PaneData> ActivityCatalog<D> {
+    /// Construct a catalog whose nodes occupy the leading group.
     pub fn new(primary: Vec<ActivityNode<D>>) -> Self {
         Self {
             primary,
@@ -133,21 +153,25 @@ impl<D: PaneData> ActivityCatalog<D> {
         }
     }
 
+    /// Set nodes anchored at the trailing end of the activity bar.
     pub fn with_trailing(mut self, trailing: Vec<ActivityNode<D>>) -> Self {
         self.trailing = trailing;
         self
     }
 
+    /// Associate additive chrome with a registered activity id.
     pub fn with_activity_chrome(mut self, id: ActivityId, chrome: ActivityChrome<D>) -> Self {
         self.activity_chrome.insert(id, chrome);
         self
     }
 
+    /// Associate additive chrome with a registered category id.
     pub fn with_category_chrome(mut self, id: CategoryId, chrome: CategoryChrome) -> Self {
         self.category_chrome.insert(id, chrome);
         self
     }
 
+    /// Insert activity chrome, returning the previous entry for the id.
     pub fn insert_activity_chrome(
         &mut self,
         id: ActivityId,
@@ -156,6 +180,7 @@ impl<D: PaneData> ActivityCatalog<D> {
         self.activity_chrome.insert(id, chrome)
     }
 
+    /// Insert category chrome, returning the previous entry for the id.
     pub fn insert_category_chrome(
         &mut self,
         id: CategoryId,
@@ -164,18 +189,22 @@ impl<D: PaneData> ActivityCatalog<D> {
         self.category_chrome.insert(id, chrome)
     }
 
+    /// Borrow the recursively ordered leading group.
     pub fn primary(&self) -> &[ActivityNode<D>] {
         &self.primary
     }
 
+    /// Borrow the recursively ordered trailing group.
     pub fn trailing(&self) -> &[ActivityNode<D>] {
         &self.trailing
     }
 
+    /// Return additive chrome registered for an activity.
     pub fn activity_chrome(&self, id: &ActivityId) -> Option<&ActivityChrome<D>> {
         self.activity_chrome.get(id)
     }
 
+    /// Return additive chrome registered for a category.
     pub fn category_chrome(&self, id: &CategoryId) -> Option<&CategoryChrome> {
         self.category_chrome.get(id)
     }
@@ -240,26 +269,42 @@ impl<D: PaneData> ActivityCatalog<D> {
     }
 }
 
+/// Top-level placement group containing a catalog node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ActivityCatalogGroup {
+    /// Leading group, following the configured activity-bar direction.
     Primary,
+    /// Group anchored at the opposite end of the bar.
     Trailing,
 }
 
+/// Stable-identity or chrome-reference validation failure.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ActivityCatalogValidationError {
+    /// An activity id occurs more than once across the recursive catalog.
     DuplicateActivityId {
+        /// Repeated stable activity identity.
         activity_id: ActivityId,
+        /// Top-level group containing the later occurrence.
         duplicate_group: ActivityCatalogGroup,
     },
+    /// A category id occurs more than once across the recursive catalog.
     DuplicateCategoryId {
+        /// Repeated stable category identity.
         category_id: CategoryId,
+        /// Top-level group containing the later occurrence.
         duplicate_group: ActivityCatalogGroup,
     },
     /// An activity chrome map key has no corresponding registered activity.
-    MissingActivityChromeKey { activity_id: ActivityId },
+    MissingActivityChromeKey {
+        /// Chrome key without a corresponding activity node.
+        activity_id: ActivityId,
+    },
     /// A category chrome map key has no corresponding registered category.
-    MissingCategoryChromeKey { category_id: CategoryId },
+    MissingCategoryChromeKey {
+        /// Chrome key without a corresponding category node.
+        category_id: CategoryId,
+    },
 }
 
 impl fmt::Display for ActivityCatalogValidationError {
@@ -320,30 +365,42 @@ fn validate_nodes<D: PaneData>(
 /// Per-pane, recursively filtered projection of an activity catalog.
 #[derive(Clone)]
 pub struct ActivityProjection<D: PaneData> {
+    /// Visible leading nodes in catalog order.
     pub primary: Vec<VisibleActivityNode<D>>,
+    /// Visible trailing nodes in catalog order.
     pub trailing: Vec<VisibleActivityNode<D>>,
     /// Ancestor categories of the active visible activity, outermost first.
     pub active_ancestors: Vec<CategoryId>,
 }
 
+/// Visible recursive node produced for one pane's data.
 #[derive(Clone)]
 pub enum VisibleActivityNode<D: PaneData> {
+    /// Selectable activity leaf.
     Activity(VisibleActivity<D>),
+    /// Nonempty visible category branch.
     Category(VisibleCategory<D>),
 }
 
+/// Activity leaf retained by a per-pane projection.
 #[derive(Clone)]
 pub struct VisibleActivity<D: PaneData> {
+    /// Complete host activity descriptor.
     pub activity: Activity<D>,
     /// The nearest enclosing category color, after chrome overrides.
     pub inherited_color: Option<Hsla>,
 }
 
+/// Visible category whose filtered child list is nonempty.
 #[derive(Clone)]
 pub struct VisibleCategory<D: PaneData> {
+    /// Stable category identity.
     pub id: CategoryId,
+    /// Display label.
     pub name: gpui::SharedString,
+    /// Effective color after applying catalog chrome overrides.
     pub color: Hsla,
+    /// Recursively visible children in source order.
     pub children: Vec<VisibleActivityNode<D>>,
 }
 

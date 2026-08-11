@@ -21,17 +21,19 @@ Mullion is a GPUI library with compatibility requirements inherited from the ear
 - Command-palette entries are owned by retained `Registration` handles. Detaching or releasing Mullion removes only Mullion-owned entries.
 - Split resize input is handled once at the root and applies at most one latest-value mutation per GPUI frame.
 - Activity/focus motion uses one state scan per requested GPUI animation frame rather than an executor timer per motion.
+- Host activity factories and update/dispose callbacks run in deferred reconciliation after render.
+- Splitters retain stable `FocusHandle`s and own their key context/actions locally.
+- The model tree is immutable-`Rc` shared during render, so unrelated frames never clone consumer pane data.
+- Transient motion, hover, split-bound, and focus-handle maps are bounded by the reconciled live topology/catalog.
 
 ## Known hardening work
 
 The following work remains before treating the 0.1 API as frozen:
 
-- Move activity cache reconciliation and host update/dispose callbacks out of `Render`.
-- Extract splitter keyboard/focus/drag ownership so its key context follows actual focus and cannot become stale.
-- Prune transient motion/hover maps when panes or projected activities disappear.
-- Reduce `MullionView` responsibilities with focused controllers where they own lifecycle or subscriptions; do not create an entity per pane without measurement.
 - Curate the long-term root export surface. Named modules and `prelude` are available now; broad root re-exports remain temporarily for compatibility.
-- Add render-scaling instrumentation for pane/activity/workspace counts and optimize only measured boundaries.
-- Increase rustdoc coverage and enable `missing_docs` as the public surface is curated.
+- Replace or constrain compatibility aliases and public-field configuration structs before downstream code depends on struct literals.
+- Add wall-clock render-scaling benchmarks for pane/activity/workspace counts; deterministic tests already enforce coalesced mutations, bounded state, single-pass navigation, and zero pane-data clones on unrelated renders.
+- Decide whether pane chrome merits additional entity/cache boundaries only after those measurements; entity-per-pane is not an assumed optimization.
+- Prefer an observable entity-backed overlay source if controlled overlay counts become material; the compatibility source remains a documented pure pull callback.
 
 These items are tracked by `lv-dcc1`.

@@ -3,13 +3,26 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 
+/// Stable, host-defined identity for a workspace.
+///
+/// Mullion treats the wrapped string as opaque and compares it exactly; hosts
+/// are responsible for choosing values that remain stable across persistence.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct WorkspaceId(pub String);
 
+/// A named pane-tree snapshot with a stable identity.
+///
+/// Within a [`WorkspaceSet`], `id` must be unique and `tree` must satisfy the
+/// invariants checked by [`PaneNode::validate`]. Direct construction and
+/// deserialization do not enforce either condition; call [`WorkspaceSet::validate`]
+/// after loading untrusted persisted data.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Workspace<D: PaneData> {
+    /// Stable identity used by workspace operations and persistence.
     pub id: WorkspaceId,
+    /// User-facing display name; it need not be unique.
     pub name: String,
+    /// Pane-tree snapshot restored when this workspace becomes active.
     pub tree: PaneNode<D>,
 }
 
@@ -60,43 +73,71 @@ impl<D: PaneData> Workspace<D> {
     }
 }
 
+/// An ordered collection of workspaces and its active selection.
+///
+/// A valid set is nonempty, has unique workspace identifiers, names an
+/// existing workspace as active, and contains only valid pane trees. The
+/// fields remain public for serialization compatibility, so direct mutation
+/// can violate these invariants; use the provided operations or call
+/// [`Self::validate`] before relying on the set.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceSet<D: PaneData> {
+    /// Identity of the currently selected workspace.
     pub active: WorkspaceId,
+    /// Workspaces in their user-visible order.
     pub workspaces: Vec<Workspace<D>>,
 }
 
 /// An invariant or requested-operation error for a [`WorkspaceSet`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorkspaceSetError {
+    /// The set contains no workspaces.
     Empty,
+    /// Two workspaces use the same stable identifier.
     DuplicateWorkspaceId {
+        /// Identifier shared by both workspaces.
         id: WorkspaceId,
+        /// Zero-based position of the first occurrence.
         first_index: usize,
+        /// Zero-based position of the later occurrence.
         duplicate_index: usize,
     },
+    /// The selected workspace identifier is absent from the set.
     ActiveWorkspaceNotFound {
+        /// Missing identifier stored in [`WorkspaceSet::active`].
         active: WorkspaceId,
     },
+    /// A workspace contains a pane tree that failed validation.
     InvalidPaneTree {
+        /// Identifier of the workspace containing the invalid tree.
         workspace_id: WorkspaceId,
+        /// Underlying pane-tree validation failure.
         source: PaneValidationError,
     },
+    /// An operation named an identifier that is absent from the set.
     WorkspaceNotFound {
+        /// Identifier requested by the operation.
         id: WorkspaceId,
     },
+    /// Removal was rejected because the requested workspace is active.
     CannotRemoveActive {
+        /// Identifier of the active workspace.
         id: WorkspaceId,
     },
+    /// A requested reorder position lies outside the workspace vector.
     ReorderIndexOutOfBounds {
+        /// Requested zero-based destination position.
         index: usize,
+        /// Number of workspaces, and therefore the exclusive upper bound.
         len: usize,
     },
 }
 
 /// Shorter name for callers which use one error type for workspace operations.
+#[doc(hidden)]
 pub type WorkspaceError = WorkspaceSetError;
 /// Validation-specific name for persistence-loading call sites.
+#[doc(hidden)]
 pub type WorkspaceValidationError = WorkspaceSetError;
 
 impl fmt::Display for WorkspaceSetError {
@@ -148,6 +189,11 @@ impl std::error::Error for WorkspaceSetError {
 
 impl<D: PaneData> WorkspaceSet<D> {
     /// Construct a workspace set after validating all persistence invariants.
+    ///
+    /// # Errors
+    ///
+    /// Returns the applicable invariant error when the collection is empty,
+    /// identifiers are duplicated, `active` is absent, or a pane tree is invalid.
     pub fn try_new(
         active: WorkspaceId,
         workspaces: Vec<Workspace<D>>,
@@ -158,6 +204,11 @@ impl<D: PaneData> WorkspaceSet<D> {
     }
 
     /// Validate the set without changing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first violated set or pane-tree invariant. Workspaces and
+    /// duplicate identifiers are examined in vector order.
     pub fn validate(&self) -> Result<(), WorkspaceSetError> {
         if self.workspaces.is_empty() {
             return Err(WorkspaceSetError::Empty);
@@ -189,13 +240,22 @@ impl<D: PaneData> WorkspaceSet<D> {
         Ok(())
     }
 
+    /// Return the selected workspace, if `active` names an entry in the set.
+    ///
+    /// A validated set always returns `Some`; `None` is possible because the
+    /// public fields and deserialization can construct an invalid set.
     pub fn active(&self) -> Option<&Workspace<D>> {
         self.workspaces
             .iter()
             .find(|workspace| workspace.id == self.active)
     }
 
-    /// Append a valid workspace and return its index.
+    /// Append a valid workspace and return its zero-based index.
+    ///
+    /// # Errors
+    ///
+    /// Returns an existing-set validation error, [`WorkspaceSetError::DuplicateWorkspaceId`],
+    /// or [`WorkspaceSetError::InvalidPaneTree`]. The set is unchanged on error.
     pub fn add(&mut self, workspace: Workspace<D>) -> Result<usize, WorkspaceSetError> {
         self.validate()?;
         if let Some((first_index, _)) = self
@@ -223,6 +283,11 @@ impl<D: PaneData> WorkspaceSet<D> {
     }
 
     /// Remove a non-active workspace, returning the complete removed value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an existing-set validation error, [`WorkspaceSetError::CannotRemoveActive`],
+    /// or [`WorkspaceSetError::WorkspaceNotFound`]. The set is unchanged on error.
     pub fn remove(&mut self, id: &WorkspaceId) -> Result<Workspace<D>, WorkspaceSetError> {
         self.validate()?;
         if id == &self.active {
@@ -237,6 +302,11 @@ impl<D: PaneData> WorkspaceSet<D> {
     }
 
     /// Rename a workspace, returning its previous name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an existing-set validation error or [`WorkspaceSetError::WorkspaceNotFound`].
+    /// The set is unchanged on error.
     pub fn rename(
         &mut self,
         id: &WorkspaceId,
@@ -252,6 +322,11 @@ impl<D: PaneData> WorkspaceSet<D> {
     }
 
     /// Replace any workspace tree after validation, returning the old tree.
+    ///
+    /// # Errors
+    ///
+    /// Returns an existing-set validation error, [`WorkspaceSetError::InvalidPaneTree`],
+    /// or [`WorkspaceSetError::WorkspaceNotFound`]. The set is unchanged on error.
     pub fn update_tree(
         &mut self,
         id: &WorkspaceId,
@@ -271,7 +346,13 @@ impl<D: PaneData> WorkspaceSet<D> {
         Ok(std::mem::replace(&mut workspace.tree, tree))
     }
 
-    /// Move a workspace to `index`, returning its previous index.
+    /// Move a workspace to zero-based `index`, returning its previous index.
+    ///
+    /// # Errors
+    ///
+    /// Returns an existing-set validation error,
+    /// [`WorkspaceSetError::ReorderIndexOutOfBounds`] when `index >= len`, or
+    /// [`WorkspaceSetError::WorkspaceNotFound`]. The order is unchanged on error.
     pub fn reorder(&mut self, id: &WorkspaceId, index: usize) -> Result<usize, WorkspaceSetError> {
         self.validate()?;
         let len = self.workspaces.len();
@@ -290,7 +371,12 @@ impl<D: PaneData> WorkspaceSet<D> {
         Ok(previous)
     }
 
-    /// Typed switching API. The returned tree is the new active snapshot.
+    /// Select a workspace and return a clone of its stored pane-tree snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an existing-set validation error or [`WorkspaceSetError::WorkspaceNotFound`].
+    /// The active selection is unchanged on error.
     pub fn try_switch(&mut self, id: &WorkspaceId) -> Result<PaneNode<D>, WorkspaceSetError> {
         self.validate()?;
         let tree = self
@@ -305,11 +391,20 @@ impl<D: PaneData> WorkspaceSet<D> {
     }
 
     /// Switch while retaining the original optional API.
+    ///
+    /// Returns `None` for any validation or lookup failure; use [`Self::try_switch`]
+    /// when the failure reason is needed.
+    #[doc(hidden)]
     pub fn switch(&mut self, id: &WorkspaceId) -> Option<PaneNode<D>> {
         self.try_switch(id).ok()
     }
 
-    /// Typed persistence API for the active workspace.
+    /// Replace the active workspace's tree and return its previous snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an existing-set validation error or a tree validation error.
+    /// The stored snapshot is unchanged on error.
     pub fn try_persist_active(
         &mut self,
         tree: PaneNode<D>,
@@ -319,6 +414,10 @@ impl<D: PaneData> WorkspaceSet<D> {
     }
 
     /// Replace the stored tree of the active workspace, retaining the original bool API.
+    ///
+    /// Returns `false` for any validation failure and leaves the set unchanged;
+    /// use [`Self::try_persist_active`] when the failure reason is needed.
+    #[doc(hidden)]
     pub fn persist_active(&mut self, tree: PaneNode<D>) -> bool {
         self.try_persist_active(tree).is_ok()
     }

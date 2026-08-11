@@ -7,16 +7,38 @@ use gpui::AppContext as _;
 use gpui_command_palette::Command;
 use serde::{Deserialize, Serialize};
 
+/// Action metadata attached to a Mullion command-palette entry.
+///
+/// Serde uses the default externally tagged representation. `PaneCommand`
+/// wraps a serialized [`PaneCommand`], while `SelectActivity` wraps an object
+/// with `pane` and `activity` fields. Consumers may persist or transmit this
+/// metadata, but should still validate it against current view state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PaletteInvocation {
+    /// Dispatch a pane-management command.
     PaneCommand(PaneCommand),
-    SelectActivity { pane: PaneId, activity: ActivityId },
+    /// Select an activity in a specific pane.
+    SelectActivity {
+        /// Pane that should receive the activity selection.
+        pane: PaneId,
+        /// Activity to select.
+        activity: ActivityId,
+    },
 }
+/// Failure returned when executing palette metadata against the current view.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PaletteInvocationError {
+    /// The pane command was rejected; the wrapped error is exposed as the source.
     Command(crate::PaneCommandError),
+    /// The invocation names a pane that no longer exists.
     PaneNotFound(PaneId),
-    ActivityNotVisible { pane: PaneId, activity: ActivityId },
+    /// The activity is absent from the pane's current visible catalog projection.
+    ActivityNotVisible {
+        /// Pane whose visible activities were checked.
+        pane: PaneId,
+        /// Requested activity that was not visible.
+        activity: ActivityId,
+    },
 }
 impl std::fmt::Display for PaletteInvocationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -40,12 +62,14 @@ impl std::error::Error for PaletteInvocationError {
     }
 }
 impl PaletteInvocation {
+    /// Returns the pane command, or `None` for an activity selection.
     pub fn pane_command(&self) -> Option<PaneCommand> {
         match self {
             Self::PaneCommand(c) => Some(*c),
             _ => None,
         }
     }
+    /// Returns the target pane and activity, or `None` for a pane command.
     pub fn activity(&self) -> Option<(&PaneId, &ActivityId)> {
         match self {
             Self::SelectActivity { pane, activity } => Some((pane, activity)),
@@ -54,8 +78,14 @@ impl PaletteInvocation {
     }
 }
 
-/// Compatibility alias: generic entry/search behavior is owned by the external crate.
+/// Compatibility alias for an external command carrying [`PaletteInvocation`].
+///
+/// Generic entry and child-resolution behavior is owned by
+/// `gpui-command-palette`.
 pub type PaletteEntry = Command<PaletteInvocation>;
+/// Compatibility alias for a ranked external search result.
+///
+/// Match scoring and result fields follow `gpui-command-palette`'s contract.
 pub type PaletteSearchResult = gpui_command_palette::SearchResult<PaletteInvocation>;
 fn entry(
     id: String,
@@ -69,6 +99,10 @@ fn entry(
         .group(group)
 }
 
+/// Projects the static pane-command catalog into palette entries.
+///
+/// When `can_split` is `false`, both split-direction commands are omitted.
+/// Catalog order and command identifiers are preserved.
 pub fn pane_command_palette_entries(can_split: bool) -> Vec<PaletteEntry> {
     PaneCommand::catalog()
         .into_iter()
@@ -84,6 +118,10 @@ pub fn pane_command_palette_entries(can_split: bool) -> Vec<PaletteEntry> {
         })
         .collect()
 }
+/// Builds the top-level Mullion palette, including the live pane picker.
+///
+/// The first entry is a searchable child entry for `panes`; remaining entries
+/// are produced by [`pane_command_palette_entries`].
 pub fn mullion_palette_entries(panes: &[PaneId], can_split: bool) -> Vec<PaletteEntry> {
     let focus_children = focus_index_palette_entries(panes);
     let fallback = PaletteInvocation::PaneCommand(PaneCommand::FocusIndex(0));
@@ -100,6 +138,10 @@ pub fn mullion_palette_entries(panes: &[PaneId], can_split: bool) -> Vec<Palette
     entries.extend(pane_command_palette_entries(can_split));
     entries
 }
+/// Creates focus commands for `panes` in slice order.
+///
+/// Each command uses its zero-based slice position as [`PaneCommand::FocusIndex`]
+/// while its displayed ordinal is one-based.
 pub fn focus_index_palette_entries(panes: &[PaneId]) -> Vec<PaletteEntry> {
     panes
         .iter()
@@ -116,6 +158,11 @@ pub fn focus_index_palette_entries(panes: &[PaneId]) -> Vec<PaletteEntry> {
         })
         .collect()
 }
+/// Projects activities visible for one pane's current data into palette entries.
+///
+/// Catalog filters are evaluated with no search query. Category breadcrumbs
+/// become entry groups, primary entries precede trailing entries, and hidden
+/// activities are omitted.
 pub fn activity_palette_entries<D: PaneData>(
     catalog: &ActivityCatalog<D>,
     pane: &PaneId,
@@ -188,7 +235,12 @@ fn flatten_activities<D: PaneData>(
         }
     }
 }
-/// Create, wire, and mount the shared palette widget for a Mullion view.
+/// Creates, wires, and attaches the shared palette widget to a Mullion view.
+///
+/// Execution delegates to `MullionView::invoke_palette`; invocation errors are
+/// intentionally ignored by this event callback because entries may become
+/// stale between projection and selection. The returned entity is not given an
+/// application action route; use [`install_command_palette_for_view`] for that.
 pub fn command_palette_for_view<D: PaneData>(
     view: &gpui::Entity<crate::MullionView<D>>,
     cx: &mut gpui::App,
@@ -230,6 +282,9 @@ pub fn command_palette_for_view<D: PaneData>(
 
 /// Create the Mullion adapter palette, attach it to `view`, and install its
 /// application-level action route for `window`.
+///
+/// The returned entity is the same palette attached to the view and may be
+/// retained by the host for further palette configuration.
 pub fn install_command_palette_for_view<D: PaneData>(
     view: &gpui::Entity<crate::MullionView<D>>,
     window: &gpui::Window,
@@ -240,7 +295,10 @@ pub fn install_command_palette_for_view<D: PaneData>(
     palette
 }
 
-/// Source-compatible forwarding shim; ranking lives in `gpui-command-palette`.
+/// Searches projected entries using `gpui-command-palette` ranking.
+///
+/// This source-compatible forwarding shim returns results in the external
+/// crate's stable ranking order; Mullion does not interpret the query itself.
 pub fn search_palette(entries: &[PaletteEntry], query: &str) -> Vec<PaletteSearchResult> {
     gpui_command_palette::search_commands(entries, query)
 }

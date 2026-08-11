@@ -37,9 +37,11 @@ impl<D: PaneData> MullionModel<D> {
     pub fn new(tree: PaneNode<D>) -> Self {
         Self::try_new(tree).expect("MullionModel::new requires a valid pane tree")
     }
+    /// Borrow the current validated pane tree.
     pub fn tree(&self) -> &PaneNode<D> {
         self.tree.as_ref()
     }
+    /// Clone the complete tree for persistence or event transport.
     pub fn snapshot(&self) -> PaneNode<D> {
         self.tree.as_ref().clone()
     }
@@ -50,12 +52,15 @@ impl<D: PaneData> MullionModel<D> {
     fn tree_mut(&mut self) -> &mut PaneNode<D> {
         Rc::make_mut(&mut self.tree)
     }
+    /// Return the pane that owns model focus.
     pub fn focused(&self) -> Option<&PaneId> {
         self.focused.as_ref()
     }
+    /// Return the pane occupying the zoom viewport, if zoom is enabled.
     pub fn zoomed(&self) -> Option<&PaneId> {
         self.zoomed.as_ref()
     }
+    /// Drain pending events in mutation order.
     pub fn take_events(&mut self) -> Vec<PaneEvent<D>> {
         std::mem::take(&mut self.events)
     }
@@ -135,6 +140,7 @@ impl<D: PaneData> MullionModel<D> {
             .expect("MullionModel::replace_tree requires a valid pane tree");
     }
 
+    /// Focus an existing pane, returning `false` when the id is unknown.
     pub fn focus(&mut self, pane: &PaneId) -> bool {
         if !self.tree.contains(pane) {
             return false;
@@ -155,6 +161,7 @@ impl<D: PaneData> MullionModel<D> {
         }
         true
     }
+    /// Focus the visually nearest pane in a screen-space direction.
     pub fn focus_neighbor(&mut self, direction: PaneDirection) -> bool {
         let Some(current) = self.focused.clone() else {
             return false;
@@ -164,6 +171,7 @@ impl<D: PaneData> MullionModel<D> {
         });
         next.is_some_and(|pane| self.focus(&pane))
     }
+    /// Focus a leaf by depth-first traversal index.
     pub fn focus_index(&mut self, index: usize) -> bool {
         self.tree
             .leaf_ids()
@@ -171,6 +179,7 @@ impl<D: PaneData> MullionModel<D> {
             .cloned()
             .is_some_and(|p| self.focus(&p))
     }
+    /// Move focus cyclically by a signed depth-first traversal offset.
     pub fn cycle_focus(&mut self, delta: isize) -> bool {
         let ids = self.tree.leaf_ids();
         if ids.is_empty() {
@@ -184,6 +193,9 @@ impl<D: PaneData> MullionModel<D> {
         let next = (at + delta).rem_euclid(ids.len() as isize) as usize;
         self.focus(&ids[next])
     }
+    /// Insert a host-identified pane beside `target` and focus it.
+    ///
+    /// Returns `false` for an unknown target, duplicate id, or refused tree mutation.
     pub fn split(
         &mut self,
         target: &PaneId,
@@ -208,6 +220,7 @@ impl<D: PaneData> MullionModel<D> {
         self.changed();
         true
     }
+    /// Remove a pane and return its data; the final pane cannot be closed.
     pub fn close(&mut self, pane: &PaneId) -> Option<D> {
         if self.tree.leaf_ids().len() <= 1 {
             return None;
@@ -241,6 +254,7 @@ impl<D: PaneData> MullionModel<D> {
         self.changed();
         Some(data)
     }
+    /// Store a finite first-child split fraction, clamped to `0.1..=0.9`.
     pub fn resize(&mut self, split_key: &PaneId, ratio: f64) -> bool {
         if !ratio.is_finite() {
             return false;
@@ -259,6 +273,7 @@ impl<D: PaneData> MullionModel<D> {
         self.changed();
         true
     }
+    /// Resize the nearest ancestor boundary of the focused pane.
     pub fn resize_focused(&mut self, direction: PaneDirection, amount: f64) -> bool {
         let Some(pane) = self.focused.clone() else {
             return false;
@@ -269,6 +284,7 @@ impl<D: PaneData> MullionModel<D> {
         let old = find_ratio(&self.tree, &key).unwrap_or(0.5);
         self.resize(&key, old + amount.abs() * sign)
     }
+    /// Move a pane to an edge of another pane, preserving its complete leaf state.
     pub fn move_pane(&mut self, source: &PaneId, destination: &PaneId, edge: DropEdge) -> bool {
         if !self.tree_mut().move_pane(source, destination, edge) {
             return false;
@@ -316,6 +332,7 @@ impl<D: PaneData> MullionModel<D> {
         true
     }
 
+    /// Swap two complete leaves without changing split topology.
     pub fn swap(&mut self, a: &PaneId, b: &PaneId) -> bool {
         if !self.tree_mut().swap_panes(a, b) {
             false
@@ -324,6 +341,7 @@ impl<D: PaneData> MullionModel<D> {
             true
         }
     }
+    /// Change the nearest parent split axis identified by `pane`.
     pub fn set_direction(&mut self, pane: &PaneId, direction: SplitDirection) -> bool {
         if !self.tree_mut().change_direction(pane, direction) {
             return false;
@@ -335,6 +353,7 @@ impl<D: PaneData> MullionModel<D> {
         self.changed();
         true
     }
+    /// Reset every non-balanced split to an even ratio.
     pub fn balance(&mut self) -> bool {
         if self.tree_mut().balance_splits() == 0 {
             return false;
@@ -349,6 +368,7 @@ impl<D: PaneData> MullionModel<D> {
         self.changed();
         true
     }
+    /// Rotate leaves through existing layout slots.
     pub fn rotate(&mut self, rotation: PaneRotation) -> bool {
         if !self.tree_mut().rotate_panes(rotation) {
             false
@@ -357,6 +377,7 @@ impl<D: PaneData> MullionModel<D> {
             true
         }
     }
+    /// Rebuild split topology using a standard whole-tree layout.
     pub fn apply_layout(&mut self, layout: PaneLayout) -> bool {
         let focus = self.focused.clone();
         if !self.tree_mut().apply_layout(layout, focus.as_ref()) {
@@ -366,6 +387,7 @@ impl<D: PaneData> MullionModel<D> {
             true
         }
     }
+    /// Replace a pane's selected activity.
     pub fn set_activity(&mut self, pane: &PaneId, activity: Option<ActivityId>) -> bool {
         let Some(PaneNode::Leaf {
             active_activity, ..
@@ -381,6 +403,7 @@ impl<D: PaneData> MullionModel<D> {
         self.changed();
         true
     }
+    /// Replace pane data when it differs by `PartialEq`.
     pub fn update_data(&mut self, pane: &PaneId, data: D) -> bool {
         let Some(PaneNode::Leaf { data: old, .. }) = self.tree_mut().find_mut(pane) else {
             return false;
@@ -393,6 +416,7 @@ impl<D: PaneData> MullionModel<D> {
         self.changed();
         true
     }
+    /// Toggle zoom for the focused pane.
     pub fn toggle_zoom(&mut self) -> bool {
         let Some(focus) = self.focused.clone() else {
             return false;
@@ -408,6 +432,7 @@ impl<D: PaneData> MullionModel<D> {
         true
     }
 
+    /// Execute a portable command using `split_factory` only for split commands.
     pub fn execute<F>(&mut self, command: PaneCommand, mut split_factory: F) -> PaneCommandResult
     where
         F: FnMut(&PaneId, SplitDirection, &D) -> Option<(PaneId, D)>,

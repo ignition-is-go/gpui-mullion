@@ -2,28 +2,54 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 
+/// Stable, application-defined identifier for a leaf pane.
+///
+/// The contained string is persisted directly as a JSON string. Pane ids must
+/// be unique within a persisted [`PaneNode`]; use [`PaneNode::validate`] before
+/// saving or after loading untrusted state.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
-pub struct PaneId(pub String);
+pub struct PaneId(
+    /// The identifier's persisted string value.
+    pub String,
+);
 
+/// Stable, application-defined identifier for an activity shown in a pane.
+///
+/// The contained value is serialized directly as a string. Mullion treats it
+/// as opaque and does not require it to be globally unique across activity
+/// categories.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
-pub struct ActivityId(pub String);
+pub struct ActivityId(
+    /// The identifier's persisted string value.
+    pub String,
+);
 
+/// Stable, application-defined identifier for an activity category.
+///
+/// The contained value is serialized directly as a string and otherwise
+/// interpreted only by the host application.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
-pub struct CategoryId(pub String);
+pub struct CategoryId(
+    /// The identifier's persisted string value.
+    pub String,
+);
 
 impl PaneId {
+    /// Creates a pane identifier from an owned or borrowed string value.
     pub fn new(id: impl Into<String>) -> Self {
         PaneId(id.into())
     }
 }
 
 impl ActivityId {
+    /// Creates an activity identifier from an owned or borrowed string value.
     pub fn new(id: impl Into<String>) -> Self {
         ActivityId(id.into())
     }
 }
 
 impl CategoryId {
+    /// Creates a category identifier from an owned or borrowed string value.
     pub fn new(id: impl Into<String>) -> Self {
         CategoryId(id.into())
     }
@@ -61,9 +87,16 @@ impl_id_conversions!(PaneId);
 impl_id_conversions!(ActivityId);
 impl_id_conversions!(CategoryId);
 
+/// Axis along which a split divides its available rectangle.
+///
+/// This is persisted by name (`"Horizontal"` or `"Vertical"`). The direction
+/// describes the arrangement of the child panes, not the orientation of the
+/// divider drawn between them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SplitDirection {
+    /// Places `first` to the left of `second`, dividing the width.
     Horizontal,
+    /// Places `first` above `second`, dividing the height.
     Vertical,
 }
 
@@ -73,9 +106,13 @@ pub enum SplitDirection {
 /// screen space rather than the axis of a split.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PaneDirection {
+    /// Toward decreasing screen-space x coordinates.
     Left,
+    /// Toward increasing screen-space x coordinates.
     Right,
+    /// Toward decreasing screen-space y coordinates.
     Up,
+    /// Toward increasing screen-space y coordinates.
     Down,
 }
 
@@ -109,20 +146,33 @@ pub enum PaneLayout {
 /// Direction used when rotating pane contents through the current layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PaneRotation {
+    /// Advances each pane to the next leaf slot in depth-first layout order.
     Forward,
+    /// Moves each pane to the preceding leaf slot in depth-first layout order.
     Backward,
 }
 
+/// Region of a destination pane targeted by a drag or insertion.
+///
+/// Outer edges create a split on the corresponding screen-space side. A
+/// center drop currently uses a horizontal split and places the inserted pane
+/// second; it does not overlay either pane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DropEdge {
+    /// The destination's top edge; inserts above it.
     Top,
+    /// The destination's bottom edge; inserts below it.
     Bottom,
+    /// The destination's left edge; inserts to its left.
     Left,
+    /// The destination's right edge; inserts to its right.
     Right,
+    /// The destination's center; inserts second in a horizontal split.
     Center,
 }
 
 impl DropEdge {
+    /// Returns the child-arrangement axis produced by this drop edge.
     pub fn split_direction(&self) -> SplitDirection {
         match self {
             DropEdge::Top | DropEdge::Bottom => SplitDirection::Vertical,
@@ -130,6 +180,9 @@ impl DropEdge {
         }
     }
 
+    /// Returns whether the inserted or moved pane precedes the destination.
+    ///
+    /// Only top and left drops place the source in the split's `first` child.
     pub fn source_is_first(&self) -> bool {
         matches!(self, DropEdge::Top | DropEdge::Left)
     }
@@ -147,7 +200,9 @@ impl<T> PaneData for T where T: Clone + PartialEq + 'static {}
 /// One step from a split node to one of its children.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PaneNodeBranch {
+    /// Descend into the split's `first` child.
     First,
+    /// Descend into the split's `second` child.
     Second,
 }
 
@@ -157,7 +212,10 @@ pub enum PaneNodeBranch {
 /// the corresponding split, making validation errors actionable even when a
 /// pane id itself is duplicated.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub struct PaneNodePath(pub Vec<PaneNodeBranch>);
+pub struct PaneNodePath(
+    /// Branches from the root to the named node, in traversal order.
+    pub Vec<PaneNodeBranch>,
+);
 
 impl fmt::Display for PaneNodePath {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -177,20 +235,29 @@ impl fmt::Display for PaneNodePath {
 pub enum PaneValidationError {
     /// Two leaf nodes use the same pane id.
     DuplicatePaneId {
+        /// The id assigned to more than one leaf.
         pane_id: PaneId,
+        /// Structural location at which the id was first encountered.
         first_path: PaneNodePath,
+        /// Structural location of the later occurrence.
         duplicate_path: PaneNodePath,
     },
     /// A split ratio is NaN or positive/negative infinity.
     NonFiniteSplitRatio {
+        /// Stable key of the invalid split: its second subtree's first leaf id.
         split_key: PaneId,
+        /// Structural location of the split itself.
         path: PaneNodePath,
+        /// The rejected dimensionless fraction.
         ratio: f64,
     },
     /// A finite split ratio is outside the supported inclusive range.
     SplitRatioOutOfRange {
+        /// Stable key of the invalid split: its second subtree's first leaf id.
         split_key: PaneId,
+        /// Structural location of the split itself.
         path: PaneNodePath,
+        /// The rejected dimensionless fraction, outside `0.1..=0.9`.
         ratio: f64,
     },
 }
@@ -231,19 +298,37 @@ impl fmt::Display for PaneValidationError {
 
 impl std::error::Error for PaneValidationError {}
 
-/// A node in the pane tree — either a leaf pane or a split containing two children.
+/// Recursive, binary representation of a persisted pane layout.
+///
+/// Serde uses its default externally tagged shape: a node is an object keyed
+/// by `"Leaf"` or `"Split"`, whose value contains the documented fields.
+/// Serialization is available when `D` is serializable even though
+/// [`PaneData`] itself deliberately has no serialization bound. Before
+/// persisting, call [`PaneNode::validate`] to enforce unique ids and valid
+/// geometry.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PaneNode<D: PaneData> {
+    /// A visible pane and its application-owned state.
     Leaf {
+        /// Identifier used to address this pane; unique in a valid tree.
         id: PaneId,
+        /// Activity selected in the pane, or `None` when none is selected.
         active_activity: Option<ActivityId>,
+        /// Consumer-defined state stored with the pane.
         data: D,
     },
+    /// A rectangular region divided between exactly two child nodes.
     Split {
+        /// Axis and screen-space ordering of the children.
         direction: SplitDirection,
-        /// Fraction (0.0..1.0) of space allocated to `first`.
+        /// Dimensionless fraction of the split axis allocated to `first`.
+        ///
+        /// Persistable trees require a finite value in `0.1..=0.9`; the
+        /// second child receives the remaining `1.0 - ratio` fraction.
         ratio: f64,
+        /// Child rendered left or above, according to `direction`.
         first: Box<PaneNode<D>>,
+        /// Child rendered right or below, according to `direction`.
         second: Box<PaneNode<D>>,
     },
 }
@@ -1700,9 +1785,13 @@ mod tests {
 /// flat-layout renderer to position leaves and split handles.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rect {
+    /// Dimensionless x coordinate of the left edge, relative to the root width.
     pub left: f64,
+    /// Dimensionless y coordinate of the top edge, relative to the root height.
     pub top: f64,
+    /// Dimensionless width as a fraction of the root container's width.
     pub width: f64,
+    /// Dimensionless height as a fraction of the root container's height.
     pub height: f64,
 }
 
@@ -1715,9 +1804,13 @@ impl Rect {
         height: 1.0,
     };
 
-    /// Divide this rect by a split at the given direction and ratio. Returns
-    /// `(first, second)` — `first` gets `ratio` of the axis that `direction`
-    /// splits, `second` gets the remainder.
+    /// Divides this rectangle into the split's `first` and `second` regions.
+    ///
+    /// `ratio` is a dimensionless fraction of this rectangle's width for a
+    /// horizontal split or height for a vertical split. It is not clamped or
+    /// validated here; callers should supply a finite value in `0.1..=0.9` to
+    /// preserve the pane-tree geometry invariants. Valid input produces two
+    /// adjacent, non-overlapping rectangles whose union is `self`.
     pub fn split(&self, direction: SplitDirection, ratio: f64) -> (Rect, Rect) {
         match direction {
             SplitDirection::Horizontal => {

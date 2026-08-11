@@ -1,122 +1,206 @@
 use crate::MullionTheme;
 use gpui::{px, Hsla, Pixels};
 
-/// Root surface tokens.
+/// Style tokens for the root Mullion surface.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MullionRootStyle {
+    /// Fill color behind the entire Mullion layout.
     pub background: Hsla,
 }
 
-/// Pane surface tokens.
+/// Style tokens for pane surfaces, borders, and focus presentation.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PaneStyle {
+    /// Fill color of each pane's content surface.
     pub background: Hsla,
+    /// Default foreground color for pane content.
     pub text: Hsla,
+    /// Color used for pane and host boundary lines.
     pub border: Hsla,
-    /// Default panes have no border; host color opts into the bottom edge.
+    /// Thickness of ordinary pane borders, in logical pixels.
+    ///
+    /// A value of zero disables the ordinary border.
     pub border_width: Pixels,
+    /// Thickness of the host-provided bottom-edge border, in logical pixels.
     pub host_border_width: Pixels,
+    /// Thickness of the focused-pane indicator, in logical pixels.
     pub focus_indicator_width: Pixels,
+    /// Color of the focused-pane indicator.
     pub focus_indicator: Hsla,
+    /// Color composited over panes when unfocused-pane washing is enabled.
     pub unfocused_wash: Hsla,
 }
 
-/// Reference activity-bar geometry and state colors.
+/// Geometry and state colors for activity bars.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ActivityBarStyle {
+    /// Width of a vertical bar or height of a horizontal bar, in logical pixels.
     pub thickness: Pixels,
+    /// Width or height of the bar while expanded, in logical pixels.
     pub expanded_extent: Pixels,
+    /// Width and height of activity icons, in logical pixels.
     pub icon_size: Pixels,
+    /// Inset around expanded activity-bar content, in logical pixels.
     pub expanded_padding: Pixels,
+    /// Category-label font size, in logical pixels.
     pub font_size: Pixels,
+    /// Thickness of the bar's boundary line, in logical pixels.
     pub border_width: Pixels,
+    /// Corner radius of the activity-bar surface, in logical pixels.
     pub border_radius: Pixels,
+    /// Thickness of the selected category edge, in logical pixels.
     pub category_border_width: Pixels,
+    /// Fill color of the activity bar.
     pub background: Hsla,
+    /// Color of the activity-bar boundary line.
     pub border: Hsla,
+    /// Base color of activity icons.
     pub icon: Hsla,
+    /// Foreground color of category labels.
     pub category_label: Hsla,
+    /// Fill color of category cards in the expanded bar.
     pub category_card_background: Hsla,
+    /// Color used to distinguish category edges.
     pub category_edge: Hsla,
+    /// Alpha multiplier for inactive icons, normally in the inclusive range `0.0..=1.0`.
     pub inactive_icon_opacity: f32,
+    /// Alpha multiplier for active icons, normally in the inclusive range `0.0..=1.0`.
     pub active_icon_opacity: f32,
 }
 
-/// Geometry for the built-in pane management affordances.
+/// Geometry and colors for the built-in pane management affordances.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PaneControlStyle {
+    /// Width and height of a compact control, in logical pixels.
     pub compact_size: Pixels,
+    /// Width and height of an icon in a compact control, in logical pixels.
     pub compact_icon_size: Pixels,
+    /// Font size of labels in expanded controls, in logical pixels.
     pub expanded_label_size: Pixels,
+    /// Width and height of a control in its hidden presentation, in logical pixels.
     pub hidden_size: Pixels,
+    /// Width and height of its hidden-presentation icon, in logical pixels.
     pub hidden_icon_size: Pixels,
+    /// Distance from pane edges to the control capsule, in logical pixels.
     pub capsule_inset: Pixels,
+    /// Inner padding of the control capsule, in logical pixels.
     pub capsule_padding: Pixels,
+    /// Space between controls within the capsule, in logical pixels.
     pub capsule_gap: Pixels,
+    /// Corner radius of the control capsule, in logical pixels.
     pub capsule_radius: Pixels,
+    /// Thickness of the capsule outline, in logical pixels.
     pub capsule_border_width: Pixels,
+    /// Alpha multiplier applied to the capsule, normally in `0.0..=1.0`.
     pub capsule_opacity: f32,
+    /// Fill color of the control capsule.
     pub capsule_background: Hsla,
+    /// Outline color of the control capsule.
     pub capsule_border: Hsla,
 }
 
+/// Geometry and colors for split grabbers.
+///
+/// The painted line and its larger pointer target are configured separately
+/// so a thin divider can remain easy to grab.
 #[derive(Clone, Copy, Debug, PartialEq)]
-/// Split grabber geometry separates the painted line from its pointer target.
 pub struct SplitHandleStyle {
+    /// Thickness of the painted divider line, in logical pixels.
     pub thickness: Pixels,
+    /// Thickness of the pointer hit target, in logical pixels.
     pub hover_target_thickness: Pixels,
+    /// Divider color in its resting state.
     pub color: Hsla,
+    /// Divider color while its pointer target is hovered.
     pub hover_color: Hsla,
 }
 
+/// Style tokens for drag-and-drop destination previews.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DropOverlayStyle {
+    /// Color composited over the prospective drop region.
     pub indicator_color: Hsla,
 }
 
+/// Geometry, typography, and colors for pane headers.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PaneHeaderStyle {
+    /// Total header height, in logical pixels.
     pub height: Pixels,
+    /// Left and right content inset, in logical pixels.
     pub horizontal_padding: Pixels,
+    /// Space between header children, in logical pixels.
     pub gap: Pixels,
+    /// Header text size, in logical pixels.
     pub font_size: Pixels,
+    /// Thickness of the header boundary line, in logical pixels.
     pub border_width: Pixels,
+    /// Numeric font weight used for the pane title.
     pub title_weight: u16,
+    /// Fill color of the header.
     pub background: Hsla,
+    /// Default foreground color for header content.
     pub text: Hsla,
+    /// Foreground color of the pane title.
     pub title: Hsla,
+    /// Color of the header boundary line.
     pub border: Hsla,
 }
 
+/// Geometry, typography, and colors for workspace-switcher buttons.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WorkspaceSwitcherStyle {
+    /// Space between workspace buttons, in logical pixels.
     pub gap: Pixels,
+    /// Workspace-label font size, in logical pixels.
     pub font_size: Pixels,
+    /// Workspace-label line-box height, in logical pixels.
     pub line_height: Pixels,
+    /// Top and bottom button inset, in logical pixels.
     pub vertical_padding: Pixels,
+    /// Left and right button inset, in logical pixels.
     pub horizontal_padding: Pixels,
+    /// Button corner radius, in logical pixels.
     pub border_radius: Pixels,
+    /// Fill color of an inactive workspace button.
     pub background: Hsla,
+    /// Foreground color of an inactive workspace button.
     pub text: Hsla,
+    /// Fill color of the active workspace button.
     pub active_background: Hsla,
+    /// Foreground color of the active workspace button.
     pub active_text: Hsla,
 }
 
-/// Complete typed GPUI style set. Constructing it from a theme keeps color
-/// ownership in Rust while component geometry remains independently tunable.
+/// Complete typed GPUI style set.
+///
+/// Constructing the set from a [`MullionTheme`] keeps color ownership in Rust
+/// while leaving each component's geometry independently tunable.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MullionStyles {
+    /// Tokens for the root surface.
     pub root: MullionRootStyle,
+    /// Tokens for pane surfaces and focus state.
     pub pane: PaneStyle,
+    /// Tokens for activity bars.
     pub activity_bar: ActivityBarStyle,
+    /// Tokens for pane management controls.
     pub pane_controls: PaneControlStyle,
+    /// Tokens for split dividers and their hit targets.
     pub split_handle: SplitHandleStyle,
+    /// Tokens for drag-and-drop previews.
     pub drop_overlay: DropOverlayStyle,
+    /// Tokens for pane headers.
     pub header: PaneHeaderStyle,
+    /// Tokens for the workspace switcher.
     pub workspace_switcher: WorkspaceSwitcherStyle,
 }
 
 impl MullionStyles {
+    /// Build the reference component geometry using colors from `theme`.
+    ///
+    /// Geometry values are expressed in GPUI logical pixels. The supplied
+    /// theme provides component colors without otherwise changing sizing.
     pub fn from_theme(theme: MullionTheme) -> Self {
         Self {
             root: MullionRootStyle {

@@ -7,15 +7,27 @@
 use crate::{ActivityId, CategoryId, DropEdge, PaneId, SplitDirection, WorkspaceId};
 use serde::{Deserialize, Serialize};
 
+/// The semantic role of an element in a Mullion pane workspace.
+///
+/// Hosts can translate these portable roles into the closest roles offered by
+/// their native accessibility API.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MullionAccessibilityRole {
+    /// A pane which contains one active activity.
     Pane,
+    /// An activity that can be selected for display in a pane.
     Activity,
+    /// An expandable group of activities.
     ActivityCategory,
+    /// A handle that adjusts the relative sizes of two pane groups.
     SplitHandle,
+    /// A docking destination shown while a pane is being moved.
     DropTarget,
+    /// A selectable workspace in a collection of workspaces.
     Workspace,
+    /// A control that closes a pane.
     CloseButton,
+    /// A control used to drag and dock a pane.
     DragHandle,
 }
 
@@ -23,14 +35,25 @@ pub enum MullionAccessibilityRole {
 /// native accessibility API as well as expose the combined description.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MullionAccessibilityState {
+    /// Whether this element currently holds keyboard focus.
     pub focused: bool,
+    /// Whether this element is the selected item in its containing collection.
     pub selected: bool,
+    /// The expansion state of an expandable element, or `None` when expansion
+    /// does not apply to the element.
     pub expanded: Option<bool>,
+    /// Whether this element is the current active target or mode.
     pub active: bool,
+    /// Whether interaction with this element is unavailable.
     pub disabled: bool,
 }
 
 impl MullionAccessibilityState {
+    /// Returns a human-readable, comma-separated summary of the asserted state.
+    ///
+    /// States are emitted in field order. When no state is asserted, this
+    /// returns `"available"`; an explicit `expanded: Some(false)` is described
+    /// as `"collapsed"`.
     pub fn description(self) -> String {
         let mut states = Vec::new();
         if self.focused {
@@ -56,21 +79,36 @@ impl MullionAccessibilityState {
     }
 }
 
+/// Portable accessibility metadata for one Mullion UI element.
+///
+/// The node is descriptive only: the host remains responsible for attaching
+/// it to a native accessibility tree and wiring the corresponding actions.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MullionAccessibilityNode {
+    /// The element's portable semantic role.
     pub role: MullionAccessibilityRole,
     /// Stable domain identity when the represented object has one.
     pub id: Option<String>,
+    /// The short, user-facing accessible name of the element.
     pub label: String,
+    /// Additional user-facing context about the element or its action.
     pub description: String,
+    /// The element's current interactive state.
     pub state: MullionAccessibilityState,
 }
 
 impl MullionAccessibilityNode {
+    /// Returns the human-readable summary produced by this node's [`state`](Self::state).
     pub fn state_description(&self) -> String {
         self.state.description()
     }
 
+    /// Describes a pane within an ordered pane collection.
+    ///
+    /// `index` is zero-based and is rendered as a one-based ordinal out of
+    /// `count`. `activity_name`, when present, identifies the pane's visible
+    /// activity. `focused` controls the focused state, while `zoomed` both
+    /// annotates the description and marks the pane active.
     pub fn pane(
         id: &PaneId,
         index: usize,
@@ -100,6 +138,10 @@ impl MullionAccessibilityNode {
         }
     }
 
+    /// Describes an activity selector.
+    ///
+    /// `selected` indicates that the activity is currently displayed in its
+    /// pane and controls both the state and action-oriented description.
     pub fn activity(id: &ActivityId, name: &str, selected: bool) -> Self {
         Self {
             role: MullionAccessibilityRole::Activity,
@@ -117,6 +159,10 @@ impl MullionAccessibilityNode {
         }
     }
 
+    /// Describes an expandable activity category.
+    ///
+    /// `expanded` is represented explicitly as either expanded or collapsed,
+    /// rather than as a state that does not apply.
     pub fn category(id: &CategoryId, name: &str, expanded: bool) -> Self {
         Self {
             role: MullionAccessibilityRole::ActivityCategory,
@@ -134,6 +180,12 @@ impl MullionAccessibilityNode {
         }
     }
 
+    /// Describes a handle for a split with the given axis and first-group ratio.
+    ///
+    /// `ratio` is a unitless fraction of the available split extent assigned to
+    /// the first pane group. Finite values are clamped to `0.0..=1.0` and
+    /// announced as a rounded percentage; non-finite values are announced as
+    /// 50 percent. `disabled` reports whether the handle can currently resize.
     pub fn split(direction: SplitDirection, ratio: f64, disabled: bool) -> Self {
         let axis = match direction {
             SplitDirection::Horizontal => "horizontal",
@@ -156,6 +208,10 @@ impl MullionAccessibilityNode {
         }
     }
 
+    /// Describes a pane docking target at `edge`.
+    ///
+    /// A center target moves content into an existing pane; every other edge
+    /// creates a split. `active` indicates the currently highlighted target.
     pub fn drop_target(edge: DropEdge, active: bool) -> Self {
         let edge_label = match edge {
             DropEdge::Top => "top",
@@ -180,6 +236,7 @@ impl MullionAccessibilityNode {
         }
     }
 
+    /// Describes the control that closes the pane identified by `id`.
     pub fn close_pane(id: &PaneId) -> Self {
         Self {
             role: MullionAccessibilityRole::CloseButton,
@@ -190,6 +247,7 @@ impl MullionAccessibilityNode {
         }
     }
 
+    /// Describes the drag handle used to move and dock the pane identified by `id`.
     pub fn drag_handle(id: &PaneId) -> Self {
         Self {
             role: MullionAccessibilityRole::DragHandle,
@@ -200,6 +258,10 @@ impl MullionAccessibilityNode {
         }
     }
 
+    /// Describes a workspace within an ordered workspace collection.
+    ///
+    /// `index` is zero-based and is rendered as a one-based ordinal out of
+    /// `count`. An `active` workspace is marked both selected and active.
     pub fn workspace(
         id: &WorkspaceId,
         name: &str,
