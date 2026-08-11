@@ -1560,6 +1560,19 @@ mod tests {
     }
 
     #[test]
+    fn directional_navigation_reads_each_split_ratio_once() {
+        let tree = three_pane_layout();
+        let reads = std::cell::Cell::new(0);
+        let neighbor =
+            directional_neighbor(&tree, &PaneId::new("a"), PaneDirection::Right, |key| {
+                reads.set(reads.get() + 1);
+                stored_ratio(&tree, key)
+            });
+        assert_eq!(neighbor, Some(PaneId::new("b")));
+        assert_eq!(reads.get(), 2);
+    }
+
+    #[test]
     fn swap_moves_whole_leaves_without_changing_topology() {
         let mut tree = three_pane_layout();
         let directions_before: Vec<_> = collect_split_keys(&tree)
@@ -1759,11 +1772,32 @@ pub fn directional_neighbor<D: PaneData>(
     direction: PaneDirection,
     mut read_ratio: impl FnMut(&PaneId) -> f64,
 ) -> Option<PaneId> {
-    let ids = tree.leaf_ids();
-    let rects: Vec<_> = ids
-        .iter()
-        .filter_map(|id| leaf_rect(tree, id, &mut read_ratio).map(|rect| (id, rect)))
-        .collect();
+    fn collect_rects<'a, D: PaneData>(
+        node: &'a PaneNode<D>,
+        rect: Rect,
+        read_ratio: &mut dyn FnMut(&PaneId) -> f64,
+        out: &mut Vec<(&'a PaneId, Rect)>,
+    ) {
+        match node {
+            PaneNode::Leaf { id, .. } => out.push((id, rect)),
+            PaneNode::Split {
+                direction,
+                first,
+                second,
+                ..
+            } => {
+                let ratio = read_ratio(second.leftmost_leaf_id());
+                let (first_rect, second_rect) = rect.split(*direction, ratio);
+                collect_rects(first, first_rect, read_ratio, out);
+                collect_rects(second, second_rect, read_ratio, out);
+            }
+        }
+    }
+
+    // One geometry walk computes every leaf. Calling `leaf_rect` once per pane
+    // repeated the root traversal and ratio lookup for every candidate.
+    let mut rects = Vec::new();
+    collect_rects(tree, Rect::FULL, &mut read_ratio, &mut rects);
     let target_rect = rects
         .iter()
         .find(|(id, _)| *id == target)
