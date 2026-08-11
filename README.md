@@ -42,28 +42,28 @@ let view = cx.new(|cx| {
 });
 ```
 
-## Appearance
+## Theme
 
-`MullionTheme` is the semantic color source and `MullionAppearance` is the one fully resolved
-visual/geometry bundle:
+`MullionTheme` is the only look configuration. It contains semantic colors and every resolved
+component color and geometry token:
 
 ```rust
-// Follow the GPUI window appearance (also the default).
-let view = view.with_theme_mode(MullionThemeMode::System);
+// With no override, Mullion follows the GPUI window appearance.
+let view = MullionView::new(tree, activities, cx);
 
-// Live-map an application theme; Mullion derives every component token internally.
-let view = view.with_theme_provider(|cx| pulse_mullion_theme(cx));
+// Live-map the application theme.
+let view = view.with_theme_provider(pulse_mullion_theme);
 
-// Or install one exact resolved bundle when component geometry must differ.
-let mut appearance = MullionAppearance::from_theme(MullionTheme::dark());
-appearance.activity_bar.thickness = gpui::px(52.0);
-let view = view.with_appearance(appearance);
+// Or install one exact complete theme.
+let mut theme = MullionTheme::dark();
+theme.activity_bar.thickness = gpui::px(52.0);
+let view = view.with_theme(theme);
 ```
 
-`with_theme` derives standard geometry from a fixed semantic theme. The advanced
-`with_appearance_provider` supports live exact bundles. Fixed appearance/theme/mode calls and both
-provider families are mutually exclusive and last-wins; clearing a provider restores the last fixed
-source. Hosts must invalidate windows when provider state changes.
+Use `MullionTheme::light()`, `dark()`, or `system(window_appearance)` to construct complete themes.
+`with_theme_provider` is evaluated once per root render. Fixed and provider setters are last-wins;
+clearing the provider restores the last fixed theme or system-following default. Hosts must
+invalidate windows when provider state changes.
 
 For durable content, keep the catalog `Activity` descriptor and add a view-owned UI-local factory registry:
 

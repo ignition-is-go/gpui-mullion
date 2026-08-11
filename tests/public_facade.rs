@@ -25,10 +25,8 @@ fn prelude_supports_the_documented_core_vocabulary() {
     let _ = FocusPresentation::default();
     let _ = MullionConfig::default();
     let theme = MullionTheme::light();
-    let look = MullionAppearance::from_theme(theme);
-    assert_eq!(look.theme, theme);
+    assert_eq!(theme.root.background, theme.background);
     let _provider: MullionThemeProvider = std::rc::Rc::new(|_| MullionTheme::dark());
-    assert_eq!(MullionThemeMode::default(), MullionThemeMode::System);
 }
 
 #[gpui_mullion::gpui::test]

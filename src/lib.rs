@@ -36,9 +36,7 @@ pub mod palette;
 pub mod platform;
 /// Runtime settings, controlled values, and serializable configuration.
 pub mod settings;
-/// Typed geometry and color tokens for Mullion chrome.
-pub mod styles;
-/// Light, dark, and system-resolved Mullion palettes.
+/// The complete Mullion theme and its component token records.
 pub mod theme;
 /// Validated pane-tree data, mutations, geometry, and navigation algorithms.
 pub mod tree;
@@ -56,9 +54,9 @@ pub mod prelude {
     pub use crate::{
         register_key_bindings, Activity, ActivityBarConfig, ActivityCatalog, ActivityCategory,
         ActivityFactoryRegistry, ActivityId, ActivityInstance, ActivityNode, CategoryId,
-        FocusPresentation, MullionAppearance, MullionConfig, MullionModel, MullionSettings,
-        MullionTheme, MullionThemeMode, MullionThemeProvider, MullionView, PaneData, PaneEvent,
-        PaneFocusBehavior, PaneId, PaneNode, SplitDirection, Workspace, WorkspaceId, WorkspaceSet,
+        FocusPresentation, MullionConfig, MullionModel, MullionSettings, MullionTheme,
+        MullionThemeProvider, MullionView, PaneData, PaneEvent, PaneFocusBehavior, PaneId,
+        PaneNode, SplitDirection, Workspace, WorkspaceId, WorkspaceSet,
     };
 }
 pub use accessibility::{
@@ -130,11 +128,10 @@ pub use settings::{
     FocusPresentation, MullionConfig, MullionConfiguration, MullionPresentation, MullionSetting,
     MullionSettingOption, MullionSettings, MullionSettingsConfig,
 };
-pub use styles::{
-    ActivityBarStyle, DropOverlayStyle, MullionAppearance, MullionRootStyle, PaneControlStyle,
-    PaneHeaderStyle, PaneStyle, SplitHandleStyle, WorkspaceSwitcherStyle,
+pub use theme::{
+    ActivityBarStyle, DropOverlayStyle, MullionRootStyle, MullionTheme, MullionThemeProvider,
+    PaneControlStyle, PaneHeaderStyle, PaneStyle, SplitHandleStyle, WorkspaceSwitcherStyle,
 };
-pub use theme::{MullionAppearanceProvider, MullionTheme, MullionThemeMode, MullionThemeProvider};
 pub use tree::{
     collect_split_keys, collect_split_ratios, directional_neighbor, find_ratio,
     find_split_direction, leaf_rect, resize_boundary, split_parent_rect, ActivityId, CategoryId,

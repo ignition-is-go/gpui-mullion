@@ -10,7 +10,7 @@ use gpui_mullion::{
     register_key_bindings, Activity, ActivityBarConfig, ActivityBarEdge, ActivityBarHostConfig,
     ActivityBarMode, ActivityBarSlots, ActivityCatalog, ActivityCategory, ActivityChrome,
     ActivityIcon, ActivityId, ActivityNode, CategoryChrome, CategoryId, DropEdge,
-    FocusPresentation, MullionAppearance, MullionOverlay, MullionSettings, MullionView,
+    FocusPresentation, MullionOverlay, MullionSettings, MullionTheme, MullionView,
     OverlayAlignment, OverlayBackdrop, OverlayHostConfig, OverlayLength, OverlayPlacement,
     OverlaySize, OverlayStack, OverlayTier, PaneFocusBehavior, PaneId, PaneNode, SplitDirection,
     Workspace, WorkspaceId, WorkspaceSet,
@@ -857,25 +857,25 @@ fn host_config() -> ActivityBarHostConfig<DemoData> {
     )
 }
 
-fn demo_appearance() -> MullionAppearance {
-    let mut appearance = MullionAppearance::default();
-    appearance.activity_bar.inactive_icon_opacity = 1.0;
-    appearance.activity_bar.active_icon_opacity = 1.0;
-    appearance.activity_bar.expanded_padding = px(10.);
-    appearance.split_handle.thickness = px(2.);
+fn demo_theme() -> MullionTheme {
+    let mut theme = MullionTheme::default();
+    theme.activity_bar.inactive_icon_opacity = 1.0;
+    theme.activity_bar.active_icon_opacity = 1.0;
+    theme.activity_bar.expanded_padding = px(10.);
+    theme.split_handle.thickness = px(2.);
     // Chromium preserves the reference surface's blue level through the wash;
     // GPUI needs this fixture-only source correction to paint the same pixel.
-    appearance.pane.unfocused_wash = rgb(0x030911).into();
-    appearance.workspace_switcher.gap = px(1.);
-    appearance.workspace_switcher.font_size = px(11.);
-    appearance.workspace_switcher.line_height = px(13.);
-    appearance.workspace_switcher.vertical_padding = px(2.);
-    appearance.workspace_switcher.horizontal_padding = px(8.);
-    appearance.workspace_switcher.border_radius = px(2.);
-    appearance.workspace_switcher.background = gpui::transparent_black();
-    appearance.workspace_switcher.active_background = rgb(0x222222).into();
-    appearance.workspace_switcher.active_text = appearance.pane.text;
-    appearance
+    theme.pane.unfocused_wash = rgb(0x030911).into();
+    theme.workspace_switcher.gap = px(1.);
+    theme.workspace_switcher.font_size = px(11.);
+    theme.workspace_switcher.line_height = px(13.);
+    theme.workspace_switcher.vertical_padding = px(2.);
+    theme.workspace_switcher.horizontal_padding = px(8.);
+    theme.workspace_switcher.border_radius = px(2.);
+    theme.workspace_switcher.background = gpui::transparent_black();
+    theme.workspace_switcher.active_background = rgb(0x222222).into();
+    theme.workspace_switcher.active_text = theme.pane.text;
+    theme
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -1117,7 +1117,7 @@ fn launch(cx: &mut App) {
                             .with_focus_indicator(true)
                             .with_unfocused_pane_opacity(0.75),
                     )
-                    .with_appearance(demo_appearance())
+                    .with_theme(demo_theme())
                     .with_workspace_switcher_visible(false)
                     .with_activity_bar_host(host_config())
                     .with_overlay_host(

@@ -38,7 +38,7 @@ Native pane detachment is the sole explicit non-goal: it is additive desktop fun
 | Full command/action/keymap | **Core implemented; visible split controls incomplete** | 37 static `PaneCommand`s, dynamic `FocusPane`, exhaustive GPUI action conversion, `PaneCommandExecutionOptions`, direct and prefix keymaps, editable-target policy; command/action/keymap and rendered dispatch tests. |
 | Command palette/catalog | **Implemented** | `PaletteEntry`, `PaletteInvocation`, full metadata, focus submenu, activity projection/search and `MullionView::{palette_entries,search_palette,invoke_palette}`; palette unit tests and `live_palette_projects_searches_and_executes_typed_invocations`. |
 | Workspaces | **Implemented** | validated `WorkspaceSet::{add,remove,rename,reorder,update_tree,try_switch}`, mounted view operations, typed snapshots, defined focus/zoom scope; workspace and six rendered workspace tests. |
-| Theming and chrome extensibility | **API implemented; pixel parity incomplete** | One resolved `MullionAppearance`, semantic `MullionTheme`, light/dark/system `MullionThemeMode`, live theme/appearance providers, activity/category icons and headers, app/leading/trailing/accessory slots, pane border callback; appearance/theme/catalog rendered tests. |
+| Theming and chrome extensibility | **API implemented; pixel parity incomplete** | One complete `MullionTheme` with light/dark/system constructors and a live theme provider, activity/category icons and headers, app/leading/trailing/accessory slots, pane border callback; theme/catalog rendered tests. |
 | Overlay escape hatch | **Implemented** | window-root `OverlayStack`, controlled source, modal/toast/drag tiers, placement/size/backdrop/dismiss/click-through/accessibility policy; seven unit and five rendered overlay tests. |
 | Detached pane windows | **Explicit parity non-goal** | Absent from the Leptos reference. `DetachedWindowService`/`NativeDetachedWindowService` and `examples/detached_window.rs` only demonstrate a host-owned window; no detach/sync/reattach claim is made. |
 | Rendered interaction tests | **Behavior validated; screenshot parity incomplete** | 32 `#[gpui::test]` cases in `src/view.rs`; `.github/scripts/check_browser.mjs` drives real canvas hover/click, actions, zoom, workspace switching, and activity selection. CI run 31340159314 passed at `b251111`. |
@@ -114,7 +114,7 @@ Serializable `PaneFocusBehavior::{Hover,Click}`, controlled/local `MullionSettin
 
 ### MUL-P2-002 — Expanded theming — **Implemented**
 
-`MullionTheme` owns semantic colors and `MullionAppearance` is the sole fully resolved root, pane, activity-bar, pane-control, split-handle, drop-overlay, header, and workspace-switcher bundle. Fixed/system themes and live theme providers derive the appearance internally; exact appearance/provider APIs support component-level overrides. Evidence: appearance/theme tests and `custom_appearance_is_one_resolved_bundle`.
+`MullionTheme` is the sole look type and owns semantic colors plus fully resolved root, pane, activity-bar, pane-control, split-handle, drop-overlay, header, and workspace-switcher tokens. The default follows the window; fixed and live theme APIs install the same complete type. Evidence: theme tests and `custom_theme_is_one_complete_resolved_bundle`.
 
 ### MUL-P2-003 — Overlay escape hatch — **Implemented**
 

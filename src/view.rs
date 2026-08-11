@@ -4,13 +4,13 @@ use crate::{
     ActivityBarMode, ActivityCacheKey, ActivityCatalog, ActivityCatalogValidationError,
     ActivityExpansionState, ActivityFactoryRegistry, ActivityId, ActivityNode, ActivityProjection,
     DockBounds, DockConfig, DockDrag, DockHover, DockPayload, DropEdge, FocusPresentation,
-    FocusedPaneCommandProvider, MullionAppearance, MullionAppearanceProvider, MullionModel,
-    MullionOverlay, MullionPaletteBinding, MullionSettings, MullionTheme, MullionThemeMode,
-    MullionThemeProvider, NewPaneFactory, OverlayAlignment, OverlayError, OverlayHostConfig,
-    OverlayLength, PaletteEntry, PaletteInvocation, PaletteInvocationError, PaletteSearchResult,
-    PaneCommandExecutionOptions, PaneControl, PaneData, PaneDirection, PaneEvent,
-    PaneFocusBehavior, PaneId, PaneNode, PaneSplitFactory, SplitDirection, VisibleActivityNode,
-    WorkspaceChanged, WorkspaceEvent, WorkspaceId, WorkspaceSet, WorkspaceSetError,
+    FocusedPaneCommandProvider, MullionModel, MullionOverlay, MullionPaletteBinding,
+    MullionSettings, MullionTheme, MullionThemeProvider, NewPaneFactory, OverlayAlignment,
+    OverlayError, OverlayHostConfig, OverlayLength, PaletteEntry, PaletteInvocation,
+    PaletteInvocationError, PaletteSearchResult, PaneCommandExecutionOptions, PaneControl,
+    PaneData, PaneDirection, PaneEvent, PaneFocusBehavior, PaneId, PaneNode, PaneSplitFactory,
+    SplitDirection, VisibleActivityNode, WorkspaceChanged, WorkspaceEvent, WorkspaceId,
+    WorkspaceSet, WorkspaceSetError,
 };
 use gpui::{
     actions, canvas, div, ease_in_out, point, prelude::*, px, relative, AnyElement, App, Bounds,
@@ -71,27 +71,6 @@ struct InternalEdges {
 struct PaneRenderPosition<'a> {
     pane_ids: &'a [PaneId],
     edges: InternalEdges,
-}
-
-#[derive(Clone)]
-enum FixedMullionLook {
-    Mode(MullionThemeMode),
-    Appearance(Rc<MullionAppearance>),
-}
-
-impl FixedMullionLook {
-    fn resolve(&self, window_appearance: gpui::WindowAppearance) -> MullionAppearance {
-        match self {
-            Self::Mode(mode) => MullionAppearance::from_theme(mode.resolve(window_appearance)),
-            Self::Appearance(appearance) => **appearance,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct ResolvedMullionAppearance {
-    theme: MullionTheme,
-    styles: MullionAppearance,
 }
 
 struct LeafRenderData<'a, D> {
@@ -259,7 +238,7 @@ fn activity_motion_sample_with_geometry(
 
 #[cfg(test)]
 fn activity_motion_sample(progress: f32) -> ActivityMotionSample {
-    let styles = MullionAppearance::default().activity_bar;
+    let styles = MullionTheme::default().activity_bar;
     activity_motion_sample_with_geometry(
         progress,
         styles.thickness,
@@ -577,8 +556,7 @@ pub struct MullionView<D: PaneData> {
     dock_config: DockConfig<D>,
     command_options: PaneCommandExecutionOptions<D>,
     catalog: ActivityCatalog<D>,
-    fixed_look: FixedMullionLook,
-    appearance_provider: Option<MullionAppearanceProvider>,
+    fixed_theme: Option<Rc<MullionTheme>>,
     theme_provider: Option<MullionThemeProvider>,
     host: ActivityBarHostConfig<D>,
     settings: MullionSettings,
@@ -676,8 +654,7 @@ impl<D: PaneData> MullionView<D> {
             dock_config: DockConfig::default(),
             command_options: PaneCommandExecutionOptions::default(),
             catalog,
-            fixed_look: FixedMullionLook::Mode(MullionThemeMode::System),
-            appearance_provider: None,
+            fixed_theme: None,
             theme_provider: None,
             host: ActivityBarHostConfig::default(),
             settings: MullionSettings::default(),
@@ -778,45 +755,15 @@ impl<D: PaneData> MullionView<D> {
         view.workspaces = Some(workspaces);
         Ok(view)
     }
-    /// Use one exact, fully resolved Mullion appearance.
-    pub fn with_appearance(mut self, appearance: MullionAppearance) -> Self {
-        self.fixed_look = FixedMullionLook::Appearance(Rc::new(appearance));
-        self.appearance_provider = None;
-        self.theme_provider = None;
-        self
-    }
 
-    /// Derive the complete appearance from one fixed semantic theme.
+    /// Use one fixed complete Mullion theme.
     pub fn with_theme(mut self, theme: MullionTheme) -> Self {
-        self.fixed_look =
-            FixedMullionLook::Appearance(Rc::new(MullionAppearance::from_theme(theme)));
-        self.appearance_provider = None;
+        self.fixed_theme = Some(Rc::new(theme));
         self.theme_provider = None;
         self
     }
 
-    /// Derive the complete appearance from a fixed built-in theme policy.
-    pub fn with_theme_mode(mut self, mode: MullionThemeMode) -> Self {
-        self.fixed_look = FixedMullionLook::Mode(mode);
-        self.appearance_provider = None;
-        self.theme_provider = None;
-        self
-    }
-
-    /// Resolve an exact appearance from a pure UI-local provider once per root render.
-    ///
-    /// The host must invalidate the window when provider state changes. This advanced path is intended for dynamic geometry or component-specific
-    /// colors. Most hosts should prefer [`Self::with_theme_provider`].
-    pub fn with_appearance_provider(
-        mut self,
-        provider: impl Fn(&App) -> MullionAppearance + 'static,
-    ) -> Self {
-        self.appearance_provider = Some(Rc::new(provider));
-        self.theme_provider = None;
-        self
-    }
-
-    /// Resolve a semantic theme once per root render and derive the appearance internally.
+    /// Resolve the complete theme from a pure UI-local provider once per root render.
     ///
     /// The host must invalidate the window when provider state changes.
     pub fn with_theme_provider(
@@ -824,99 +771,37 @@ impl<D: PaneData> MullionView<D> {
         provider: impl Fn(&App) -> MullionTheme + 'static,
     ) -> Self {
         self.theme_provider = Some(Rc::new(provider));
-        self.appearance_provider = None;
         self
     }
 
-    /// Replace the fixed appearance, clearing both providers, and repaint.
-    pub fn set_appearance(&mut self, appearance: MullionAppearance, cx: &mut Context<Self>) {
-        self.fixed_look = FixedMullionLook::Appearance(Rc::new(appearance));
-        self.appearance_provider = None;
-        self.theme_provider = None;
-        cx.notify();
-    }
-
-    /// Replace the fixed semantic theme, clearing both providers, and repaint.
+    /// Replace the fixed complete theme, clearing any provider, and repaint.
     pub fn set_theme(&mut self, theme: MullionTheme, cx: &mut Context<Self>) {
-        self.fixed_look =
-            FixedMullionLook::Appearance(Rc::new(MullionAppearance::from_theme(theme)));
-        self.appearance_provider = None;
+        self.fixed_theme = Some(Rc::new(theme));
         self.theme_provider = None;
         cx.notify();
     }
 
-    /// Replace the fixed theme policy, clearing both providers, and repaint.
-    pub fn set_theme_mode(&mut self, mode: MullionThemeMode, cx: &mut Context<Self>) {
-        self.fixed_look = FixedMullionLook::Mode(mode);
-        self.appearance_provider = None;
-        self.theme_provider = None;
-        cx.notify();
-    }
-
-    /// Replace or clear the exact-appearance provider and repaint.
+    /// Replace or clear the theme provider and repaint.
     ///
-    /// Installing it clears the theme provider. Clearing it restores the last
-    /// fixed appearance, theme, or theme mode.
-    pub fn set_appearance_provider(
-        &mut self,
-        provider: Option<MullionAppearanceProvider>,
-        cx: &mut Context<Self>,
-    ) {
-        self.appearance_provider = provider;
-        if self.appearance_provider.is_some() {
-            self.theme_provider = None;
-        }
-        cx.notify();
-    }
-
-    /// Replace or clear the semantic-theme provider and repaint.
-    ///
-    /// Installing it clears the appearance provider. Clearing it restores the
-    /// last fixed appearance, theme, or theme mode.
+    /// Clearing restores the last fixed theme, or system resolution when no
+    /// fixed theme has been installed.
     pub fn set_theme_provider(
         &mut self,
         provider: Option<MullionThemeProvider>,
         cx: &mut Context<Self>,
     ) {
         self.theme_provider = provider;
-        if self.theme_provider.is_some() {
-            self.appearance_provider = None;
-        }
         cx.notify();
     }
 
-    /// Return whether an exact appearance provider is active.
-    pub const fn has_appearance_provider(&self) -> bool {
-        self.appearance_provider.is_some()
-    }
-
-    /// Return whether a semantic theme provider is active.
+    /// Return whether a theme provider is active.
     pub const fn has_theme_provider(&self) -> bool {
         self.theme_provider.is_some()
     }
 
-    /// Return the configured exact fixed appearance, if that is the fixed fallback.
-    pub fn appearance(&self) -> Option<&MullionAppearance> {
-        match &self.fixed_look {
-            FixedMullionLook::Appearance(appearance) => Some(appearance.as_ref()),
-            FixedMullionLook::Mode(_) => None,
-        }
-    }
-
-    /// Return the configured fixed semantic theme, if present.
-    pub fn theme(&self) -> Option<MullionTheme> {
-        match &self.fixed_look {
-            FixedMullionLook::Appearance(appearance) => Some(appearance.theme),
-            FixedMullionLook::Mode(_) => None,
-        }
-    }
-
-    /// Return the configured fixed theme mode, if present.
-    pub fn theme_mode(&self) -> Option<MullionThemeMode> {
-        match &self.fixed_look {
-            FixedMullionLook::Mode(mode) => Some(*mode),
-            FixedMullionLook::Appearance(_) => None,
-        }
+    /// Return the configured fixed theme. `None` means follow the window theme.
+    pub fn theme(&self) -> Option<&MullionTheme> {
+        self.fixed_theme.as_deref()
     }
 
     /// Test-support probe for whether pointer hover expanded a pane's activity bar.
@@ -1974,11 +1859,11 @@ impl<D: PaneData> MullionView<D> {
         node: &PaneNode<D>,
         pane_ids: &[PaneId],
         edges: InternalEdges,
-        appearance: ResolvedMullionAppearance,
+        theme: MullionTheme,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let styles = appearance.styles;
+        let styles = theme;
         match node {
             PaneNode::Leaf {
                 id,
@@ -1991,7 +1876,7 @@ impl<D: PaneData> MullionView<D> {
                     data,
                     position: PaneRenderPosition { pane_ids, edges },
                 },
-                appearance,
+                theme,
                 window,
                 cx,
             ),
@@ -2039,10 +1924,8 @@ impl<D: PaneData> MullionView<D> {
                         },
                     ),
                 };
-                let first_el =
-                    self.render_node(first, pane_ids, first_edges, appearance, window, cx);
-                let second_el =
-                    self.render_node(second, pane_ids, second_edges, appearance, window, cx);
+                let first_el = self.render_node(first, pane_ids, first_edges, theme, window, cx);
+                let second_el = self.render_node(second, pane_ids, second_edges, theme, window, cx);
                 let handle_color = styles.split_handle.color;
                 let focused_color = styles.split_handle.hover_color;
                 let handle_thickness = styles.split_handle.thickness;
@@ -2732,7 +2615,7 @@ impl<D: PaneData> MullionView<D> {
     fn render_activity_nodes(
         &mut self,
         data: ActivityNodesRenderData<'_, D>,
-        appearance: ResolvedMullionAppearance,
+        theme: MullionTheme,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
@@ -2742,7 +2625,7 @@ impl<D: PaneData> MullionView<D> {
             selected,
             active_categories,
         } = data;
-        let styles = appearance.styles;
+        let styles = theme;
         let edge = self.host.activity_bar.edge;
         let horizontal = edge.is_horizontal();
         let mut rendered = Vec::new();
@@ -3262,7 +3145,7 @@ impl<D: PaneData> MullionView<D> {
                                 selected,
                                 active_categories,
                             },
-                            appearance,
+                            theme,
                             window,
                             cx,
                         );
@@ -3525,7 +3408,7 @@ impl<D: PaneData> MullionView<D> {
     fn render_leaf(
         &mut self,
         leaf: LeafRenderData<'_, D>,
-        appearance: ResolvedMullionAppearance,
+        theme: MullionTheme,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -3535,7 +3418,7 @@ impl<D: PaneData> MullionView<D> {
             data,
             position: PaneRenderPosition { pane_ids, edges },
         } = leaf;
-        let ResolvedMullionAppearance { theme, styles } = appearance;
+        let styles = theme;
         let focused = self.model.focused() == Some(id);
         let pane_index = pane_ids.iter().position(|pane| pane == id).unwrap_or(0);
         let render_data = self
@@ -3600,7 +3483,7 @@ impl<D: PaneData> MullionView<D> {
                 selected: selected_id,
                 active_categories: &render_data.active_categories,
             },
-            appearance,
+            theme,
             window,
             cx,
         );
@@ -3611,7 +3494,7 @@ impl<D: PaneData> MullionView<D> {
                 selected: selected_id,
                 active_categories: &render_data.active_categories,
             },
-            appearance,
+            theme,
             window,
             cx,
         );
@@ -4557,17 +4440,14 @@ impl<D: PaneData> MullionView<D> {
 
 impl<D: PaneData> Render for MullionView<D> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let styles = if let Some(provider) = &self.appearance_provider {
+        let theme = if let Some(provider) = &self.theme_provider {
             provider(cx)
-        } else if let Some(provider) = &self.theme_provider {
-            MullionAppearance::from_theme(provider(cx))
+        } else if let Some(theme) = &self.fixed_theme {
+            **theme
         } else {
-            self.fixed_look.resolve(window.appearance())
+            MullionTheme::system(window.appearance())
         };
-        let resolved_appearance = ResolvedMullionAppearance {
-            theme: styles.theme,
-            styles,
-        };
+        let styles = theme;
         if !cx.has_active_drag()
             && (self.dock_hover.is_some() || self.dock_drag_active)
             && !self.drag_reconcile_scheduled
@@ -4885,7 +4765,7 @@ impl<D: PaneData> Render for MullionView<D> {
                 rendered_tree,
                 &pane_ids,
                 InternalEdges::default(),
-                resolved_appearance,
+                theme,
                 window,
                 cx,
             )))
@@ -7341,11 +7221,9 @@ mod tests {
         assert_eq!(edge.size.width, px(1.));
         assert_eq!(edge.right(), content.right());
         view.read_with(cx, |view, _| {
-            assert_eq!(view.theme_mode(), Some(MullionThemeMode::System));
+            assert!(view.theme().is_none(), "default follows the window theme");
             assert_eq!(
-                MullionThemeMode::System
-                    .resolve(gpui::WindowAppearance::Dark)
-                    .focus_indicator,
+                MullionTheme::system(gpui::WindowAppearance::Dark).focus_indicator,
                 gpui::rgb(0x0974a4).into()
             );
         });
@@ -7465,7 +7343,7 @@ mod tests {
             cx.add_window_view(move |_, cx| MullionView::new(tree, vec![activity, category], cx));
         cx.run_until_parked();
 
-        let expected = crate::MullionAppearance::default().activity_bar.icon_size;
+        let expected = crate::MullionTheme::default().activity_bar.icon_size;
         for selector in [
             "activity-fallback-icon:pane:stylesheet",
             "activity-category-fallback-icon:pane:components",
@@ -7719,20 +7597,19 @@ mod tests {
     }
 
     #[gpui::test]
-    fn custom_appearance_is_one_resolved_bundle(cx: &mut TestAppContext) {
+    fn custom_theme_is_one_complete_resolved_bundle(cx: &mut TestAppContext) {
         cx.update(|cx| cx.set_reduce_motion(true));
-        let mut styles = MullionAppearance::default();
-        styles.activity_bar.thickness = px(47.);
-        styles.activity_bar.expanded_extent = px(210.);
-        styles.activity_bar.expanded_padding = px(12.);
-        styles.split_handle.thickness = px(9.);
-        styles.split_handle.hover_target_thickness = px(13.);
-        styles.root.background = gpui::rgb(0x010203).into();
-        styles.pane.border = gpui::rgb(0x040506).into();
+        let mut theme = MullionTheme::dark();
+        theme.activity_bar.thickness = px(47.);
+        theme.activity_bar.expanded_extent = px(210.);
+        theme.activity_bar.expanded_padding = px(12.);
+        theme.split_handle.thickness = px(9.);
+        theme.split_handle.hover_target_thickness = px(13.);
+        theme.root.background = gpui::rgb(0x010203).into();
+        theme.pane.border = gpui::rgb(0x040506).into();
         let tree = split(SplitDirection::Horizontal, 0.5, leaf("a"), leaf("b"));
-        let (view, cx) = cx.add_window_view(move |_, cx| {
-            MullionView::new(tree, vec![], cx).with_appearance(styles)
-        });
+        let (view, cx) =
+            cx.add_window_view(move |_, cx| MullionView::new(tree, vec![], cx).with_theme(theme));
         cx.run_until_parked();
         assert_eq!(
             cx.debug_bounds("activity-bar:a").unwrap().size.width,
@@ -7746,8 +7623,7 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(
             cx.debug_bounds("activity-bar-panel:a").unwrap().size.width,
-            px(222.),
-            "custom flyout extent and padding drive rendered geometry",
+            px(222.)
         );
         assert_eq!(
             cx.debug_bounds("split-handle:b").unwrap().size.width,
@@ -7757,23 +7633,40 @@ mod tests {
             cx.debug_bounds("split-hit-target:b").unwrap().size.width,
             px(13.)
         );
-        view.read_with(cx, |view, _| {
-            assert_eq!(view.appearance(), Some(&styles));
-        });
+        view.read_with(cx, |view, _| assert_eq!(view.theme(), Some(&theme)));
+    }
+
+    #[test]
+    fn system_theme_resolves_every_window_appearance() {
+        for theme in [
+            gpui::WindowAppearance::Light,
+            gpui::WindowAppearance::VibrantLight,
+        ] {
+            assert_eq!(MullionTheme::system(theme), MullionTheme::light());
+        }
+        for theme in [
+            gpui::WindowAppearance::Dark,
+            gpui::WindowAppearance::VibrantDark,
+        ] {
+            assert_eq!(MullionTheme::system(theme), MullionTheme::dark());
+        }
     }
 
     #[gpui::test]
-    fn appearance_provider_is_live_and_fixed_provider_setters_are_last_wins(
+    fn theme_provider_is_live_once_per_render_and_fixed_provider_are_last_wins(
         cx: &mut TestAppContext,
     ) {
         let use_large = Rc::new(Cell::new(false));
         let provider_state = use_large.clone();
-        let mut small = MullionAppearance::default();
+        let calls = Rc::new(Cell::new(0_usize));
+        let provider_calls = calls.clone();
+        let mut small = MullionTheme::dark();
         small.activity_bar.thickness = px(41.);
         let mut large = small;
         large.activity_bar.thickness = px(63.);
         let (view, cx) = cx.add_window_view(move |_, cx| {
-            MullionView::new(leaf("pane"), vec![], cx).with_appearance_provider(move |_| {
+            MullionView::new(leaf("pane"), vec![], cx).with_theme_provider(move |_| {
+                provider_calls.set(provider_calls.get() + 1);
                 if provider_state.get() {
                     large
                 } else {
@@ -7787,116 +7680,38 @@ mod tests {
             px(41.)
         );
 
+        calls.set(0);
         use_large.set(true);
         view.update(cx, |_, cx| cx.notify());
         cx.run_until_parked();
+        assert_eq!(
+            calls.get(),
+            1,
+            "theme provider resolves once per root render"
+        );
         assert_eq!(
             cx.debug_bounds("activity-bar:pane").unwrap().size.width,
             px(63.)
         );
 
-        view.update(cx, |view, cx| view.set_appearance(small, cx));
-        assert!(!view.read_with(cx, |view, _| view.has_appearance_provider()));
+        view.update(cx, |view, cx| view.set_theme(small, cx));
+        view.read_with(cx, |view, _| {
+            assert!(!view.has_theme_provider());
+            assert_eq!(view.theme(), Some(&small));
+        });
         cx.run_until_parked();
         assert_eq!(
             cx.debug_bounds("activity-bar:pane").unwrap().size.width,
             px(41.)
         );
-    }
-
-    #[test]
-    fn fixed_look_resolves_system_theme_and_exact_appearance_without_merging() {
-        for window_appearance in [
-            gpui::WindowAppearance::Light,
-            gpui::WindowAppearance::VibrantLight,
-            gpui::WindowAppearance::Dark,
-            gpui::WindowAppearance::VibrantDark,
-        ] {
-            let resolved =
-                FixedMullionLook::Mode(MullionThemeMode::System).resolve(window_appearance);
-            assert_eq!(
-                resolved,
-                MullionAppearance::from_theme(MullionThemeMode::System.resolve(window_appearance))
-            );
-        }
-
-        let mut exact = MullionAppearance::from_theme(MullionTheme::light());
-        exact.activity_bar.thickness = px(91.);
-        assert_eq!(
-            FixedMullionLook::Appearance(Rc::new(exact)).resolve(gpui::WindowAppearance::Dark),
-            exact
-        );
-        assert_eq!(
-            FixedMullionLook::Appearance(Rc::new(MullionAppearance::from_theme(
-                MullionTheme::dark(),
-            )))
-            .resolve(gpui::WindowAppearance::Light),
-            MullionAppearance::from_theme(MullionTheme::dark())
-        );
-    }
-
-    #[gpui::test]
-    fn theme_and_appearance_sources_are_mutually_exclusive_and_last_wins(cx: &mut TestAppContext) {
-        let theme_calls = Rc::new(Cell::new(0_usize));
-        let calls = theme_calls.clone();
-        let (view, cx) = cx.add_window_view(move |_, cx| {
-            MullionView::new(leaf("pane"), vec![], cx).with_theme_provider(move |_| {
-                calls.set(calls.get() + 1);
-                MullionTheme::light()
-            })
-        });
-        cx.run_until_parked();
-        assert!(theme_calls.get() > 0);
-        theme_calls.set(0);
-        view.update(cx, |_, cx| cx.notify());
-        cx.run_until_parked();
-        assert_eq!(
-            theme_calls.get(),
-            1,
-            "theme provider resolves once per root render"
-        );
-        view.read_with(cx, |view, _| {
-            assert!(view.has_theme_provider());
-            assert!(!view.has_appearance_provider());
-        });
-
-        let mut exact = MullionAppearance::from_theme(MullionTheme::dark());
-        exact.activity_bar.thickness = px(57.);
-        view.update(cx, |view, cx| {
-            view.set_appearance_provider(Some(Rc::new(move |_| exact)), cx)
-        });
-        view.read_with(cx, |view, _| {
-            assert!(view.has_appearance_provider());
-            assert!(!view.has_theme_provider());
-        });
-        cx.run_until_parked();
-        assert_eq!(
-            cx.debug_bounds("activity-bar:pane").unwrap().size.width,
-            px(57.)
-        );
 
         view.update(cx, |view, cx| {
-            view.set_theme_provider(Some(Rc::new(|_| MullionTheme::light())), cx)
-        });
-        view.read_with(cx, |view, _| {
-            assert!(view.has_theme_provider());
-            assert!(!view.has_appearance_provider());
-        });
-
-        view.update(cx, |view, cx| view.set_theme(MullionTheme::dark(), cx));
-        view.read_with(cx, |view, _| {
-            assert!(!view.has_theme_provider());
-            assert!(!view.has_appearance_provider());
-            assert_eq!(view.theme(), Some(MullionTheme::dark()));
-        });
-
-        view.update(cx, |view, cx| {
-            view.set_theme_provider(Some(Rc::new(|_| MullionTheme::light())), cx);
+            view.set_theme_provider(Some(Rc::new(move |_| large)), cx);
             view.set_theme_provider(None, cx);
         });
         view.read_with(cx, |view, _| {
             assert!(!view.has_theme_provider());
-            assert_eq!(view.theme(), Some(MullionTheme::dark()));
+            assert_eq!(view.theme(), Some(&small));
         });
     }
 
