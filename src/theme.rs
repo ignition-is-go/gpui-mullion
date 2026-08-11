@@ -1,4 +1,4 @@
-use gpui::{rgb, Hsla, WindowAppearance};
+use gpui::{rgb, App, Hsla, WindowAppearance};
 use serde::{Deserialize, Serialize};
 
 /// Colors used to render Mullion chrome and pane state.
@@ -100,6 +100,12 @@ impl MullionThemeMode {
         }
     }
 }
+
+/// UI-local source evaluated once per Mullion root render.
+///
+/// The host is responsible for invalidation when provider state changes. Pulse,
+/// for example, refreshes windows after replacing its app-global theme.
+pub type MullionAppearanceProvider = std::rc::Rc<dyn Fn(&App) -> MullionAppearance>;
 
 /// Complete source used to resolve Mullion's visual appearance.
 ///

@@ -115,9 +115,11 @@ pub use overlay::{
     OverlayTier,
 };
 pub use palette::{
-    activity_palette_entries, command_palette_for_view, focus_index_palette_entries,
-    install_command_palette_for_view, mullion_palette_entries, pane_command_palette_entries,
-    search_palette, PaletteEntry, PaletteInvocation, PaletteInvocationError, PaletteSearchResult,
+    activity_palette_entries, attach_command_palette, command_palette_for_view,
+    focus_index_palette_entries, install_command_palette_for_view, mullion_palette_entries,
+    pane_command_palette_entries, search_palette, FocusedPaneCommandProvider,
+    MullionPaletteBinding, PaletteEntry, PaletteInvocation, PaletteInvocationError,
+    PaletteSearchResult,
 };
 #[cfg(not(target_family = "wasm"))]
 pub use platform::NativeDetachedWindowService;
@@ -132,7 +134,7 @@ pub use styles::{
     ActivityBarStyle, DropOverlayStyle, MullionRootStyle, MullionStyles, PaneControlStyle,
     PaneHeaderStyle, PaneStyle, SplitHandleStyle, WorkspaceSwitcherStyle,
 };
-pub use theme::{MullionAppearance, MullionTheme, MullionThemeMode};
+pub use theme::{MullionAppearance, MullionAppearanceProvider, MullionTheme, MullionThemeMode};
 pub use tree::{
     collect_split_keys, collect_split_ratios, directional_neighbor, find_ratio,
     find_split_direction, leaf_rect, resize_boundary, split_parent_rect, ActivityId, CategoryId,

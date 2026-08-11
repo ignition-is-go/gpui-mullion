@@ -6,6 +6,72 @@ use crate::{
 use gpui::AppContext as _;
 use gpui_command_palette::Command;
 use serde::{Deserialize, Serialize};
+use std::{cell::RefCell, rc::Rc};
+
+/// UI-local commands derived from the currently focused pane and its data.
+pub type FocusedPaneCommandProvider<D> = Rc<dyn Fn(&PaneId, &D) -> Vec<Command<()>>>;
+
+/// Retained attachment between one Mullion view and a shared application palette.
+///
+/// Clones share the same RAII registration set. Mullion also retains the binding
+/// so ignoring the returned value does not detach commands. Reattaching, explicit
+/// detachment, or releasing the Mullion view removes only Mullion-owned entries.
+#[derive(Clone)]
+pub struct MullionPaletteBinding {
+    core: Rc<RefCell<MullionPaletteBindingCore>>,
+}
+
+struct MullionPaletteBindingCore {
+    palette: gpui::Entity<gpui_command_palette::CommandPalette<()>>,
+    registrations: Vec<gpui_command_palette::Registration<()>>,
+    active: bool,
+}
+
+impl MullionPaletteBinding {
+    pub(crate) fn new(palette: gpui::Entity<gpui_command_palette::CommandPalette<()>>) -> Self {
+        Self {
+            core: Rc::new(RefCell::new(MullionPaletteBindingCore {
+                palette,
+                registrations: Vec::new(),
+                active: true,
+            })),
+        }
+    }
+
+    /// Return the shared palette receiving Mullion registrations.
+    pub fn palette(&self) -> gpui::Entity<gpui_command_palette::CommandPalette<()>> {
+        self.core.borrow().palette.clone()
+    }
+
+    pub(crate) fn replace(&self, commands: Vec<Command<()>>, cx: &mut gpui::App) {
+        let palette = {
+            let mut core = self.core.borrow_mut();
+            if !core.active {
+                return;
+            }
+            core.registrations.clear();
+            core.palette.clone()
+        };
+        let registry = palette.read(cx).registry().clone();
+        let registrations = registry.register_many(commands);
+        self.core.borrow_mut().registrations = registrations;
+        palette.update(cx, |_, cx| cx.notify());
+    }
+
+    /// Remove this binding's registrations and notify the shared palette.
+    pub fn detach(&self, cx: &mut gpui::App) {
+        let palette = {
+            let mut core = self.core.borrow_mut();
+            if !core.active {
+                return;
+            }
+            core.active = false;
+            core.registrations.clear();
+            core.palette.clone()
+        };
+        palette.update(cx, |_, cx| cx.notify());
+    }
+}
 
 /// Action metadata attached to a Mullion command-palette entry.
 ///
@@ -236,7 +302,73 @@ fn flatten_activities<D: PaneData>(
         }
     }
 }
-/// Creates, wires, and attaches the shared palette widget to a Mullion view.
+fn direct_command<D: PaneData>(
+    entry: PaletteEntry,
+    view: gpui::WeakEntity<crate::MullionView<D>>,
+) -> Command<()> {
+    let id = entry.id.clone();
+    let name = entry.name.clone();
+    let description = entry.description.clone();
+    let group = entry.group.clone();
+    let shortcut = entry.shortcut.clone();
+    let invocation = entry.metadata.clone();
+    let handler_view = view.clone();
+    let mut command = Command::with_handler(id, name, move |_, cx| {
+        let invocation = invocation.clone();
+        handler_view
+            .update(cx, |view, cx| {
+                let _ = view.invoke_palette(invocation, cx);
+            })
+            .ok();
+    });
+    if let Some(description) = description {
+        command = command.description(description);
+    }
+    if let Some(group) = group {
+        command = command.group(group);
+    }
+    if let Some(shortcut) = shortcut {
+        command = command.shortcut(shortcut.modifiers, shortcut.key);
+    }
+    if let Some(children) = entry.resolve_children() {
+        let child_view = view.clone();
+        command = command.children(move || {
+            children
+                .clone()
+                .into_iter()
+                .map(|child| direct_command(child, child_view.clone()))
+                .collect()
+        });
+        if entry.searches_children() {
+            command = command.searchable_children();
+        }
+    }
+    command
+}
+
+pub(crate) fn direct_palette_commands<D: PaneData>(
+    entries: Vec<PaletteEntry>,
+    view: gpui::WeakEntity<crate::MullionView<D>>,
+) -> Vec<Command<()>> {
+    entries
+        .into_iter()
+        .map(|entry| direct_command(entry, view.clone()))
+        .collect()
+}
+
+/// Attach Mullion command registrations to a shared application palette.
+///
+/// This function does not render or install the palette. The application owns
+/// one window/root-level palette and retains it independently of Mullion layout.
+pub fn attach_command_palette<D: PaneData>(
+    view: &gpui::Entity<crate::MullionView<D>>,
+    palette: gpui::Entity<gpui_command_palette::CommandPalette<()>>,
+    cx: &mut gpui::App,
+) -> MullionPaletteBinding {
+    view.update(cx, |view, cx| view.attach_command_palette(palette, cx))
+}
+
+/// Creates, wires, and attaches the Mullion-owned convenience palette widget.
 ///
 /// Execution delegates to `MullionView::invoke_palette`; invocation errors are
 /// intentionally ignored by this event callback because entries may become
@@ -245,8 +377,7 @@ fn flatten_activities<D: PaneData>(
 pub fn command_palette_for_view<D: PaneData>(
     view: &gpui::Entity<crate::MullionView<D>>,
     cx: &mut gpui::App,
-) -> gpui::Entity<gpui_command_palette::CommandPalette<PaletteInvocation>> {
-    let weak = view.downgrade();
+) -> gpui::Entity<gpui_command_palette::CommandPalette<()>> {
     let palette = cx.new(|cx| {
         gpui_command_palette::CommandPalette::new(cx)
             // GPUI resolves percentage padding against width. Use positioned
@@ -267,13 +398,6 @@ pub fn command_palette_for_view<D: PaneData>(
                 padding_y: gpui::px(2.0),
                 ..Default::default()
             })
-            .with_on_execute(move |invocation: &PaletteInvocation, _, cx| {
-                let invocation = invocation.clone();
-                weak.update(cx, |view, cx| {
-                    let _ = view.invoke_palette(invocation, cx);
-                })
-                .ok();
-            })
     });
     view.update(cx, |view, cx| {
         view.set_command_palette(Some(palette.clone()), cx)
@@ -290,7 +414,7 @@ pub fn install_command_palette_for_view<D: PaneData>(
     view: &gpui::Entity<crate::MullionView<D>>,
     window: &gpui::Window,
     cx: &mut gpui::App,
-) -> gpui::Entity<gpui_command_palette::CommandPalette<PaletteInvocation>> {
+) -> gpui::Entity<gpui_command_palette::CommandPalette<()>> {
     let palette = command_palette_for_view(view, cx);
     gpui_command_palette::install_palette(&palette, window, cx);
     palette

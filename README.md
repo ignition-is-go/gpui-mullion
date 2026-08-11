@@ -58,8 +58,10 @@ let view = view.with_appearance(MullionAppearance::styles(styles));
 
 Use `MullionAppearance::light()`, `dark()`, or `theme(custom_palette)` for standard geometry.
 Use `MullionAppearance::custom(theme, styles)` when host-rendered chrome needs a custom semantic
-palette alongside exact component tokens. The older theme/style-specific view builders remain hidden
-migration wrappers.
+palette alongside exact component tokens. `with_appearance_provider(|cx| ...)` resolves app-global
+theme state once per root render; the host must invalidate windows when that state changes. Fixed and
+provider setters are last-wins. The older theme/style-specific view builders remain hidden migration
+wrappers.
 
 For durable content, keep the catalog `Activity` descriptor and add a view-owned UI-local factory registry:
 
@@ -167,4 +169,6 @@ MIT
 
 ## Command palette
 
-Generic command registration, deterministic search, keyboard state, shortcuts, theme, and modal rendering live in [`gpui-command-palette`](https://github.com/ignition-is-go/gpui-command-palette). Mullion retains only `PaletteInvocation`, invocation errors, and adapters for live pane/activity commands. Call `install_command_palette_for_view(&view, window, cx)` after constructing the Mullion entity. It creates and mounts Mullion's adapter palette and installs the external crate's per-window global action route (including initialization), so Ctrl/⌘+K opens the real palette even when focus is elsewhere. The retained `command_palette_for_view(&view, cx)` helper still creates and mounts an uninstalled palette for source compatibility or custom hosts. The shared widget refreshes live entries and routes typed selections back through `MullionView::invoke_palette`; open/query/results/close state is owned solely by its `CommandPalette` entity.
+Generic command registration, deterministic search, keyboard state, shortcuts, aggregate styles, providers, and modal rendering live in [`gpui-command-palette`](https://github.com/ignition-is-go/gpui-command-palette). Applications with a global palette create and render one `Entity<CommandPalette<()>>` at the window/root overlay level, then call `attach_command_palette(&view, palette.clone(), cx)`. Attachment is injection-only: Mullion retains RAII registrations, routes commands through direct weak-view handlers, and resynchronizes all pane-management commands plus activities and host commands for only the focused pane. `with_focused_pane_commands` supplies application-specific focused-pane commands; `refresh_command_palette` re-evaluates provider state changed outside `PaneData`.
+
+For Mullion-only applications, `install_command_palette_for_view(&view, window, cx)` remains the obvious convenience: it creates the same `CommandPalette<()>`, attaches the same registration logic, renders it inside Mullion, and installs its window action. `command_palette_for_view` creates the attached but uninstalled convenience palette. Shared applications should prefer root rendering so the palette is never clipped or bounded by Mullion.

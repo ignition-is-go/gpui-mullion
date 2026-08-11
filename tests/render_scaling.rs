@@ -75,7 +75,8 @@ fn activities(count: usize) -> Vec<ActivityNode<String>> {
 /// synchronization visits every pane in every workspace and applies each
 /// activity filter twice: once while collecting valid cache keys and once while
 /// building the render projection. The first render also projects the active
-/// panes once before the deferred cache exists. Clean root renders must do neither.
+/// panes once before the deferred cache exists. Clean renders and unattached
+/// command-palette resynchronization must do neither.
 #[gpui::test]
 fn render_cache_synchronization_scales_with_panes_activities_and_workspaces(
     cx: &mut TestAppContext,
@@ -118,8 +119,8 @@ fn render_cache_synchronization_scales_with_panes_activities_and_workspaces(
             cx.run_until_parked();
             assert_eq!(
                 FILTER_CALLS.load(Ordering::SeqCst),
-                initial_work + one_sync + activity_count,
-                "workspace switch did not perform one projection plus one full synchronization for {panes} panes"
+                initial_work + one_sync,
+                "workspace switch did not perform exactly one full synchronization for {panes} panes"
             );
         }
     }

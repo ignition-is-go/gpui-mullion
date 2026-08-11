@@ -4,7 +4,8 @@ use crate::{
     ActivityBarMode, ActivityCacheKey, ActivityCatalog, ActivityCatalogValidationError,
     ActivityExpansionState, ActivityFactoryRegistry, ActivityId, ActivityNode, ActivityProjection,
     DockBounds, DockConfig, DockDrag, DockHover, DockPayload, DropEdge, FocusPresentation,
-    MullionAppearance, MullionModel, MullionOverlay, MullionSettings, MullionStyles, MullionTheme,
+    FocusedPaneCommandProvider, MullionAppearance, MullionAppearanceProvider, MullionModel,
+    MullionOverlay, MullionPaletteBinding, MullionSettings, MullionStyles, MullionTheme,
     MullionThemeMode, NewPaneFactory, OverlayAlignment, OverlayError, OverlayHostConfig,
     OverlayLength, PaletteEntry, PaletteInvocation, PaletteInvocationError, PaletteSearchResult,
     PaneCommandExecutionOptions, PaneControl, PaneData, PaneDirection, PaneEvent,
@@ -70,6 +71,26 @@ struct InternalEdges {
 struct PaneRenderPosition<'a> {
     pane_ids: &'a [PaneId],
     edges: InternalEdges,
+}
+
+#[derive(Clone, Copy)]
+struct ResolvedMullionAppearance {
+    theme: MullionTheme,
+    styles: MullionStyles,
+}
+
+struct LeafRenderData<'a, D> {
+    id: &'a PaneId,
+    active: Option<&'a ActivityId>,
+    data: &'a D,
+    position: PaneRenderPosition<'a>,
+}
+
+struct ActivityNodesRenderData<'a, D: PaneData> {
+    pane: &'a PaneId,
+    nodes: &'a [VisibleActivityNode<D>],
+    selected: Option<&'a ActivityId>,
+    active_categories: &'a HashSet<crate::CategoryId>,
 }
 
 type PaneActivityKey = (Option<WorkspaceId>, PaneId);
@@ -501,6 +522,7 @@ pub struct MullionView<D: PaneData> {
     command_options: PaneCommandExecutionOptions<D>,
     catalog: ActivityCatalog<D>,
     appearance: MullionAppearance,
+    appearance_provider: Option<MullionAppearanceProvider>,
     host: ActivityBarHostConfig<D>,
     settings: MullionSettings,
     focus_presentation: FocusPresentation,
@@ -539,8 +561,10 @@ pub struct MullionView<D: PaneData> {
     dock_hover: Option<DockHover>,
     overlay_host: Option<OverlayHostConfig>,
     last_overlay_error: Option<OverlayError>,
-    command_palette: Option<gpui::Entity<gpui_command_palette::CommandPalette<PaletteInvocation>>>,
-    palette_registrations: Vec<gpui_command_palette::Registration<PaletteInvocation>>,
+    command_palette: Option<gpui::Entity<gpui_command_palette::CommandPalette<()>>>,
+    command_palette_binding: Option<MullionPaletteBinding>,
+    focused_pane_commands: Option<FocusedPaneCommandProvider<D>>,
+    render_command_palette: bool,
     #[cfg(test)]
     routed_commands: Vec<crate::PaneCommand>,
     #[cfg(test)]
@@ -585,14 +609,18 @@ impl<D: PaneData> MullionView<D> {
         catalog: ActivityCatalog<D>,
         cx: &mut Context<Self>,
     ) -> Self {
-        cx.on_release(|this, cx| this.dispose_all_activities(cx))
-            .detach();
+        cx.on_release(|this, cx| {
+            this.dispose_all_activities(cx);
+            this.detach_command_palette(cx);
+        })
+        .detach();
         let mut view = Self {
             model,
             dock_config: DockConfig::default(),
             command_options: PaneCommandExecutionOptions::default(),
             catalog,
             appearance: MullionAppearance::default(),
+            appearance_provider: None,
             host: ActivityBarHostConfig::default(),
             settings: MullionSettings::default(),
             focus_presentation: FocusPresentation::default(),
@@ -630,7 +658,9 @@ impl<D: PaneData> MullionView<D> {
             overlay_host: None,
             last_overlay_error: None,
             command_palette: None,
-            palette_registrations: Vec::new(),
+            command_palette_binding: None,
+            focused_pane_commands: None,
+            render_command_palette: false,
             #[cfg(test)]
             routed_commands: Vec::new(),
             #[cfg(test)]
@@ -693,10 +723,49 @@ impl<D: PaneData> MullionView<D> {
     /// Set the single source from which Mullion resolves all visual tokens.
     pub fn with_appearance(mut self, appearance: impl Into<MullionAppearance>) -> Self {
         self.appearance = appearance.into();
+        self.appearance_provider = None;
         self
     }
 
-    /// Return the configured source for all Mullion visual tokens.
+    /// Resolve appearance from a pure UI-local provider on every root render.
+    ///
+    /// This supersedes a fixed appearance. The host must invalidate the window
+    /// when provider state changes.
+    pub fn with_appearance_provider(
+        mut self,
+        provider: impl Fn(&App) -> MullionAppearance + 'static,
+    ) -> Self {
+        self.appearance_provider = Some(Rc::new(provider));
+        self
+    }
+
+    /// Replace the fixed appearance, clearing any provider, and repaint.
+    pub fn set_appearance(
+        &mut self,
+        appearance: impl Into<MullionAppearance>,
+        cx: &mut Context<Self>,
+    ) {
+        self.appearance = appearance.into();
+        self.appearance_provider = None;
+        cx.notify();
+    }
+
+    /// Replace the live provider and repaint. Provider and fixed setters are last-wins.
+    pub fn set_appearance_provider(
+        &mut self,
+        provider: impl Fn(&App) -> MullionAppearance + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        self.appearance_provider = Some(Rc::new(provider));
+        cx.notify();
+    }
+
+    /// Return whether appearance is currently resolved through a provider.
+    pub const fn has_appearance_provider(&self) -> bool {
+        self.appearance_provider.is_some()
+    }
+
+    /// Return the configured fixed fallback for all Mullion visual tokens.
     pub const fn appearance(&self) -> &MullionAppearance {
         &self.appearance
     }
@@ -864,33 +933,99 @@ impl<D: PaneData> MullionView<D> {
     pub fn last_overlay_error(&self) -> Option<&OverlayError> {
         self.last_overlay_error.as_ref()
     }
-    /// Attach the standalone command-palette widget to this root view.
-    pub fn set_command_palette(
-        &mut self,
-        palette: Option<gpui::Entity<gpui_command_palette::CommandPalette<PaletteInvocation>>>,
-        cx: &mut Context<Self>,
-    ) {
-        // Registration handles own the entries in the old palette. Dropping them
-        // before replacing the entity prevents stale commands from outliving this view.
-        self.palette_registrations.clear();
-        self.command_palette = palette;
-        self.sync_command_palette(cx);
-        cx.notify();
+    /// Add application commands derived only from the currently focused pane.
+    pub fn with_focused_pane_commands(
+        mut self,
+        provider: impl Fn(&PaneId, &D) -> Vec<gpui_command_palette::Command<()>> + 'static,
+    ) -> Self {
+        self.focused_pane_commands = Some(Rc::new(provider));
+        self
     }
 
-    fn sync_command_palette(&mut self, cx: &App) {
-        self.palette_registrations.clear();
-        let entries = self.palette_entries();
-        if let Some(palette) = &self.command_palette {
-            let registry = palette.read(cx).registry().clone();
-            self.palette_registrations = registry.register_many(entries);
+    /// Replace or clear the focused-pane command provider and resynchronize.
+    pub fn set_focused_pane_commands(
+        &mut self,
+        provider: Option<FocusedPaneCommandProvider<D>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.focused_pane_commands = provider;
+        self.sync_command_palette(cx);
+    }
+
+    /// Re-evaluate dynamic command providers and notify the attached palette.
+    pub fn refresh_command_palette(&mut self, cx: &mut Context<Self>) {
+        self.sync_command_palette(cx);
+    }
+
+    /// Inject Mullion commands into a shared application command palette.
+    ///
+    /// Attachment only synchronizes registrations. It does not render the palette
+    /// inside Mullion or install the palette's application action; the window/root
+    /// host owns those global responsibilities.
+    pub fn attach_command_palette(
+        &mut self,
+        palette: gpui::Entity<gpui_command_palette::CommandPalette<()>>,
+        cx: &mut Context<Self>,
+    ) -> MullionPaletteBinding {
+        self.detach_command_palette(cx);
+        let binding = MullionPaletteBinding::new(palette.clone());
+        self.command_palette = Some(palette);
+        self.command_palette_binding = Some(binding.clone());
+        self.render_command_palette = false;
+        self.sync_command_palette(cx);
+        binding
+    }
+
+    /// Install or remove a Mullion-owned palette rendered inside this view.
+    ///
+    /// This is the standalone convenience path. Applications with a shared global
+    /// palette should use [`Self::attach_command_palette`] and render it once at the
+    /// window/root overlay level instead.
+    pub fn set_command_palette(
+        &mut self,
+        palette: Option<gpui::Entity<gpui_command_palette::CommandPalette<()>>>,
+        cx: &mut Context<Self>,
+    ) {
+        match palette {
+            Some(palette) => {
+                self.attach_command_palette(palette, cx);
+                self.render_command_palette = true;
+                cx.notify();
+            }
+            None => self.detach_command_palette(cx),
         }
     }
 
-    /// Return the attached command-palette entity, if installed.
+    fn detach_command_palette(&mut self, cx: &mut App) {
+        if let Some(binding) = self.command_palette_binding.take() {
+            binding.detach(cx);
+        }
+        self.command_palette = None;
+        self.render_command_palette = false;
+    }
+
+    fn sync_command_palette(&mut self, cx: &mut Context<Self>) {
+        let Some(binding) = self.command_palette_binding.clone() else {
+            return;
+        };
+        let mut commands = crate::palette::direct_palette_commands(
+            self.palette_entries(),
+            cx.entity().downgrade(),
+        );
+        if let Some(provider) = &self.focused_pane_commands {
+            if let Some(focused) = self.model.focused() {
+                if let Some(PaneNode::Leaf { data, .. }) = self.model.tree().find(focused) {
+                    commands.extend(provider(focused, data));
+                }
+            }
+        }
+        binding.replace(commands, cx);
+    }
+
+    /// Return the attached shared or standalone command-palette entity.
     pub fn command_palette(
         &self,
-    ) -> Option<&gpui::Entity<gpui_command_palette::CommandPalette<PaletteInvocation>>> {
+    ) -> Option<&gpui::Entity<gpui_command_palette::CommandPalette<()>>> {
         self.command_palette.as_ref()
     }
     /// Configure activity-to-new-pane docking.
@@ -1729,20 +1864,24 @@ impl<D: PaneData> MullionView<D> {
         node: &PaneNode<D>,
         pane_ids: &[PaneId],
         edges: InternalEdges,
+        appearance: ResolvedMullionAppearance,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (_, styles) = self.appearance.resolve(window.appearance());
+        let styles = appearance.styles;
         match node {
             PaneNode::Leaf {
                 id,
                 active_activity,
                 data,
             } => self.render_leaf(
-                id,
-                active_activity.as_ref(),
-                data,
-                PaneRenderPosition { pane_ids, edges },
+                LeafRenderData {
+                    id,
+                    active: active_activity.as_ref(),
+                    data,
+                    position: PaneRenderPosition { pane_ids, edges },
+                },
+                appearance,
                 window,
                 cx,
             ),
@@ -1790,8 +1929,10 @@ impl<D: PaneData> MullionView<D> {
                         },
                     ),
                 };
-                let first_el = self.render_node(first, pane_ids, first_edges, window, cx);
-                let second_el = self.render_node(second, pane_ids, second_edges, window, cx);
+                let first_el =
+                    self.render_node(first, pane_ids, first_edges, appearance, window, cx);
+                let second_el =
+                    self.render_node(second, pane_ids, second_edges, appearance, window, cx);
                 let handle_color = styles.split_handle.color;
                 let focused_color = styles.split_handle.hover_color;
                 let handle_thickness = styles.split_handle.thickness;
@@ -2480,14 +2621,18 @@ impl<D: PaneData> MullionView<D> {
 
     fn render_activity_nodes(
         &mut self,
-        pane: &PaneId,
-        nodes: &[VisibleActivityNode<D>],
-        selected: Option<&ActivityId>,
-        active_categories: &HashSet<crate::CategoryId>,
+        data: ActivityNodesRenderData<'_, D>,
+        appearance: ResolvedMullionAppearance,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        let (_, styles) = self.appearance.resolve(window.appearance());
+        let ActivityNodesRenderData {
+            pane,
+            nodes,
+            selected,
+            active_categories,
+        } = data;
+        let styles = appearance.styles;
         let edge = self.host.activity_bar.edge;
         let horizontal = edge.is_horizontal();
         let mut rendered = Vec::new();
@@ -2980,10 +3125,13 @@ impl<D: PaneData> MullionView<D> {
                                     .h(styles.activity_bar.category_border_width)
                             });
                         let children = self.render_activity_nodes(
-                            pane,
-                            &category.children,
-                            selected,
-                            active_categories,
+                            ActivityNodesRenderData {
+                                pane,
+                                nodes: &category.children,
+                                selected,
+                                active_categories,
+                            },
+                            appearance,
                             window,
                             cx,
                         );
@@ -3245,15 +3393,18 @@ impl<D: PaneData> MullionView<D> {
 
     fn render_leaf(
         &mut self,
-        id: &PaneId,
-        active: Option<&ActivityId>,
-        data: &D,
-        position: PaneRenderPosition<'_>,
+        leaf: LeafRenderData<'_, D>,
+        appearance: ResolvedMullionAppearance,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let pane_ids = position.pane_ids;
-        let edges = position.edges;
+        let LeafRenderData {
+            id,
+            active,
+            data,
+            position: PaneRenderPosition { pane_ids, edges },
+        } = leaf;
+        let ResolvedMullionAppearance { theme, styles } = appearance;
         let focused = self.model.focused() == Some(id);
         let pane_index = pane_ids.iter().position(|pane| pane == id).unwrap_or(0);
         let render_data = self
@@ -3283,7 +3434,6 @@ impl<D: PaneData> MullionView<D> {
             focused,
             self.model.zoomed() == Some(id),
         );
-        let (theme, styles) = self.appearance.resolve(window.appearance());
         let host_pane_border = self
             .host
             .pane_border_color
@@ -3313,18 +3463,24 @@ impl<D: PaneData> MullionView<D> {
             || (hover_expanded && self.host.activity_bar.behavior.hover_expand);
         let selected_id = selected.as_ref().map(|activity| &activity.id);
         let primary_tabs = self.render_activity_nodes(
-            id,
-            &projection.primary,
-            selected_id,
-            &render_data.active_categories,
+            ActivityNodesRenderData {
+                pane: id,
+                nodes: &projection.primary,
+                selected: selected_id,
+                active_categories: &render_data.active_categories,
+            },
+            appearance,
             window,
             cx,
         );
         let trailing_tabs = self.render_activity_nodes(
-            id,
-            &projection.trailing,
-            selected_id,
-            &render_data.active_categories,
+            ActivityNodesRenderData {
+                pane: id,
+                nodes: &projection.trailing,
+                selected: selected_id,
+                active_categories: &render_data.active_categories,
+            },
+            appearance,
             window,
             cx,
         );
@@ -4270,7 +4426,13 @@ impl<D: PaneData> MullionView<D> {
 
 impl<D: PaneData> Render for MullionView<D> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (_, styles) = self.appearance.resolve(window.appearance());
+        let appearance = self
+            .appearance_provider
+            .as_ref()
+            .map(|provider| provider(cx))
+            .unwrap_or_else(|| self.appearance.clone());
+        let (theme, styles) = appearance.resolve(window.appearance());
+        let resolved_appearance = ResolvedMullionAppearance { theme, styles };
         if !cx.has_active_drag()
             && (self.dock_hover.is_some() || self.dock_drag_active)
             && !self.drag_reconcile_scheduled
@@ -4588,6 +4750,7 @@ impl<D: PaneData> Render for MullionView<D> {
                 rendered_tree,
                 &pane_ids,
                 InternalEdges::default(),
+                resolved_appearance,
                 window,
                 cx,
             )))
@@ -4598,17 +4761,22 @@ impl<D: PaneData> Render for MullionView<D> {
                     .inset_0()
                     .children(overlays),
             )
-            .when_some(self.command_palette.clone(), |element, palette| {
-                element.child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        // Suppress Mullion pane bindings while the palette's text input owns
-                        // focus. The shared widget adds its own CommandPalette context below.
-                        .key_context("MullionEditable")
-                        .child(palette),
-                )
-            })
+            .when_some(
+                self.render_command_palette
+                    .then(|| self.command_palette.clone())
+                    .flatten(),
+                |element, palette| {
+                    element.child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            // Suppress Mullion pane bindings while the palette's text input owns
+                            // focus. The shared widget adds its own CommandPalette context below.
+                            .key_context("MullionEditable")
+                            .child(palette),
+                    )
+                },
+            )
     }
 }
 
@@ -7343,6 +7511,50 @@ mod tests {
             }
             _ => panic!("custom appearance did not retain its exact styles"),
         });
+    }
+
+    #[gpui::test]
+    fn appearance_provider_is_live_and_fixed_provider_setters_are_last_wins(
+        cx: &mut TestAppContext,
+    ) {
+        let use_large = Rc::new(Cell::new(false));
+        let provider_state = use_large.clone();
+        let mut small = MullionStyles::default();
+        small.activity_bar.thickness = px(41.);
+        let mut large = small;
+        large.activity_bar.thickness = px(63.);
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::new(leaf("pane"), vec![], cx).with_appearance_provider(move |_| {
+                if provider_state.get() {
+                    MullionAppearance::styles(large)
+                } else {
+                    MullionAppearance::styles(small)
+                }
+            })
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            cx.debug_bounds("activity-bar:pane").unwrap().size.width,
+            px(41.)
+        );
+
+        use_large.set(true);
+        view.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert_eq!(
+            cx.debug_bounds("activity-bar:pane").unwrap().size.width,
+            px(63.)
+        );
+
+        view.update(cx, |view, cx| {
+            view.set_appearance(MullionAppearance::styles(small), cx)
+        });
+        assert!(!view.read_with(cx, |view, _| view.has_appearance_provider()));
+        cx.run_until_parked();
+        assert_eq!(
+            cx.debug_bounds("activity-bar:pane").unwrap().size.width,
+            px(41.)
+        );
     }
 
     #[gpui::test]
