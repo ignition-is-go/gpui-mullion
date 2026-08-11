@@ -1,0 +1,11 @@
+¦ditem©dbodyy¡Make the GPUI port library-quality before ecosystem adoption. Treat Leptos as behavioral reference only.
+
+Audit priorities:
+- own command-palette registrations with RAII; no leaked handles
+- drive coordinated motion from GPUI animation frames, not timer polling
+- keep serialization/threading bounds off UI-local PaneData
+- avoid whole-workspace validation and deep projection clones on render/resize paths
+- move lifecycle/user callbacks out of render reconciliation
+- establish focused split-interaction and activity-host boundaries
+- define a curated public facade/prelude and document stable invariants
+- add render/clone/validation scaling coverage for native and WASMgcreatedx2026-08-11T04:27:17.338036ZlcreatedByDevxtrevor.a.sargent@gmail.compcreatedByMachinegmalcolmbidx dcc1a4c1388a49b6935929fa5057093aflabels‚larchitecturekperformancehprioritybP0iprojectIdx 8f87a08a995b47a691ed88d23f6caf1cetitlex1Harden Mullion's GPUI architecture and public APIjchangeTypecSEThitemTypedTaskicreatedAtx2026-08-11T04:27:17.338039Zbtxx$e461d5ad-7e14-42ea-a582-cf4697447acchsourceIdgmalcolm
