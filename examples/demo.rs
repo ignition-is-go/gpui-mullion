@@ -853,23 +853,7 @@ fn host_config() -> ActivityBarHostConfig<DemoData> {
         ActivityBarSlots::new()
             .with_app_icon(icon("apps"))
             .with_leading(hairline())
-            .with_trailing(hairline())
-            .with_pane_accessory(move |_, _, _, _| {
-                div()
-                    .id("demo-command-palette")
-                    .debug_selector(|| "demo-command-palette".into())
-                    .px_1()
-                    .text_size(px(9.))
-                    .cursor_pointer()
-                    .child("Ctrl K")
-                    .on_click(move |_, window, cx| {
-                        window.dispatch_action(
-                            Box::new(gpui_mullion::gpui_command_palette::ToggleCommandPalette),
-                            cx,
-                        );
-                    })
-                    .into_any_element()
-            }),
+            .with_trailing(hairline()),
     )
 }
 
