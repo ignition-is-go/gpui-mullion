@@ -861,7 +861,7 @@ fn host_config() -> ActivityBarHostConfig<DemoData> {
                     .px_1()
                     .text_size(px(9.))
                     .cursor_pointer()
-                    .child("⌘K")
+                    .child("Ctrl K")
                     .on_click(move |_, window, cx| {
                         window.dispatch_action(
                             Box::new(gpui_mullion::gpui_command_palette::ToggleCommandPalette),
