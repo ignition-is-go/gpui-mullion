@@ -1373,6 +1373,25 @@ impl<D: PaneData> MullionView<D> {
     fn workspace_namespace(&self) -> Option<WorkspaceId> {
         self.workspaces.as_ref().map(|set| set.active.clone())
     }
+
+    fn collect_visible_item_keys<D2: PaneData>(
+        pane: &PaneId,
+        nodes: &[VisibleActivityNode<D2>],
+        out: &mut HashSet<(PaneId, String)>,
+    ) {
+        for node in nodes {
+            match node {
+                VisibleActivityNode::Activity(activity) => {
+                    out.insert((pane.clone(), format!("activity:{}", activity.activity.id.0)));
+                }
+                VisibleActivityNode::Category(category) => {
+                    out.insert((pane.clone(), format!("category:{}", category.id.0)));
+                    Self::collect_visible_item_keys(pane, &category.children, out);
+                }
+            }
+        }
+    }
+
     fn collect_panes(
         node: &PaneNode<D>,
         workspace: Option<WorkspaceId>,
@@ -1418,6 +1437,22 @@ impl<D: PaneData> MullionView<D> {
             Self::collect_panes(self.model.tree(), None, &mut panes);
         }
 
+        let active_workspace = self.workspace_namespace();
+        let live_panes = self
+            .model
+            .tree()
+            .leaf_ids()
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let live_splits = crate::collect_split_keys(self.model.tree())
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let mut visible_item_keys = HashSet::new();
+        for pane in &live_panes {
+            for key in ["move", "split-h", "split-v", "close"] {
+                visible_item_keys.insert((pane.clone(), format!("control:{key}")));
+            }
+        }
         let mut render_cache = HashMap::with_capacity(panes.len());
         let mut valid = HashSet::new();
         let mut pane_data = HashMap::with_capacity(panes.len());
@@ -1441,6 +1476,10 @@ impl<D: PaneData> MullionView<D> {
                 ));
             }
             let projection = self.catalog.visible(data, active.as_ref());
+            if workspace == &active_workspace {
+                Self::collect_visible_item_keys(pane, &projection.primary, &mut visible_item_keys);
+                Self::collect_visible_item_keys(pane, &projection.trailing, &mut visible_item_keys);
+            }
             render_cache.insert(
                 (workspace.clone(), pane.clone()),
                 Rc::new(PaneActivityRenderData {
@@ -1451,6 +1490,62 @@ impl<D: PaneData> MullionView<D> {
             pane_data.insert((workspace.clone(), pane.clone()), data.clone());
         }
         self.activity_render_cache = render_cache;
+
+        // Interaction state is UI-local and must not grow with closed panes or
+        // filtered catalog entries. Reconcile it alongside the authoritative
+        // activity projection rather than scanning dead keys every frame.
+        self.expansion.retain(|pane, _| live_panes.contains(pane));
+        self.expansion_active
+            .retain(|pane, _| live_panes.contains(pane));
+        self.hover.retain(|pane, _| live_panes.contains(pane));
+        self.hover_regions
+            .retain(|pane, _| live_panes.contains(pane));
+        self.bar_motion.retain(|pane, _| live_panes.contains(pane));
+        self.focus_motion
+            .retain(|pane, _| live_panes.contains(pane));
+        self.focus_frame_motion
+            .retain(|pane, _| live_panes.contains(pane));
+        self.item_hover
+            .retain(|key, _| visible_item_keys.contains(key));
+        self.item_motion
+            .retain(|key, _| visible_item_keys.contains(key));
+        self.hovered_bar_items
+            .retain(|key| visible_item_keys.contains(key));
+        if self
+            .motion_focus
+            .as_ref()
+            .is_some_and(|pane| !live_panes.contains(pane))
+        {
+            self.motion_focus = None;
+        }
+        if self
+            .keyboard_split
+            .as_ref()
+            .is_some_and(|split| !live_splits.contains(split))
+        {
+            self.keyboard_split = None;
+        }
+        if self
+            .pending_split_resize
+            .as_ref()
+            .is_some_and(|(split, _)| !live_splits.contains(split))
+        {
+            self.pending_split_resize = None;
+        }
+        self.split_bounds
+            .borrow_mut()
+            .retain(|split, _| live_splits.contains(split));
+        self.split_starts
+            .borrow_mut()
+            .retain(|split, _| live_splits.contains(split));
+        if self
+            .active_split
+            .borrow()
+            .as_ref()
+            .is_some_and(|(split, _)| !live_splits.contains(split))
+        {
+            self.active_split.borrow_mut().take();
+        }
 
         for instance in self
             .activity_cache
@@ -7584,6 +7679,40 @@ mod tests {
                 .height,
             px(22.)
         );
+    }
+
+    #[gpui::test]
+    fn activity_reconciliation_prunes_dead_transient_state(cx: &mut TestAppContext) {
+        let tree = split(SplitDirection::Horizontal, 0.5, leaf("a"), leaf("b"));
+        let (view, cx) = cx.add_window_view(move |_, cx| MullionView::new(tree, vec![], cx));
+        cx.run_until_parked();
+
+        view.update(cx, |view, cx| {
+            let dead_pane = PaneId::new("b");
+            let stale_item = (PaneId::new("a"), "activity:filtered".to_owned());
+            view.bar_motion
+                .insert(dead_pane.clone(), ActivityMotion::default());
+            view.focus_motion
+                .insert(dead_pane.clone(), ActivityMotion::default());
+            view.item_motion
+                .insert(stale_item.clone(), ActivityMotion::default());
+            view.item_hover
+                .insert(stale_item, ActivityBarHoverState::default());
+            view.model.close(&dead_pane);
+            view.finish(cx);
+        });
+        cx.run_until_parked();
+
+        view.read_with(cx, |view, _| {
+            assert!(!view.bar_motion.contains_key(&PaneId::new("b")));
+            assert!(!view.focus_motion.contains_key(&PaneId::new("b")));
+            assert!(!view
+                .item_motion
+                .contains_key(&(PaneId::new("a"), "activity:filtered".to_owned())));
+            assert!(!view
+                .item_hover
+                .contains_key(&(PaneId::new("a"), "activity:filtered".to_owned())));
+        });
     }
 
     #[gpui::test]
