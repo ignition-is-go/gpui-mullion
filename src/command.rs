@@ -375,6 +375,7 @@ impl<D> PaneCommandExecutionOptions<D> {
 
 /// Why a pane command could not be applied.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PaneCommandError {
     /// The operation requires focus, but the model has no focused pane.
     NoFocusedPane,

@@ -245,6 +245,8 @@ pub struct OverlayPolicy {
     pub click_through: bool,
     /// Whether assistive technology should treat the overlay as modal.
     ///
+    /// This sets dialog semantics only. Renderer-owned interactive content remains responsible
+    /// for its keyboard-focus lifecycle; Mullion does not synthesize a focus target or trap Tab.
     /// An accessible modal cannot be click-through.
     pub a11y_modal: bool,
     /// Optional non-empty accessible label for the overlay.
@@ -318,7 +320,9 @@ impl OverlayPolicy {
 
     /// Sets whether assistive technology should treat the overlay as modal.
     ///
-    /// Accessible-modal behavior cannot be combined with click-through.
+    /// This is an accessibility semantic, not a keyboard-focus trap. Renderer-owned content is
+    /// responsible for moving, containing, and restoring focus. Accessible-modal behavior cannot
+    /// be combined with click-through.
     pub fn a11y_modal(mut self, modal: bool) -> Self {
         self.a11y_modal = modal;
         self
@@ -750,6 +754,7 @@ impl fmt::Debug for OverlayHostConfig {
 
 /// Failure to validate or mutate an overlay policy or stack.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum OverlayError {
     /// An overlay identity is empty.
     EmptyId,

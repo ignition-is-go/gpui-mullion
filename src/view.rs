@@ -1,15 +1,15 @@
+use crate::activity::ActivityCache;
 use crate::{
     Activity, ActivityBarConfig, ActivityBarEdge, ActivityBarHostConfig, ActivityBarHoverState,
-    ActivityBarMode, ActivityCache, ActivityCacheKey, ActivityCatalog,
-    ActivityCatalogValidationError, ActivityExpansionState, ActivityFactoryRegistry, ActivityId,
-    ActivityNode, ActivityProjection, DockBounds, DockConfig, DockDrag, DockHover, DockPayload,
-    DropEdge, FocusPresentation, MullionModel, MullionOverlay, MullionSettings, MullionStyles,
-    MullionTheme, MullionThemeMode, NewPaneFactory, OverlayAlignment, OverlayError,
-    OverlayHostConfig, OverlayLength, PaletteEntry, PaletteInvocation, PaletteInvocationError,
-    PaletteSearchResult, PaneCommandExecutionOptions, PaneControl, PaneData, PaneDirection,
-    PaneEvent, PaneFocusBehavior, PaneId, PaneNode, PaneSplitFactory, SplitDirection,
-    VisibleActivityNode, WorkspaceChanged, WorkspaceEvent, WorkspaceId, WorkspaceSet,
-    WorkspaceSetError,
+    ActivityBarMode, ActivityCacheKey, ActivityCatalog, ActivityCatalogValidationError,
+    ActivityExpansionState, ActivityFactoryRegistry, ActivityId, ActivityNode, ActivityProjection,
+    DockBounds, DockConfig, DockDrag, DockHover, DockPayload, DropEdge, FocusPresentation,
+    MullionModel, MullionOverlay, MullionSettings, MullionStyles, MullionTheme, MullionThemeMode,
+    NewPaneFactory, OverlayAlignment, OverlayError, OverlayHostConfig, OverlayLength, PaletteEntry,
+    PaletteInvocation, PaletteInvocationError, PaletteSearchResult, PaneCommandExecutionOptions,
+    PaneControl, PaneData, PaneDirection, PaneEvent, PaneFocusBehavior, PaneId, PaneNode,
+    PaneSplitFactory, SplitDirection, VisibleActivityNode, WorkspaceChanged, WorkspaceEvent,
+    WorkspaceId, WorkspaceSet, WorkspaceSetError,
 };
 use gpui::{
     actions, canvas, div, ease_in_out, point, prelude::*, px, relative, AnyElement, App, Bounds,
@@ -470,6 +470,30 @@ impl Render for DockDrag {
     }
 }
 
+/// Failure to validate inputs for a [`MullionView`].
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum MullionViewConstructionError {
+    /// The pane tree violates a structural or identity invariant.
+    Tree(crate::PaneValidationError),
+    /// The activity catalog contains duplicate identities or orphan chrome.
+    Catalog(ActivityCatalogValidationError),
+    /// The owned workspace snapshot violates its collection or tree invariants.
+    Workspace(WorkspaceSetError),
+}
+
+impl std::fmt::Display for MullionViewConstructionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Tree(error) => write!(formatter, "invalid pane tree: {error}"),
+            Self::Catalog(error) => write!(formatter, "invalid activity catalog: {error}"),
+            Self::Workspace(error) => write!(formatter, "invalid workspace set: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for MullionViewConstructionError {}
+
 /// Shared native/WebAssembly GPUI view over the portable model.
 pub struct MullionView<D: PaneData> {
     model: MullionModel<D>,
@@ -497,6 +521,7 @@ pub struct MullionView<D: PaneData> {
     focus_frame_motion: HashMap<PaneId, ActivityMotion>,
     motion_focus: Option<PaneId>,
     motion_tick_running: bool,
+    motion_frame_scheduled: bool,
     dock_drag_active: bool,
     drag_reconcile_scheduled: bool,
     focus_handle: FocusHandle,
@@ -537,19 +562,38 @@ impl<D: PaneData> EventEmitter<WorkspaceChanged> for MullionView<D> {}
 impl<D: PaneData> EventEmitter<WorkspaceEvent<D>> for MullionView<D> {}
 
 impl<D: PaneData> MullionView<D> {
-    /// Construct a shared GPUI view around one validated pane tree and activity list.
+    /// Construct a shared GPUI view, panicking if the tree or catalog is invalid.
+    ///
+    /// Prefer [`Self::try_new`] for persisted or otherwise untrusted input.
     pub fn new(
         tree: PaneNode<D>,
         activities: Vec<ActivityNode<D>>,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::try_new(tree, activities, cx).expect("MullionView requires a valid tree and catalog")
+    }
+
+    /// Validate a pane tree and flat activity list, then construct their shared view.
+    pub fn try_new(
+        tree: PaneNode<D>,
+        activities: Vec<ActivityNode<D>>,
+        cx: &mut Context<Self>,
+    ) -> Result<Self, MullionViewConstructionError> {
+        Self::try_new_with_catalog(tree, ActivityCatalog::new(activities), cx)
+    }
+
+    fn from_validated(
+        model: MullionModel<D>,
+        catalog: ActivityCatalog<D>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         cx.on_release(|this, cx| this.dispose_all_activities(cx))
             .detach();
         let mut view = Self {
-            model: MullionModel::new(tree),
+            model,
             dock_config: DockConfig::default(),
             command_options: PaneCommandExecutionOptions::default(),
-            catalog: ActivityCatalog::new(activities),
+            catalog,
             theme: MullionTheme::default(),
             theme_mode: None,
             styles: None,
@@ -569,6 +613,7 @@ impl<D: PaneData> MullionView<D> {
             focus_frame_motion: HashMap::new(),
             motion_focus: None,
             motion_tick_running: false,
+            motion_frame_scheduled: false,
             dock_drag_active: false,
             drag_reconcile_scheduled: false,
             focus_handle: cx.focus_handle(),
@@ -607,16 +652,17 @@ impl<D: PaneData> MullionView<D> {
         view
     }
 
-    /// Construct from a validated catalog while keeping [`Self::new`] source-compatible.
+    /// Validate a pane tree and recursive catalog, then construct their shared view.
     pub fn try_new_with_catalog(
         tree: PaneNode<D>,
         catalog: ActivityCatalog<D>,
         cx: &mut Context<Self>,
-    ) -> Result<Self, ActivityCatalogValidationError> {
-        catalog.validate()?;
-        let mut view = Self::new(tree, Vec::new(), cx);
-        view.catalog = catalog;
-        Ok(view)
+    ) -> Result<Self, MullionViewConstructionError> {
+        catalog
+            .validate()
+            .map_err(MullionViewConstructionError::Catalog)?;
+        let model = MullionModel::try_new(tree).map_err(MullionViewConstructionError::Tree)?;
+        Ok(Self::from_validated(model, catalog, cx))
     }
 
     /// Construct a view which owns and renders a set of internal workspaces.
@@ -635,14 +681,16 @@ impl<D: PaneData> MullionView<D> {
         workspaces: WorkspaceSet<D>,
         activities: Vec<ActivityNode<D>>,
         cx: &mut Context<Self>,
-    ) -> Result<Self, WorkspaceSetError> {
-        workspaces.validate()?;
+    ) -> Result<Self, MullionViewConstructionError> {
+        workspaces
+            .validate()
+            .map_err(MullionViewConstructionError::Workspace)?;
         let tree = workspaces
             .active()
             .expect("validated workspace set has an active workspace")
             .tree
             .clone();
-        let mut view = Self::new(tree, activities, cx);
+        let mut view = Self::try_new(tree, activities, cx)?;
         view.workspaces = Some(workspaces);
         Ok(view)
     }
@@ -1165,6 +1213,8 @@ impl<D: PaneData> MullionView<D> {
             for event in self.model.take_events() {
                 cx.emit(event);
             }
+            self.sync_focus_motion(cx);
+            self.sync_command_palette(cx);
         }
         self.emit_workspace_snapshot(cx);
         cx.notify();
@@ -1200,6 +1250,8 @@ impl<D: PaneData> MullionView<D> {
         for event in self.model.take_events() {
             cx.emit(event);
         }
+        self.sync_focus_motion(cx);
+        self.sync_command_palette(cx);
         self.emit_workspace_snapshot(cx);
         cx.emit(WorkspaceChanged {
             previous,
@@ -2756,22 +2808,30 @@ impl<D: PaneData> MullionView<D> {
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _, _, cx| {
-                                this.model.focus(&pane_id);
+                                let focus_changed = this.model.focus(&pane_id);
                                 this.expansion
                                     .entry(pane_id.clone())
                                     .or_default()
                                     .toggle(category_id.clone());
-                                cx.notify();
+                                if focus_changed {
+                                    this.finish(cx);
+                                } else {
+                                    cx.notify();
+                                }
                             }),
                         )
                         .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
                             if matches!(event.keystroke.key.as_str(), "enter" | "space" | " ") {
-                                this.model.focus(&key_pane_id);
+                                let focus_changed = this.model.focus(&key_pane_id);
                                 this.expansion
                                     .entry(key_pane_id.clone())
                                     .or_default()
                                     .toggle(key_category_id.clone());
-                                cx.notify();
+                                if focus_changed {
+                                    this.finish(cx);
+                                } else {
+                                    cx.notify();
+                                }
                                 cx.stop_propagation();
                             }
                         }))
@@ -2779,12 +2839,16 @@ impl<D: PaneData> MullionView<D> {
                             let view = cx.entity().downgrade();
                             move |_, _, cx| {
                                 view.update(cx, |this, cx| {
-                                    this.model.focus(&a11y_pane_id);
+                                    let focus_changed = this.model.focus(&a11y_pane_id);
                                     this.expansion
                                         .entry(a11y_pane_id.clone())
                                         .or_default()
                                         .toggle(a11y_category_id.clone());
-                                    cx.notify();
+                                    if focus_changed {
+                                        this.finish(cx);
+                                    } else {
+                                        cx.notify();
+                                    }
                                 })
                                 .ok();
                             }
@@ -3968,8 +4032,6 @@ impl<D: PaneData> MullionView<D> {
             .aria_label(pane_accessibility.label)
             .aria_description(pane_accessibility.description)
             .aria_selected(focused)
-            .focusable()
-            .tab_stop(true)
             .relative()
             .size_full()
             .min_w_0()
@@ -4163,19 +4225,27 @@ impl<D: PaneData> MullionView<D> {
 
     fn render_overlays(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let Some(host) = self.overlay_host.clone() else {
-            self.last_overlay_error = None;
+            if self.last_overlay_error.is_some() {
+                cx.defer_in(window, |this, _, _| this.last_overlay_error = None);
+            }
             return Vec::new();
         };
         match host.sorted_render_snapshot() {
             Ok(snapshot) => {
-                self.last_overlay_error = None;
+                if self.last_overlay_error.is_some() {
+                    cx.defer_in(window, |this, _, _| this.last_overlay_error = None);
+                }
                 snapshot
                     .into_iter()
                     .map(|overlay| Self::render_overlay(overlay, &host, window, cx))
                     .collect()
             }
             Err(error) => {
-                self.last_overlay_error = Some(error);
+                if self.last_overlay_error.as_ref() != Some(&error) {
+                    cx.defer_in(window, move |this, _, _| {
+                        this.last_overlay_error = Some(error)
+                    });
+                }
                 Vec::new()
             }
         }
@@ -4184,12 +4254,13 @@ impl<D: PaneData> MullionView<D> {
 
 impl<D: PaneData> Render for MullionView<D> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some(mode) = self.theme_mode {
-            self.theme = mode.resolve(window.appearance());
-        }
+        let theme = self
+            .theme_mode
+            .map(|mode| mode.resolve(window.appearance()))
+            .unwrap_or(self.theme);
         let styles = self
             .styles
-            .unwrap_or_else(|| MullionStyles::from_theme(self.theme));
+            .unwrap_or_else(|| MullionStyles::from_theme(theme));
         if !cx.has_active_drag()
             && (self.dock_hover.is_some() || self.dock_drag_active)
             && !self.drag_reconcile_scheduled
@@ -4203,8 +4274,13 @@ impl<D: PaneData> Render for MullionView<D> {
                 }
             });
         }
-        if self.motion_tick_running && self.advance_motions(cx) {
-            window.request_animation_frame();
+        if self.motion_tick_running && !self.motion_frame_scheduled {
+            self.motion_frame_scheduled = true;
+            cx.on_next_frame(window, |this, _, cx| {
+                this.motion_frame_scheduled = false;
+                this.motion_tick_running = this.advance_motions(cx);
+                cx.notify();
+            });
         }
         if self.activity_cache_dirty && !self.activity_reconcile_scheduled {
             self.activity_reconcile_scheduled = true;
@@ -4214,13 +4290,13 @@ impl<D: PaneData> Render for MullionView<D> {
                 cx.notify();
             });
         }
-        let tree = self
+        let tree = self.model.shared_tree();
+        let rendered_tree = self
             .model
             .zoomed()
-            .and_then(|id| self.model.tree().find(id))
-            .map(|node| Rc::new(node.clone()))
-            .unwrap_or_else(|| self.model.shared_tree());
-        let pane_ids = tree.leaf_ids();
+            .and_then(|id| tree.find(id))
+            .unwrap_or(tree.as_ref());
+        let pane_ids = rendered_tree.leaf_ids();
         let workspace_tabs = self
             .workspace_switcher_visible
             .then_some(self.workspaces.as_ref())
@@ -4499,7 +4575,7 @@ impl<D: PaneData> Render for MullionView<D> {
                 )
             })
             .child(div().flex_1().min_w_0().min_h_0().child(self.render_node(
-                &tree,
+                rendered_tree,
                 &pane_ids,
                 InternalEdges::default(),
                 window,
@@ -4624,6 +4700,35 @@ mod tests {
         };
         let (view, cx) = cx.add_window_view(move |_, cx| {
             MullionView::new(PaneNode::leaf(PaneId::new("pane"), data), vec![], cx)
+        });
+        cx.run_until_parked();
+        clones.set(0);
+
+        view.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+
+        assert_eq!(clones.get(), 0);
+    }
+
+    #[gpui::test]
+    fn zoomed_render_does_not_clone_pane_data(cx: &mut TestAppContext) {
+        let clones = Rc::new(Cell::new(0));
+        let counted = |value| CloneCountedData {
+            value,
+            clones: clones.clone(),
+        };
+        let tree = PaneNode::Split {
+            direction: SplitDirection::Horizontal,
+            ratio: 0.5,
+            first: Box::new(PaneNode::leaf(PaneId::new("first"), counted(1))),
+            second: Box::new(PaneNode::leaf(PaneId::new("second"), counted(2))),
+        };
+        let (view, cx) = cx.add_window_view(move |_, cx| MullionView::new(tree, vec![], cx));
+        view.update(cx, |view, cx| {
+            view.update_model(cx, |model| {
+                assert!(model.focus(&PaneId::new("first")));
+                assert!(model.toggle_zoom());
+            });
         });
         cx.run_until_parked();
         clones.set(0);
@@ -6164,7 +6269,9 @@ mod tests {
         });
         assert!(matches!(
             captured.borrow().as_ref(),
-            Some(WorkspaceSetError::ActiveWorkspaceNotFound { .. })
+            Some(MullionViewConstructionError::Workspace(
+                WorkspaceSetError::ActiveWorkspaceNotFound { .. }
+            ))
         ));
         let optional_was_none = Rc::new(Cell::new(false));
         let was_none = optional_was_none.clone();
@@ -7245,7 +7352,9 @@ mod tests {
         });
         assert!(matches!(
             error.borrow().as_ref(),
-            Some(ActivityCatalogValidationError::DuplicateActivityId { .. })
+            Some(MullionViewConstructionError::Catalog(
+                ActivityCatalogValidationError::DuplicateActivityId { .. }
+            ))
         ));
     }
     #[test]

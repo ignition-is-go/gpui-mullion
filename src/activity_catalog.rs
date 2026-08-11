@@ -12,21 +12,15 @@ use std::rc::Rc;
 type ActivityIconRenderer = Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>;
 
 /// Cloneable UI-local factory for one activity or category icon element.
-/// Cloneable UI-local factory for one activity or category icon element.
-/// Cloneable UI-local factory for one activity or category icon element.
 #[derive(Clone)]
 pub struct ActivityIcon(ActivityIconRenderer);
 
 impl ActivityIcon {
     /// Wrap an element factory invoked when icon chrome is projected.
-    /// Wrap an element factory invoked when icon chrome is projected.
-    /// Wrap an element factory invoked when icon chrome is projected.
     pub fn new(render: impl Fn(&mut Window, &mut App) -> AnyElement + 'static) -> Self {
         Self(Rc::new(render))
     }
 
-    /// Invoke the host factory in the current window and application contexts.
-    /// Invoke the host factory in the current window and application contexts.
     /// Invoke the host factory in the current window and application contexts.
     pub fn render(&self, window: &mut Window, cx: &mut App) -> AnyElement {
         (self.0)(window, cx)
@@ -42,12 +36,11 @@ impl fmt::Debug for ActivityIcon {
 /// UI-local host chrome rendered with the current pane and its data.
 pub type ChromeRenderer<D> = Rc<dyn Fn(&PaneId, &D, &mut Window, &mut App) -> AnyElement>;
 
-/// Additive visual metadata for a legacy [`Activity`].
+/// Additive visual metadata for a base [`Activity`].
 #[derive(Clone)]
 pub struct ActivityChrome<D: PaneData> {
     /// Optional icon displayed by the activity bar.
     pub icon: Option<ActivityIcon>,
-    /// Optional pane-header chrome rendered with current pane data.
     /// Optional pane-header chrome rendered with current pane data.
     pub header: Option<ChromeRenderer<D>>,
 }
@@ -91,7 +84,7 @@ impl<D: PaneData> ActivityChrome<D> {
 pub struct CategoryChrome {
     /// Optional icon displayed beside the category label.
     pub icon: Option<ActivityIcon>,
-    /// Overrides the category's legacy `color` when present.
+    /// Overrides the category's base `color` when present.
     pub color: Option<Hsla>,
 }
 
@@ -110,7 +103,7 @@ impl CategoryChrome {
         self
     }
 
-    /// Override the legacy category color used by descendants.
+    /// Override the base category color used by descendants.
     pub fn with_color(mut self, color: Hsla) -> Self {
         self.color = Some(color);
         self
@@ -280,6 +273,7 @@ pub enum ActivityCatalogGroup {
 
 /// Stable-identity or chrome-reference validation failure.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ActivityCatalogValidationError {
     /// An activity id occurs more than once across the recursive catalog.
     DuplicateActivityId {

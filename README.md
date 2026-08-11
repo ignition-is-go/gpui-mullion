@@ -11,7 +11,8 @@ This repository is the GPUI successor to the Leptos `mullion` library and is int
 > docking, workspace, and command interactions on native and WebAssembly. Pre-1.0 architectural
 > hardening is still active: public API curation, render/lifecycle separation, focused controller
 > boundaries, and scaling instrumentation are not yet frozen. See
-> [the GPUI architecture notes](docs/GPUI_ARCHITECTURE.md). Native pane detachment remains an
+> [the GPUI architecture notes](docs/GPUI_ARCHITECTURE.md) and
+> [API evolution policy](docs/API_EVOLUTION.md). Native pane detachment remains an
 > additive, explicit non-goal—not reference parity.
 
 - Portable, validated, serde-compatible `PaneNode<D>` with stable string pane/activity/category IDs and reference command/event semantics.
@@ -24,10 +25,12 @@ This repository is the GPUI successor to the Leptos `mullion` library and is int
 ## Quick start
 
 ```rust
-use gpui::{div, prelude::*};
-use gpui_mullion::*;
+use gpui_mullion::{
+    gpui::{div, prelude::*},
+    prelude::*,
+};
 
-// D must be Clone + PartialEq + serde + Send + Sync + 'static.
+// UI use requires only D: Clone + PartialEq + 'static; persistence adds serde bounds.
 let activity = Activity::new("files", "Files", |pane, _data: &MyData| {
     div().child(format!("Files in {pane}")).into_any_element()
 });
@@ -39,7 +42,7 @@ let view = cx.new(|cx| {
 });
 ```
 
-For durable content, keep the legacy `Activity` definition and add a UI-local factory registry:
+For durable content, keep the catalog `Activity` descriptor and add a view-owned UI-local factory registry:
 
 ```rust
 let factories = ActivityFactoryRegistry::new().with_factory(
@@ -60,7 +63,7 @@ let view = cx.new(|cx| {
 });
 ```
 
-Factories are `Rc`-backed and deliberately have no `Send + Sync` requirement. They run lazily once per `(workspace, pane, activity)` when selected. Body and optional header are stable `AnyView` entities across activity switching and topology-only changes. A cached instance's update hook runs only when that pane's `D` changes. Filtering out an activity, closing its pane, removing its workspace, or releasing the Mullion root evicts it and calls its App-only disposal hook exactly once. `clear_activity_cache` permits earlier explicit teardown. Registering the same activity ID replaces its factory and returns the previous factory; existing instances retain the factory that created them until eviction. If no factory is registered, the unchanged legacy `Activity::render` path is used.
+Factories are `Rc`-backed and deliberately have no `Send + Sync` requirement. They run lazily once per `(workspace, pane, activity)` when selected. Body and optional header are stable `AnyView` entities across activity switching and topology-only changes. A cached instance's update hook runs only when that pane's `D` changes. Filtering out an activity, closing its pane, removing its workspace, or releasing the Mullion root evicts it and calls its App-only disposal hook exactly once. `clear_activity_cache` permits earlier explicit teardown. Registering the same activity ID replaces its factory and returns the previous factory; existing instances retain the factory that created them until eviction. If no factory is registered, the unchanged stateless `Activity::render` fallback is used.
 
 At application startup call `register_key_bindings(cx)` and focus `view.read(cx).focus_handle()` after opening the window (as the demo does). This registers every sequence in `MullionKeymap::default()` under the `Mullion` context. For a user-defined map, call `try_register_key_bindings(cx, &keymap)` (or `register_keymap`) and report its `KeymapCompileError` rather than panicking.
 

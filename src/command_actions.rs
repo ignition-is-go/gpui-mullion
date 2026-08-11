@@ -230,6 +230,7 @@ pub fn action_reference_id(command: PaneCommand) -> String {
 
 /// Failure while compiling a portable keymap into GPUI bindings.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum KeymapCompileError {
     /// GPUI rejected the supplied context predicate.
     InvalidContext(

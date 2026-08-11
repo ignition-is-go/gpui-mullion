@@ -28,12 +28,17 @@ Mullion is a GPUI library with compatibility requirements inherited from the ear
 
 ## Known hardening work
 
-The following work remains before treating the 0.1 API as frozen:
+The following focused work remains before a future 1.0 stability promise:
 
-- Curate the long-term root export surface. Named modules and `prelude` are available now; broad root re-exports remain temporarily for compatibility.
-- Replace or constrain compatibility aliases and public-field configuration structs before downstream code depends on struct literals.
-- Add wall-clock render-scaling benchmarks for pane/activity/workspace counts; deterministic tests already enforce coalesced mutations, bounded state, single-pass navigation, and zero pane-data clones on unrelated renders.
-- Decide whether pane chrome merits additional entity/cache boundaries only after those measurements; entity-per-pane is not an assumed optimization.
-- Prefer an observable entity-backed overlay source if controlled overlay counts become material; the compatibility source remains a documented pure pull callback.
+- Add a dedicated entity-backed modal layer if hosts need keyboard-focus containment and restoration;
+  `a11y_modal` currently describes assistive-technology semantics rather than owning host content focus.
+- Decide whether pane chrome merits additional entity/cache boundaries only after profiling real
+  applications; entity-per-pane is not an assumed optimization.
+- Prefer an observable entity-backed overlay source if controlled overlay counts become material;
+  the compatibility source remains a documented pure pull callback.
+- Remove hidden migration aliases in an explicitly breaking pre-1.0 release after known consumers
+  have adopted the canonical typed APIs.
 
-These items are tracked by `lv-dcc1`.
+Deterministic scaling tests now cover 1/8/29/128 panes with varying activity and workspace counts.
+The curated root facade and stability rules are documented in `API_EVOLUTION.md`.
+These remaining items are tracked by `lv-dcc1`.

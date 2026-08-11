@@ -15,9 +15,8 @@ pub struct PaneId(
 
 /// Stable, application-defined identifier for an activity shown in a pane.
 ///
-/// The contained value is serialized directly as a string. Mullion treats it
-/// as opaque and does not require it to be globally unique across activity
-/// categories.
+/// The contained value is serialized directly as a string. Mullion treats it as opaque. A validated [`crate::ActivityCatalog`] requires
+/// every activity id to be globally unique across all categories and groups.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub struct ActivityId(
     /// The identifier's persisted string value.
@@ -232,6 +231,7 @@ impl fmt::Display for PaneNodePath {
 
 /// An invariant violation in a pane tree intended for persistence.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum PaneValidationError {
     /// Two leaf nodes use the same pane id.
     DuplicatePaneId {

@@ -27,6 +27,7 @@ pub enum PaletteInvocation {
 }
 /// Failure returned when executing palette metadata against the current view.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PaletteInvocationError {
     /// The pane command was rejected; the wrapped error is exposed as the source.
     Command(crate::PaneCommandError),

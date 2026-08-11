@@ -2,7 +2,7 @@ use crate::{ActivityId, CategoryId, PaneData, PaneId, WorkspaceId};
 use gpui::{AnyElement, AnyView, App, SharedString, Window};
 use std::{collections::HashMap, rc::Rc, sync::Arc};
 
-/// Legacy stateless renderer. It remains `Send + Sync` for source compatibility.
+/// Stateless fallback renderer. It remains `Send + Sync` for source compatibility.
 pub type ActivityRenderer<D> = Arc<dyn Fn(&PaneId, &D) -> AnyElement + Send + Sync>;
 
 /// Creates one durable activity instance for a pane.

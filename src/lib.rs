@@ -54,32 +54,98 @@ pub mod workspace;
 /// available from their named modules.
 pub mod prelude {
     pub use crate::{
-        Activity, ActivityBarConfig, ActivityCatalog, ActivityFactoryRegistry, ActivityId,
-        ActivityInstance, ActivityNode, MullionConfig, MullionModel, MullionSettings,
-        MullionStyles, MullionTheme, MullionThemeMode, MullionView, PaneData, PaneEvent, PaneId,
-        PaneNode, SplitDirection, Workspace, WorkspaceId, WorkspaceSet,
+        register_key_bindings, Activity, ActivityBarConfig, ActivityCatalog, ActivityCategory,
+        ActivityFactoryRegistry, ActivityId, ActivityInstance, ActivityNode, CategoryId,
+        FocusPresentation, MullionConfig, MullionModel, MullionSettings, MullionStyles,
+        MullionTheme, MullionThemeMode, MullionView, PaneData, PaneEvent, PaneFocusBehavior,
+        PaneId, PaneNode, SplitDirection, Workspace, WorkspaceId, WorkspaceSet,
     };
 }
-pub use accessibility::*;
-pub use activity::*;
-pub use activity_bar::*;
-pub use activity_catalog::*;
-pub use command::*;
-pub use command_actions::*;
-pub use drag::*;
-pub use events::*;
-pub use focus::*;
+pub use accessibility::{
+    MullionAccessibilityNode, MullionAccessibilityRole, MullionAccessibilityState,
+};
+pub use activity::{
+    Activity, ActivityCacheKey, ActivityCategory, ActivityDispose, ActivityFactory,
+    ActivityFactoryRegistry, ActivityInstance, ActivityNode, ActivityRenderer, ActivityUpdate,
+};
+pub use activity_bar::{
+    ActivityBarAxis, ActivityBarBehavior, ActivityBarConfig, ActivityBarEdge,
+    ActivityBarHostConfig, ActivityBarHoverIntent, ActivityBarHoverState, ActivityBarMode,
+    ActivityBarModeResolver, ActivityBarSlots, ActivityExpansionState, HoverGeneration,
+    PaneBorderColor, PaneControl, PaneHeaderConfig,
+};
+pub use activity_catalog::{
+    ActivityCatalog, ActivityCatalogGroup, ActivityCatalogValidationError, ActivityChrome,
+    ActivityIcon, ActivityProjection, CategoryChrome, ChromeRenderer, VisibleActivity,
+    VisibleActivityNode, VisibleCategory,
+};
+pub use command::{
+    PaneCommand, PaneCommandError, PaneCommandExecutionOptions, PaneCommandGroup,
+    PaneCommandResult, PaneSplitFactory,
+};
+pub use command_actions::{
+    action_for_command, action_reference_id, command_for_action, compile_keymap,
+    ApplyEvenHorizontalLayout, ApplyEvenVerticalLayout, ApplyMainHorizontalLayout,
+    ApplyMainVerticalLayout, ApplyTiledLayout, FocusFirst, FocusLast, FocusPane,
+    KeymapCompileError, MovePaneDown, MovePaneLeft, MovePaneRight, MovePaneUp, ResizePaneDown,
+    ResizePaneLeft, ResizePaneRight, ResizePaneUp, RotatePanesBackward, RotatePanesForward,
+    SetParentSplitHorizontal, SetParentSplitVertical, SplitPaneHorizontal, SplitPaneVertical,
+    SwapPaneDown, SwapPaneLeft, SwapPaneNext, SwapPanePrevious, SwapPaneRight, SwapPaneUp,
+    ToggleParentSplitDirection, MULLION_KEY_CONTEXT,
+};
+pub use drag::{
+    DockBounds, DockConfig, DockDrag, DockHover, DockIndicator, DockPayload, DockPoint,
+    NewPaneFactory,
+};
+pub use events::{PaneEvent, WorkspaceChanged, WorkspaceEvent};
+pub use focus::PaneFocusBehavior;
+/// The exact GPUI revision used by Mullion, re-exported to keep public types identical.
+pub use gpui;
 /// The exact shared palette crate used by Mullion, re-exported so hosts cannot
 /// accidentally link a second revision and register duplicate GPUI actions.
 pub use gpui_command_palette;
-pub use keybindings::*;
-pub use model::*;
-pub use overlay::*;
-pub use palette::*;
-pub use platform::*;
-pub use settings::*;
-pub use styles::*;
-pub use theme::*;
-pub use tree::*;
-pub use view::*;
-pub use workspace::*;
+pub use keybindings::{
+    normalize_key, KeyChord, KeySequenceMatch, KeyStroke, MullionKeyBinding, MullionKeymap,
+};
+pub use model::MullionModel;
+pub use overlay::{
+    ControlledOverlaySource, MullionOverlay, OverlayAlignment, OverlayBackdrop,
+    OverlayDismissHandler, OverlayError, OverlayHostConfig, OverlayId, OverlayLength,
+    OverlayMutation, OverlayPlacement, OverlayPolicy, OverlayRenderer, OverlaySize, OverlayStack,
+    OverlayTier,
+};
+pub use palette::{
+    activity_palette_entries, command_palette_for_view, focus_index_palette_entries,
+    install_command_palette_for_view, mullion_palette_entries, pane_command_palette_entries,
+    search_palette, PaletteEntry, PaletteInvocation, PaletteInvocationError, PaletteSearchResult,
+};
+#[cfg(not(target_family = "wasm"))]
+pub use platform::NativeDetachedWindowService;
+pub use platform::{
+    DetachError, DetachedWindowService, UnavailableDetachedWindows, WindowCapabilities,
+};
+pub use settings::{
+    FocusPresentation, MullionConfig, MullionConfiguration, MullionPresentation, MullionSetting,
+    MullionSettingOption, MullionSettings, MullionSettingsConfig,
+};
+pub use styles::{
+    ActivityBarStyle, DropOverlayStyle, MullionRootStyle, MullionStyles, PaneControlStyle,
+    PaneHeaderStyle, PaneStyle, SplitHandleStyle, WorkspaceSwitcherStyle,
+};
+pub use theme::{MullionTheme, MullionThemeMode};
+pub use tree::{
+    collect_split_keys, collect_split_ratios, directional_neighbor, find_ratio,
+    find_split_direction, leaf_rect, resize_boundary, split_parent_rect, ActivityId, CategoryId,
+    DropEdge, PaneData, PaneDirection, PaneId, PaneLayout, PaneNode, PaneNodeBranch, PaneNodePath,
+    PaneRotation, PaneValidationError, Rect, SplitDirection,
+};
+pub use view::{
+    register_key_bindings, register_keymap, try_register_key_bindings, BalancePanes,
+    CancelSplitResize, ClosePane, FocusDown, FocusLeft, FocusNext, FocusPrevious, FocusRight,
+    FocusUp, MullionView, MullionViewConstructionError, ResizeSplitDecrease, ResizeSplitIncrease,
+    ToggleZoom,
+};
+pub use workspace::{
+    Workspace, WorkspaceError, WorkspaceId, WorkspaceSet, WorkspaceSetError,
+    WorkspaceValidationError,
+};

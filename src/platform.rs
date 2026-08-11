@@ -30,6 +30,7 @@ impl WindowCapabilities {
 
 /// Failure to move a pane into a detached window.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DetachError {
     /// The application host has no detached-window integration.
     Unavailable,

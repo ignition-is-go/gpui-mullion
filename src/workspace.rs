@@ -90,6 +90,7 @@ pub struct WorkspaceSet<D: PaneData> {
 
 /// An invariant or requested-operation error for a [`WorkspaceSet`].
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum WorkspaceSetError {
     /// The set contains no workspaces.
     Empty,
