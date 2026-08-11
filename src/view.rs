@@ -439,6 +439,7 @@ impl<D: PaneData> Render for LegacyActivityBody<D> {
 struct PaneActivityRenderData<D: PaneData> {
     activities: Vec<Activity<D>>,
     projection: ActivityProjection<D>,
+    active_categories: HashSet<crate::CategoryId>,
 }
 
 impl Render for DockDrag {
@@ -1476,10 +1477,18 @@ impl<D: PaneData> MullionView<D> {
             if workspace == &active_workspace {
                 Self::collect_visible_item_keys(pane, &projection.primary, &mut visible_item_keys);
                 Self::collect_visible_item_keys(pane, &projection.trailing, &mut visible_item_keys);
+                if self.expansion_active.get(pane) != Some(active) {
+                    self.expansion
+                        .entry(pane.clone())
+                        .or_default()
+                        .reveal_active(&projection.active_ancestors);
+                    self.expansion_active.insert(pane.clone(), active.clone());
+                }
             }
             render_cache.insert(
                 (workspace.clone(), pane.clone()),
                 Rc::new(PaneActivityRenderData {
+                    active_categories: projection.active_ancestors.iter().cloned().collect(),
                     activities,
                     projection,
                 }),
@@ -1487,6 +1496,12 @@ impl<D: PaneData> MullionView<D> {
             pane_data.insert((workspace.clone(), pane.clone()), data.clone());
         }
         self.activity_render_cache = render_cache;
+        for pane in &live_panes {
+            self.bar_motion.entry(pane.clone()).or_default();
+        }
+        for key in &visible_item_keys {
+            self.item_motion.entry(key.clone()).or_default();
+        }
 
         // Interaction state is UI-local and must not grow with closed panes or
         // filtered catalog entries. Reconcile it alongside the authoritative
@@ -2341,22 +2356,10 @@ impl<D: PaneData> MullionView<D> {
         pane: &PaneId,
         nodes: &[VisibleActivityNode<D>],
         selected: Option<&ActivityId>,
+        active_categories: &HashSet<crate::CategoryId>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        fn contains_active<D: PaneData>(
-            node: &VisibleActivityNode<D>,
-            selected: Option<&ActivityId>,
-        ) -> bool {
-            match node {
-                VisibleActivityNode::Activity(activity) => selected == Some(&activity.activity.id),
-                VisibleActivityNode::Category(category) => category
-                    .children
-                    .iter()
-                    .any(|child| contains_active(child, selected)),
-            }
-        }
-
         let styles = self
             .styles
             .unwrap_or_else(|| MullionStyles::from_theme(self.theme));
@@ -2371,11 +2374,12 @@ impl<D: PaneData> MullionView<D> {
                     let item_key = format!("activity:{}", activity.id.0);
                     let stored_item_progress = self
                         .item_motion
-                        .entry((pane.clone(), item_key.clone()))
-                        .or_default()
-                        .progress;
-                    let stored_bar_progress =
-                        self.bar_motion.entry(pane.clone()).or_default().progress;
+                        .get(&(pane.clone(), item_key.clone()))
+                        .map_or(0.0, |motion| motion.progress);
+                    let stored_bar_progress = self
+                        .bar_motion
+                        .get(pane)
+                        .map_or(0.0, |motion| motion.progress);
                     let item_progress = if self.dock_drag_active {
                         1.0
                     } else if horizontal {
@@ -2581,16 +2585,17 @@ impl<D: PaneData> MullionView<D> {
                         .expansion
                         .get(pane)
                         .is_some_and(|state| state.is_expanded(&category.id));
-                    let has_active = contains_active(node, selected);
+                    let has_active = active_categories.contains(&category.id);
                     let show_dot = !expanded && has_active;
                     let item_key = format!("category:{}", category.id.0);
                     let stored_item_progress = self
                         .item_motion
-                        .entry((pane.clone(), item_key.clone()))
-                        .or_default()
-                        .progress;
-                    let stored_bar_progress =
-                        self.bar_motion.entry(pane.clone()).or_default().progress;
+                        .get(&(pane.clone(), item_key.clone()))
+                        .map_or(0.0, |motion| motion.progress);
+                    let stored_bar_progress = self
+                        .bar_motion
+                        .get(pane)
+                        .map_or(0.0, |motion| motion.progress);
                     let item_progress = if self.dock_drag_active {
                         1.0
                     } else if horizontal {
@@ -2841,6 +2846,7 @@ impl<D: PaneData> MullionView<D> {
                             pane,
                             &category.children,
                             selected,
+                            active_categories,
                             window,
                             cx,
                         );
@@ -3118,9 +3124,11 @@ impl<D: PaneData> MullionView<D> {
             .get(&(self.workspace_namespace(), id.clone()))
             .cloned()
             .unwrap_or_else(|| {
+                let projection = self.catalog.visible(data, active);
                 Rc::new(PaneActivityRenderData {
+                    active_categories: projection.active_ancestors.iter().cloned().collect(),
                     activities: Vec::new(),
-                    projection: self.catalog.visible(data, active),
+                    projection,
                 })
             });
         let active_name = active.and_then(|active| {
@@ -3164,29 +3172,28 @@ impl<D: PaneData> MullionView<D> {
             })
             .or_else(|| render_data.activities.first().cloned());
         let projection = &render_data.projection;
-        if self.expansion_active.get(id) != Some(&active.cloned()) {
-            self.expansion
-                .entry(id.clone())
-                .or_default()
-                .reveal_active(&projection.active_ancestors);
-            self.expansion_active.insert(id.clone(), active.cloned());
-        }
         let horizontal = self.host.activity_bar.edge.is_horizontal();
         let mode = self.host.mode_for(id, data);
         let hover_expanded = self.hover.get(id).is_some_and(|state| state.is_expanded());
         let panel_expanded = self.dock_drag_active
             || (hover_expanded && self.host.activity_bar.behavior.hover_expand);
         let selected_id = selected.as_ref().map(|activity| &activity.id);
-        self.bar_motion.entry(id.clone()).or_default();
-        for key in ["move", "split-h", "split-v", "close"] {
-            self.item_motion
-                .entry((id.clone(), format!("control:{key}")))
-                .or_default();
-        }
-        let primary_tabs =
-            self.render_activity_nodes(id, &projection.primary, selected_id, window, cx);
-        let trailing_tabs =
-            self.render_activity_nodes(id, &projection.trailing, selected_id, window, cx);
+        let primary_tabs = self.render_activity_nodes(
+            id,
+            &projection.primary,
+            selected_id,
+            &render_data.active_categories,
+            window,
+            cx,
+        );
+        let trailing_tabs = self.render_activity_nodes(
+            id,
+            &projection.trailing,
+            selected_id,
+            &render_data.active_categories,
+            window,
+            cx,
+        );
         let cached = selected.as_ref().and_then(|activity| {
             let key =
                 ActivityCacheKey::new(self.workspace_namespace(), id.clone(), activity.id.clone());
