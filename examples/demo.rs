@@ -10,10 +10,10 @@ use gpui_mullion::{
     register_key_bindings, Activity, ActivityBarConfig, ActivityBarEdge, ActivityBarHostConfig,
     ActivityBarMode, ActivityBarSlots, ActivityCatalog, ActivityCategory, ActivityChrome,
     ActivityIcon, ActivityId, ActivityNode, CategoryChrome, CategoryId, DropEdge,
-    FocusPresentation, MullionOverlay, MullionSettings, MullionStyles, MullionView,
-    OverlayAlignment, OverlayBackdrop, OverlayHostConfig, OverlayLength, OverlayPlacement,
-    OverlaySize, OverlayStack, OverlayTier, PaneFocusBehavior, PaneId, PaneNode, SplitDirection,
-    Workspace, WorkspaceId, WorkspaceSet,
+    FocusPresentation, MullionAppearance, MullionOverlay, MullionSettings, MullionStyles,
+    MullionView, OverlayAlignment, OverlayBackdrop, OverlayHostConfig, OverlayLength,
+    OverlayPlacement, OverlaySize, OverlayStack, OverlayTier, PaneFocusBehavior, PaneId, PaneNode,
+    SplitDirection, Workspace, WorkspaceId, WorkspaceSet,
 };
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
@@ -1117,7 +1117,7 @@ fn launch(cx: &mut App) {
                             .with_focus_indicator(true)
                             .with_unfocused_pane_opacity(0.75),
                     )
-                    .with_styles(demo_styles())
+                    .with_appearance(MullionAppearance::styles(demo_styles()))
                     .with_workspace_switcher_visible(false)
                     .with_activity_bar_host(host_config())
                     .with_overlay_host(

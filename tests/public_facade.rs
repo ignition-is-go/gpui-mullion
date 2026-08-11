@@ -24,6 +24,11 @@ fn prelude_supports_the_documented_core_vocabulary() {
     assert_eq!(PaneFocusBehavior::default(), PaneFocusBehavior::Hover);
     let _ = FocusPresentation::default();
     let _ = MullionConfig::default();
+    let look = MullionAppearance::system();
+    assert!(matches!(
+        look,
+        MullionAppearance::Mode(MullionThemeMode::System)
+    ));
 }
 
 #[gpui_mullion::gpui::test]

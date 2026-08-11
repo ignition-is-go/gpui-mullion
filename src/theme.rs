@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 /// All values are GPUI HSLA colors, including their alpha component. The
 /// built-in palettes are fully opaque except where a translucent overlay is
 /// explicitly useful, such as [`Self::drop_target`].
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MullionTheme {
     /// Background behind the workspace and its panes.
     pub background: Hsla,
@@ -101,6 +101,102 @@ impl MullionThemeMode {
     }
 }
 
+/// Complete source used to resolve Mullion's visual appearance.
+///
+/// This is the canonical look configuration accepted by
+/// [`crate::MullionView::with_appearance`]. A theme mode follows a built-in
+/// light/dark policy, a theme derives standard component geometry from a custom
+/// palette, and styles preserve an exact fully resolved component snapshot.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MullionAppearance {
+    /// Resolve a built-in palette from a fixed or system-following policy.
+    Mode(MullionThemeMode),
+    /// Derive standard component styles from this exact palette.
+    Theme(MullionTheme),
+    /// Use a complete resolved style snapshot and semantic palette without merging.
+    Styles {
+        /// Semantic colors supplied to host-rendered chrome callbacks.
+        theme: MullionTheme,
+        /// Exact resolved Mullion component tokens.
+        styles: std::rc::Rc<crate::styles::MullionStyles>,
+    },
+}
+
+impl MullionAppearance {
+    /// Follow the current GPUI window appearance.
+    pub const fn system() -> Self {
+        Self::Mode(MullionThemeMode::System)
+    }
+
+    /// Always derive styles from the built-in light palette.
+    pub const fn light() -> Self {
+        Self::Mode(MullionThemeMode::Light)
+    }
+
+    /// Always derive styles from the built-in dark palette.
+    pub const fn dark() -> Self {
+        Self::Mode(MullionThemeMode::Dark)
+    }
+
+    /// Derive standard component styles from a custom palette.
+    pub const fn theme(theme: MullionTheme) -> Self {
+        Self::Theme(theme)
+    }
+
+    /// Use a fully resolved component-style snapshot.
+    pub fn styles(styles: crate::styles::MullionStyles) -> Self {
+        Self::Styles {
+            theme: MullionTheme::default(),
+            styles: std::rc::Rc::new(styles),
+        }
+    }
+
+    /// Use a custom semantic palette and exact resolved component tokens together.
+    pub fn custom(theme: MullionTheme, styles: crate::styles::MullionStyles) -> Self {
+        Self::Styles {
+            theme,
+            styles: std::rc::Rc::new(styles),
+        }
+    }
+
+    /// Resolve the semantic palette and complete tokens for a GPUI window appearance.
+    pub fn resolve(
+        &self,
+        appearance: WindowAppearance,
+    ) -> (MullionTheme, crate::styles::MullionStyles) {
+        let theme = match self {
+            Self::Mode(mode) => mode.resolve(appearance),
+            Self::Theme(theme) => *theme,
+            Self::Styles { theme, styles } => return (*theme, **styles),
+        };
+        (theme, crate::styles::MullionStyles::from_theme(theme))
+    }
+}
+
+impl Default for MullionAppearance {
+    fn default() -> Self {
+        Self::Theme(MullionTheme::default())
+    }
+}
+
+impl From<MullionThemeMode> for MullionAppearance {
+    fn from(mode: MullionThemeMode) -> Self {
+        Self::Mode(mode)
+    }
+}
+
+impl From<MullionTheme> for MullionAppearance {
+    fn from(theme: MullionTheme) -> Self {
+        Self::Theme(theme)
+    }
+}
+
+impl From<crate::styles::MullionStyles> for MullionAppearance {
+    fn from(styles: crate::styles::MullionStyles) -> Self {
+        Self::styles(styles)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,5 +233,21 @@ mod tests {
             serde_json::from_str::<MullionThemeMode>(r#""Light""#).unwrap(),
             MullionThemeMode::Light
         );
+    }
+
+    #[test]
+    fn appearance_resolves_one_complete_look_source() {
+        let (light_theme, light_styles) =
+            MullionAppearance::system().resolve(WindowAppearance::VibrantLight);
+        assert_eq!(light_theme, MullionTheme::light());
+        assert_eq!(light_styles, crate::MullionStyles::from_theme(light_theme));
+
+        let theme = MullionTheme::dark();
+        let mut styles = crate::MullionStyles::from_theme(theme);
+        styles.activity_bar.thickness = gpui::px(51.0);
+        let (resolved_theme, resolved_styles) =
+            MullionAppearance::custom(theme, styles).resolve(WindowAppearance::Light);
+        assert_eq!(resolved_theme, theme);
+        assert_eq!(resolved_styles, styles);
     }
 }

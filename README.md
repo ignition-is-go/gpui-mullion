@@ -42,6 +42,25 @@ let view = cx.new(|cx| {
 });
 ```
 
+## Appearance
+
+`MullionView::with_appearance` is the only canonical entry point for setting the look:
+
+```rust
+// Follow the GPUI window appearance.
+let view = view.with_appearance(MullionAppearance::system());
+
+// Or install one exact resolved token snapshot.
+let mut styles = MullionStyles::from_theme(MullionTheme::dark());
+styles.activity_bar.thickness = gpui::px(52.0);
+let view = view.with_appearance(MullionAppearance::styles(styles));
+```
+
+Use `MullionAppearance::light()`, `dark()`, or `theme(custom_palette)` for standard geometry.
+Use `MullionAppearance::custom(theme, styles)` when host-rendered chrome needs a custom semantic
+palette alongside exact component tokens. The older theme/style-specific view builders remain hidden
+migration wrappers.
+
 For durable content, keep the catalog `Activity` descriptor and add a view-owned UI-local factory registry:
 
 ```rust

@@ -10,6 +10,8 @@ Mullion is pre-1.0, but its public surface is designed for use by multiple appli
 - Use `MullionView::try_new`, `try_new_with_catalog`, or `try_new_with_workspaces` for persisted or
   untrusted input. Infallible `new` is reserved for host-built input and panics on invalid identity
   or topology.
+- Configure the complete look through `MullionView::with_appearance`; theme modes, custom palettes,
+  and exact style snapshots are variants of that one appearance source.
 - Mullion re-exports its exact `gpui` and `gpui_command_palette` revisions for type-identity-safe
   downstream integration.
 

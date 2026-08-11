@@ -114,7 +114,7 @@ Serializable `PaneFocusBehavior::{Hover,Click}`, controlled/local `MullionSettin
 
 ### MUL-P2-002 — Expanded theming — **Implemented**
 
-`MullionStyles` owns typed root, pane, activity-bar, split-handle, drop-overlay, header, and workspace-switcher geometry/state tokens. `MullionTheme::{light,dark}` and serializable `MullionThemeMode::{Light,Dark,System}` cover light/system selection; `drop_target` feeds `DropOverlayStyle`. Evidence: style/theme tests and `custom_style_geometry_and_theme_mode_are_composed_independently`.
+`MullionAppearance` is the single look configuration installed with `MullionView::with_appearance`; it selects fixed/system theme policy, a custom semantic palette, or one exact resolved `MullionStyles` snapshot. `MullionStyles` owns typed root, pane, activity-bar, split-handle, drop-overlay, header, and workspace-switcher geometry/state tokens. Evidence: style/theme tests and `custom_appearance_is_one_resolved_style_snapshot`.
 
 ### MUL-P2-003 — Overlay escape hatch — **Implemented**
 

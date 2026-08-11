@@ -4,12 +4,12 @@ use crate::{
     ActivityBarMode, ActivityCacheKey, ActivityCatalog, ActivityCatalogValidationError,
     ActivityExpansionState, ActivityFactoryRegistry, ActivityId, ActivityNode, ActivityProjection,
     DockBounds, DockConfig, DockDrag, DockHover, DockPayload, DropEdge, FocusPresentation,
-    MullionModel, MullionOverlay, MullionSettings, MullionStyles, MullionTheme, MullionThemeMode,
-    NewPaneFactory, OverlayAlignment, OverlayError, OverlayHostConfig, OverlayLength, PaletteEntry,
-    PaletteInvocation, PaletteInvocationError, PaletteSearchResult, PaneCommandExecutionOptions,
-    PaneControl, PaneData, PaneDirection, PaneEvent, PaneFocusBehavior, PaneId, PaneNode,
-    PaneSplitFactory, SplitDirection, VisibleActivityNode, WorkspaceChanged, WorkspaceEvent,
-    WorkspaceId, WorkspaceSet, WorkspaceSetError,
+    MullionAppearance, MullionModel, MullionOverlay, MullionSettings, MullionStyles, MullionTheme,
+    MullionThemeMode, NewPaneFactory, OverlayAlignment, OverlayError, OverlayHostConfig,
+    OverlayLength, PaletteEntry, PaletteInvocation, PaletteInvocationError, PaletteSearchResult,
+    PaneCommandExecutionOptions, PaneControl, PaneData, PaneDirection, PaneEvent,
+    PaneFocusBehavior, PaneId, PaneNode, PaneSplitFactory, SplitDirection, VisibleActivityNode,
+    WorkspaceChanged, WorkspaceEvent, WorkspaceId, WorkspaceSet, WorkspaceSetError,
 };
 use gpui::{
     actions, canvas, div, ease_in_out, point, prelude::*, px, relative, AnyElement, App, Bounds,
@@ -500,9 +500,7 @@ pub struct MullionView<D: PaneData> {
     dock_config: DockConfig<D>,
     command_options: PaneCommandExecutionOptions<D>,
     catalog: ActivityCatalog<D>,
-    theme: MullionTheme,
-    theme_mode: Option<MullionThemeMode>,
-    styles: Option<MullionStyles>,
+    appearance: MullionAppearance,
     host: ActivityBarHostConfig<D>,
     settings: MullionSettings,
     focus_presentation: FocusPresentation,
@@ -594,9 +592,7 @@ impl<D: PaneData> MullionView<D> {
             dock_config: DockConfig::default(),
             command_options: PaneCommandExecutionOptions::default(),
             catalog,
-            theme: MullionTheme::default(),
-            theme_mode: None,
-            styles: None,
+            appearance: MullionAppearance::default(),
             host: ActivityBarHostConfig::default(),
             settings: MullionSettings::default(),
             focus_presentation: FocusPresentation::default(),
@@ -694,29 +690,56 @@ impl<D: PaneData> MullionView<D> {
         view.workspaces = Some(workspaces);
         Ok(view)
     }
-    /// Use a fixed theme and disable system appearance resolution.
-    pub fn with_theme(mut self, theme: MullionTheme) -> Self {
-        self.theme = theme;
-        self.theme_mode = None;
+    /// Set the single source from which Mullion resolves all visual tokens.
+    pub fn with_appearance(mut self, appearance: impl Into<MullionAppearance>) -> Self {
+        self.appearance = appearance.into();
         self
     }
-    /// Resolve the palette from the window appearance on every render.
-    pub fn with_theme_mode(mut self, mode: MullionThemeMode) -> Self {
-        self.theme_mode = Some(mode);
-        self
+
+    /// Return the configured source for all Mullion visual tokens.
+    pub const fn appearance(&self) -> &MullionAppearance {
+        &self.appearance
     }
-    /// Return the configured appearance-resolved theme policy, if any.
-    pub fn theme_mode(&self) -> Option<MullionThemeMode> {
-        self.theme_mode
+
+    /// Compatibility wrapper for [`Self::with_appearance`].
+    #[doc(hidden)]
+    #[deprecated(note = "use MullionView::with_appearance")]
+    pub fn with_theme(self, theme: MullionTheme) -> Self {
+        self.with_appearance(theme)
     }
-    /// Override derived theme geometry and chrome styles.
-    pub fn with_styles(mut self, styles: MullionStyles) -> Self {
-        self.styles = Some(styles);
-        self
+
+    /// Compatibility wrapper for [`Self::with_appearance`].
+    #[doc(hidden)]
+    #[deprecated(note = "use MullionView::with_appearance")]
+    pub fn with_theme_mode(self, mode: MullionThemeMode) -> Self {
+        self.with_appearance(mode)
     }
-    /// Return explicit styles, or `None` when styles derive from the theme.
+
+    /// Return the compatibility theme mode when the appearance uses one.
+    #[doc(hidden)]
+    #[deprecated(note = "inspect MullionView::appearance")]
+    pub const fn theme_mode(&self) -> Option<MullionThemeMode> {
+        match &self.appearance {
+            MullionAppearance::Mode(mode) => Some(*mode),
+            MullionAppearance::Theme(_) | MullionAppearance::Styles { .. } => None,
+        }
+    }
+
+    /// Compatibility wrapper for [`Self::with_appearance`].
+    #[doc(hidden)]
+    #[deprecated(note = "use MullionView::with_appearance")]
+    pub fn with_styles(self, styles: MullionStyles) -> Self {
+        self.with_appearance(styles)
+    }
+
+    /// Return the compatibility style snapshot when the appearance uses one.
+    #[doc(hidden)]
+    #[deprecated(note = "inspect MullionView::appearance")]
     pub fn styles(&self) -> Option<&MullionStyles> {
-        self.styles.as_ref()
+        match &self.appearance {
+            MullionAppearance::Styles { styles, .. } => Some(styles.as_ref()),
+            MullionAppearance::Mode(_) | MullionAppearance::Theme(_) => None,
+        }
     }
     /// Test-support probe for whether pointer hover expanded a pane's activity bar.
     ///
@@ -1709,9 +1732,7 @@ impl<D: PaneData> MullionView<D> {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let styles = self
-            .styles
-            .unwrap_or_else(|| MullionStyles::from_theme(self.theme));
+        let (_, styles) = self.appearance.resolve(window.appearance());
         match node {
             PaneNode::Leaf {
                 id,
@@ -2466,9 +2487,7 @@ impl<D: PaneData> MullionView<D> {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        let styles = self
-            .styles
-            .unwrap_or_else(|| MullionStyles::from_theme(self.theme));
+        let (_, styles) = self.appearance.resolve(window.appearance());
         let edge = self.host.activity_bar.edge;
         let horizontal = edge.is_horizontal();
         let mut rendered = Vec::new();
@@ -3264,10 +3283,7 @@ impl<D: PaneData> MullionView<D> {
             focused,
             self.model.zoomed() == Some(id),
         );
-        let theme = self.theme;
-        let styles = self
-            .styles
-            .unwrap_or_else(|| MullionStyles::from_theme(theme));
+        let (theme, styles) = self.appearance.resolve(window.appearance());
         let host_pane_border = self
             .host
             .pane_border_color
@@ -4254,13 +4270,7 @@ impl<D: PaneData> MullionView<D> {
 
 impl<D: PaneData> Render for MullionView<D> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = self
-            .theme_mode
-            .map(|mode| mode.resolve(window.appearance()))
-            .unwrap_or(self.theme);
-        let styles = self
-            .styles
-            .unwrap_or_else(|| MullionStyles::from_theme(theme));
+        let (_, styles) = self.appearance.resolve(window.appearance());
         if !cx.has_active_drag()
             && (self.dock_hover.is_some() || self.dock_drag_active)
             && !self.drag_reconcile_scheduled
@@ -6964,7 +6974,8 @@ mod tests {
         assert_eq!(edge.size.width, px(1.));
         assert_eq!(edge.right(), content.right());
         view.read_with(cx, |view, _| {
-            assert_eq!(view.theme.focus_indicator, gpui::rgb(0x0974a4).into());
+            let (theme, _) = view.appearance().resolve(gpui::WindowAppearance::Dark);
+            assert_eq!(theme.focus_indicator, gpui::rgb(0x0974a4).into());
         });
     }
 
@@ -7288,7 +7299,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn custom_style_geometry_and_theme_mode_are_composed_independently(cx: &mut TestAppContext) {
+    fn custom_appearance_is_one_resolved_style_snapshot(cx: &mut TestAppContext) {
         cx.update(|cx| cx.set_reduce_motion(true));
         let mut styles = MullionStyles::default();
         styles.activity_bar.thickness = px(47.);
@@ -7300,9 +7311,7 @@ mod tests {
         styles.pane.border = gpui::rgb(0x040506).into();
         let tree = split(SplitDirection::Horizontal, 0.5, leaf("a"), leaf("b"));
         let (view, cx) = cx.add_window_view(move |_, cx| {
-            MullionView::new(tree, vec![], cx)
-                .with_styles(styles)
-                .with_theme_mode(MullionThemeMode::System)
+            MullionView::new(tree, vec![], cx).with_appearance(MullionAppearance::styles(styles))
         });
         cx.run_until_parked();
         assert_eq!(
@@ -7328,9 +7337,11 @@ mod tests {
             cx.debug_bounds("split-hit-target:b").unwrap().size.width,
             px(13.)
         );
-        view.read_with(cx, |view, _| {
-            assert_eq!(view.styles(), Some(&styles));
-            assert_eq!(view.theme_mode(), Some(MullionThemeMode::System));
+        view.read_with(cx, |view, _| match view.appearance() {
+            MullionAppearance::Styles { styles: actual, .. } => {
+                assert_eq!(actual.as_ref(), &styles)
+            }
+            _ => panic!("custom appearance did not retain its exact styles"),
         });
     }
 

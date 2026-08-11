@@ -56,9 +56,9 @@ pub mod prelude {
     pub use crate::{
         register_key_bindings, Activity, ActivityBarConfig, ActivityCatalog, ActivityCategory,
         ActivityFactoryRegistry, ActivityId, ActivityInstance, ActivityNode, CategoryId,
-        FocusPresentation, MullionConfig, MullionModel, MullionSettings, MullionStyles,
-        MullionTheme, MullionThemeMode, MullionView, PaneData, PaneEvent, PaneFocusBehavior,
-        PaneId, PaneNode, SplitDirection, Workspace, WorkspaceId, WorkspaceSet,
+        FocusPresentation, MullionAppearance, MullionConfig, MullionModel, MullionSettings,
+        MullionStyles, MullionTheme, MullionThemeMode, MullionView, PaneData, PaneEvent,
+        PaneFocusBehavior, PaneId, PaneNode, SplitDirection, Workspace, WorkspaceId, WorkspaceSet,
     };
 }
 pub use accessibility::{
@@ -132,7 +132,7 @@ pub use styles::{
     ActivityBarStyle, DropOverlayStyle, MullionRootStyle, MullionStyles, PaneControlStyle,
     PaneHeaderStyle, PaneStyle, SplitHandleStyle, WorkspaceSwitcherStyle,
 };
-pub use theme::{MullionTheme, MullionThemeMode};
+pub use theme::{MullionAppearance, MullionTheme, MullionThemeMode};
 pub use tree::{
     collect_split_keys, collect_split_ratios, directional_neighbor, find_ratio,
     find_split_direction, leaf_rect, resize_boundary, split_parent_rect, ActivityId, CategoryId,
