@@ -341,6 +341,47 @@ fn reference_pane_icon(icon: ReferencePaneIcon, size: Pixels, color: Hsla) -> An
     .into_any_element()
 }
 
+fn fallback_activity_icon(size: Pixels, color: Hsla) -> AnyElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let scale = size.as_f32() / 16.0;
+            for &(left, top, right, bottom) in &[
+                (3.0, 3.0, 7.0, 7.0),
+                (9.0, 3.0, 13.0, 7.0),
+                (3.0, 9.0, 7.0, 13.0),
+                (9.0, 9.0, 13.0, 13.0),
+            ] {
+                let points = [
+                    point(
+                        bounds.origin.x + px(left * scale),
+                        bounds.origin.y + px(top * scale),
+                    ),
+                    point(
+                        bounds.origin.x + px(right * scale),
+                        bounds.origin.y + px(top * scale),
+                    ),
+                    point(
+                        bounds.origin.x + px(right * scale),
+                        bounds.origin.y + px(bottom * scale),
+                    ),
+                    point(
+                        bounds.origin.x + px(left * scale),
+                        bounds.origin.y + px(bottom * scale),
+                    ),
+                ];
+                let mut builder = PathBuilder::fill();
+                builder.add_polygon(&points, true);
+                if let Ok(path) = builder.build() {
+                    window.paint_path(path, color);
+                }
+            }
+        },
+    )
+    .size(size)
+    .into_any_element()
+}
+
 fn chevron_rotation(edge: ActivityBarEdge, expanded: bool) -> i32 {
     if !expanded {
         0
@@ -1043,7 +1084,7 @@ impl<D: PaneData> MullionView<D> {
     pub fn dock_config(&self) -> &DockConfig<D> {
         &self.dock_config
     }
-    /// Configure the host factory which mints panes for dropped activities.
+    /// Override default activity docking with a host pane factory.
     pub fn with_new_pane_factory(
         mut self,
         factory: impl Fn(&ActivityId, &PaneId, DropEdge) -> Option<(PaneId, D)> + Send + Sync + 'static,
@@ -1051,7 +1092,7 @@ impl<D: PaneData> MullionView<D> {
         self.dock_config = self.dock_config.with_new_pane_factory(factory);
         self
     }
-    /// Replace the shared host factory used by activity docking.
+    /// Replace the activity-docking override; `None` restores default cloning.
     pub fn set_new_pane_factory(
         &mut self,
         factory: Option<NewPaneFactory<D>>,
@@ -1061,7 +1102,7 @@ impl<D: PaneData> MullionView<D> {
         self.dock_hover = None;
         cx.notify();
     }
-    /// Return the host pane factory, if configured.
+    /// Return the host pane factory override, if configured.
     pub fn new_pane_factory(&self) -> Option<&NewPaneFactory<D>> {
         self.dock_config.new_pane_factory()
     }
@@ -1091,7 +1132,7 @@ impl<D: PaneData> MullionView<D> {
     pub fn command_execution_options(&self) -> &PaneCommandExecutionOptions<D> {
         &self.command_options
     }
-    /// Configure the host callback used by split actions.
+    /// Override default split cloning with a host callback.
     pub fn with_split_factory_fn(
         mut self,
         factory: impl Fn(&PaneId, SplitDirection, &D) -> Option<(PaneId, D)> + Send + Sync + 'static,
@@ -1099,16 +1140,16 @@ impl<D: PaneData> MullionView<D> {
         self.command_options = self.command_options.with_split_factory_fn(factory);
         self
     }
-    /// Configure a shared host callback used by split actions.
+    /// Override default split cloning with a shared host callback.
     pub fn with_split_factory(mut self, factory: PaneSplitFactory<D>) -> Self {
         self.command_options = self.command_options.with_split_factory(factory);
         self
     }
-    /// Replace the host callback used by split actions.
+    /// Replace the split override; `None` restores default cloning.
     pub fn set_split_factory(&mut self, factory: Option<PaneSplitFactory<D>>) {
         self.command_options.set_split_factory(factory);
     }
-    /// Return the host callback used by split actions, if configured.
+    /// Return the host split override, if configured.
     pub fn split_factory(&self) -> Option<&PaneSplitFactory<D>> {
         self.command_options.split_factory()
     }
@@ -1206,7 +1247,8 @@ impl<D: PaneData> MullionView<D> {
     /// The projection always contains all 37 stable commands, one live focus
     /// submenu whose children follow pane order, and the activities currently
     /// visible for the focused pane. Unsupported split commands remain discoverable and report
-    /// `SplitUnavailable` when invoked.
+    /// Split commands use the configured host override or Mullion's default
+    /// collision-free id and cloned pane data.
     pub fn palette_entries(&self) -> Vec<PaletteEntry> {
         let panes = self.model.tree().leaf_ids();
         let mut entries = crate::mullion_palette_entries(&panes, true);
@@ -2681,23 +2723,31 @@ impl<D: PaneData> MullionView<D> {
                         activity.name.as_ref(),
                         active,
                     );
-                    let icon = self
-                        .catalog
-                        .activity_chrome(&activity.id)
-                        .and_then(|chrome| chrome.icon.clone());
-                    let child = icon.map(|icon| icon.render(window, cx)).unwrap_or_else(|| {
-                        div()
-                            .text_size(styles.activity_bar.font_size)
-                            .child(activity.name.clone())
-                            .into_any_element()
-                    });
-                    let hover_pane = pane.clone();
-                    let hover_key = item_key.clone();
                     let foreground = if active {
                         visible.inherited_color.unwrap_or(styles.activity_bar.icon)
                     } else {
                         styles.activity_bar.icon
                     };
+                    let icon = self
+                        .catalog
+                        .activity_chrome(&activity.id)
+                        .and_then(|chrome| chrome.icon.clone());
+                    let child = icon.map(|icon| icon.render(window, cx)).unwrap_or_else(|| {
+                        let pane = pane.clone();
+                        let id = activity.id.clone();
+                        div()
+                            .debug_selector(move || {
+                                format!("activity-fallback-icon:{}:{}", pane.0, id.0)
+                            })
+                            .size(styles.activity_bar.icon_size)
+                            .child(fallback_activity_icon(
+                                styles.activity_bar.icon_size,
+                                foreground,
+                            ))
+                            .into_any_element()
+                    });
+                    let hover_pane = pane.clone();
+                    let hover_key = item_key.clone();
                     let activity_label = div()
                         .debug_selector({
                             let pane = pane.clone();
@@ -2897,9 +2947,17 @@ impl<D: PaneData> MullionView<D> {
                         .category_chrome(&category.id)
                         .and_then(|chrome| chrome.icon.clone());
                     let child = icon.map(|icon| icon.render(window, cx)).unwrap_or_else(|| {
+                        let pane = pane.clone();
+                        let id = category.id.clone();
                         div()
-                            .text_size(styles.activity_bar.font_size)
-                            .child(category.name.clone())
+                            .debug_selector(move || {
+                                format!("activity-category-fallback-icon:{}:{}", pane.0, id.0)
+                            })
+                            .size(styles.activity_bar.icon_size)
+                            .child(fallback_activity_icon(
+                                styles.activity_bar.icon_size,
+                                styles.activity_bar.category_label,
+                            ))
                             .into_any_element()
                     });
                     let dot = show_dot.then(|| {
@@ -3039,6 +3097,11 @@ impl<D: PaneData> MullionView<D> {
                         )
                         .child({
                             let text = div()
+                                .debug_selector({
+                                    let pane = pane.clone();
+                                    let id = category.id.clone();
+                                    move || format!("activity-category-label:{}:{}", pane.0, id.0)
+                                })
                                 .min_w_0()
                                 .overflow_hidden()
                                 .whitespace_nowrap()
@@ -3589,7 +3652,7 @@ impl<D: PaneData> MullionView<D> {
             .pane_accessory
             .clone()
             .map(|render| render(id, data, window, cx));
-        let can_split = self.command_options.split_factory().is_some();
+        let can_split = self.command_options.can_split();
         let can_close = pane_ids.len() > 1;
         let row_expanded = |key: &str| {
             panel_expanded
@@ -5255,12 +5318,15 @@ mod tests {
         let root_focus = view.read_with(cx, |view, _| view.focus_handle().clone());
         cx.update(|window, cx| root_focus.focus(window, cx));
 
-        // No factory means unavailable and is inert.
+        // No host factory uses a collision-free id and cloned focused data.
         cx.dispatch_action(crate::SplitPaneVertical);
-        assert_eq!(
-            view.read_with(cx, |view, _| view.model().tree().leaf_ids().len()),
-            2
-        );
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.model().tree().leaf_ids().len(), 3);
+            assert!(matches!(
+                view.model().tree().find(&PaneId::new("a--split")),
+                Some(PaneNode::Leaf { data, .. }) if data == "a"
+            ));
+        });
 
         let refusal_calls = calls.clone();
         view.update(cx, |view, _| {
@@ -5273,7 +5339,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(
             view.read_with(cx, |view, _| view.model().tree().leaf_ids().len()),
-            2
+            3
         );
 
         view.update(cx, |view, _| {
@@ -5284,7 +5350,7 @@ mod tests {
         cx.dispatch_action(crate::SplitPaneVertical);
         assert_eq!(
             view.read_with(cx, |view, _| view.model().tree().leaf_ids().len()),
-            3
+            4
         );
 
         // Focus the original first pane, then grow it toward the right boundary.
@@ -5463,6 +5529,60 @@ mod tests {
 
     fn leaf(id: &str) -> PaneNode<String> {
         PaneNode::leaf(PaneId::new(id), id.to_string())
+    }
+
+    #[gpui::test]
+    fn activity_drag_without_factory_clones_destination_data_and_mints_id(cx: &mut TestAppContext) {
+        let activity = rendered_activity("drag", show_activity);
+        let tree = split(
+            SplitDirection::Horizontal,
+            0.5,
+            PaneNode::leaf_with_activity(
+                PaneId::new("a"),
+                ActivityId::new("drag"),
+                "source".to_owned(),
+            ),
+            PaneNode::leaf(PaneId::new("b"), "destination".to_owned()),
+        );
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::new(tree, vec![ActivityNode::Activity(activity)], cx)
+        });
+        cx.simulate_resize(gpui::size(px(800.), px(500.)));
+        cx.run_until_parked();
+
+        let start = cx.debug_bounds("activity:a:drag").unwrap().center();
+        let target = cx.debug_bounds("pane:b").unwrap();
+        let destination = gpui::point(
+            target.left() + target.size.width * 0.9,
+            target.top() + target.size.height * 0.5,
+        );
+        cx.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_move(
+            gpui::point(start.x + px(4.), start.y),
+            Some(MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_move(
+            destination,
+            Some(MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("dock-indicator:b:Right").is_some());
+        cx.simulate_mouse_up(destination, MouseButton::Left, gpui::Modifiers::none());
+        cx.run_until_parked();
+
+        view.read_with(cx, |view, _| {
+            assert!(matches!(
+                view.model().tree().find(&PaneId::new("b--activity")),
+                Some(PaneNode::Leaf {
+                    active_activity: Some(active),
+                    data,
+                    ..
+                }) if active == &ActivityId::new("drag") && data == "destination"
+            ));
+            assert_eq!(view.model().focused(), Some(&PaneId::new("b--activity")));
+        });
     }
 
     #[gpui::test]
@@ -6731,13 +6851,6 @@ mod tests {
             MullionView::try_new_with_catalog(tree, catalog, cx)
                 .unwrap()
                 .with_activity_bar_host(ActivityBarHostConfig::new().with_slots(slots))
-                .with_split_factory_fn(|pane, direction, data| {
-                    let suffix = match direction {
-                        SplitDirection::Horizontal => "h",
-                        SplitDirection::Vertical => "v",
-                    };
-                    Some((PaneId::new(format!("{}-{suffix}", pane.0)), data.clone()))
-                })
         });
         cx.simulate_resize(gpui::size(px(500.), px(400.)));
         cx.run_until_parked();
@@ -6773,7 +6886,11 @@ mod tests {
         cx.simulate_click(split_h, gpui::Modifiers::none());
         cx.run_until_parked();
         view.read_with(cx, |view, _| {
-            assert!(view.model().tree().find(&PaneId::new("pane-h")).is_some());
+            assert!(view
+                .model()
+                .tree()
+                .find(&PaneId::new("pane--split"))
+                .is_some());
             assert_eq!(
                 view.routed_commands.last(),
                 Some(&crate::PaneCommand::Split(SplitDirection::Horizontal))
@@ -6786,7 +6903,11 @@ mod tests {
         cx.simulate_click(split_v, gpui::Modifiers::none());
         cx.run_until_parked();
         view.read_with(cx, |view, _| {
-            assert!(view.model().tree().find(&PaneId::new("pane-v")).is_some());
+            assert!(view
+                .model()
+                .tree()
+                .find(&PaneId::new("pane--split-2"))
+                .is_some());
             assert_eq!(
                 view.routed_commands.last(),
                 Some(&crate::PaneCommand::Split(SplitDirection::Vertical))
@@ -6795,7 +6916,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn hidden_capsule_has_exact_inset_bounds_order_and_disabled_controls_refuse_clicks(
+    fn hidden_capsule_has_exact_inset_bounds_order_and_default_split_close_dispatch(
         cx: &mut TestAppContext,
     ) {
         let host = ActivityBarHostConfig::new().with_activity_bar(crate::ActivityBarConfig {
@@ -6832,7 +6953,13 @@ mod tests {
         cx.run_until_parked();
         view.read_with(cx, |view, _| {
             assert_eq!(view.model().tree().leaf_ids(), vec![PaneId::new("pane")]);
-            assert!(view.routed_commands.is_empty());
+            assert_eq!(
+                view.routed_commands,
+                vec![
+                    crate::PaneCommand::Split(SplitDirection::Horizontal),
+                    crate::PaneCommand::Close,
+                ]
+            );
         });
     }
 
@@ -7197,17 +7324,14 @@ mod tests {
             )
             .unwrap();
             assert_eq!(view.model().focused(), Some(&PaneId::new("b")));
-            assert!(matches!(
-                view.invoke_palette(
-                    PaletteInvocation::PaneCommand(crate::PaneCommand::Split(
-                        SplitDirection::Horizontal
-                    )),
-                    cx,
-                ),
-                Err(PaletteInvocationError::Command(
-                    crate::PaneCommandError::SplitUnavailable
-                ))
-            ));
+            view.invoke_palette(
+                PaletteInvocation::PaneCommand(crate::PaneCommand::Split(
+                    SplitDirection::Horizontal,
+                )),
+                cx,
+            )
+            .unwrap();
+            assert!(view.model().tree().find(&PaneId::new("b--split")).is_some());
             assert!(matches!(
                 view.invoke_palette(
                     PaletteInvocation::SelectActivity {
@@ -7234,6 +7358,51 @@ mod tests {
                 if pane == &PaneId::new("b")
                     && activity.as_ref() == Some(&ActivityId::new("visible"))
         )));
+    }
+
+    #[gpui::test]
+    fn missing_activity_chrome_uses_compact_icons_and_keeps_names_as_labels(
+        cx: &mut TestAppContext,
+    ) {
+        let activity = ActivityNode::Activity(Activity {
+            id: ActivityId::new("stylesheet"),
+            name: "Stylesheet Component Gallery With A Deliberately Long Name".into(),
+            filter: show_activity,
+            render: Arc::new(|_, _| div().into_any_element()),
+        });
+        let category = ActivityNode::Category(crate::ActivityCategory {
+            id: crate::CategoryId::new("components"),
+            name: "All Stylesheet Component Categories".into(),
+            color: gpui::rgb(0x445566).into(),
+            children: vec![ActivityNode::Activity(rendered_activity(
+                "nested",
+                show_activity,
+            ))],
+        });
+        let tree = PaneNode::leaf_with_activity(
+            PaneId::new("pane"),
+            ActivityId::new("stylesheet"),
+            "data".to_owned(),
+        );
+        let (_view, cx) =
+            cx.add_window_view(move |_, cx| MullionView::new(tree, vec![activity, category], cx));
+        cx.run_until_parked();
+
+        let expected = crate::MullionStyles::default().activity_bar.icon_size;
+        for selector in [
+            "activity-fallback-icon:pane:stylesheet",
+            "activity-category-fallback-icon:pane:components",
+        ] {
+            let bounds = cx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("missing {selector}"));
+            assert_eq!(bounds.size.width, expected);
+            assert_eq!(bounds.size.height, expected);
+        }
+        assert!(cx.debug_bounds("activity-label:pane:stylesheet").is_some());
+        assert!(cx
+            .debug_bounds("activity-category-label:pane:components")
+            .is_some());
     }
 
     #[gpui::test]
@@ -7346,6 +7515,12 @@ mod tests {
         ] {
             assert!(cx.debug_bounds(selector).is_some(), "missing {selector}");
         }
+        assert!(cx
+            .debug_bounds("activity-fallback-icon:pane:primary")
+            .is_none());
+        assert!(cx
+            .debug_bounds("activity-category-fallback-icon:pane:category")
+            .is_none());
         assert!(cx.debug_bounds("activity-category:pane:pruned").is_none());
         assert!(cx.debug_bounds("activity:pane:nested").is_none());
         let category = cx

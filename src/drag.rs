@@ -4,7 +4,7 @@
 //! its pointer coordinates into [`DockPoint`] and [`DockBounds`], then retain a
 //! typed [`DockDrag`] for the duration of the native drag.
 
-use crate::{ActivityId, DropEdge, MullionModel, PaneData, PaneId};
+use crate::{ActivityId, DropEdge, MullionModel, PaneData, PaneId, PaneNode};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -290,7 +290,11 @@ impl DropEdge {
 pub type NewPaneFactory<D> =
     Arc<dyn Fn(&ActivityId, &PaneId, DropEdge) -> Option<(PaneId, D)> + Send + Sync>;
 
-/// Host-owned configuration for activity-to-new-pane docking.
+/// Activity-to-new-pane docking policy.
+///
+/// Without a host override, Mullion clones the destination pane data and mints
+/// a collision-free internal id. Hosts can override this for durable identity
+/// or custom pane initialization.
 #[derive(Clone)]
 pub struct DockConfig<D: PaneData> {
     new_pane_factory: Option<NewPaneFactory<D>>,
@@ -305,7 +309,7 @@ impl<D: PaneData> Default for DockConfig<D> {
 }
 
 impl<D: PaneData> DockConfig<D> {
-    /// Creates a configuration with no new-pane factory.
+    /// Creates a configuration using Mullion's default cloning policy.
     pub fn new() -> Self {
         Self::default()
     }
@@ -321,27 +325,29 @@ impl<D: PaneData> DockConfig<D> {
         self
     }
 
-    /// Returns the installed factory, if activity drops can create panes.
+    /// Returns the installed host factory override, if present.
     pub fn new_pane_factory(&self) -> Option<&NewPaneFactory<D>> {
         self.new_pane_factory.as_ref()
     }
 
-    /// Replaces or removes the host factory.
+    /// Replaces the host override. Passing `None` restores default cloning.
     pub fn set_new_pane_factory(&mut self, factory: Option<NewPaneFactory<D>>) {
         self.new_pane_factory = factory;
     }
 
-    /// Returns whether a new-pane factory is installed.
-    pub fn can_create_panes(&self) -> bool {
-        self.new_pane_factory.is_some()
+    /// Returns whether activity drops can create panes.
+    ///
+    /// This is always true because default docking clones destination pane data.
+    pub const fn can_create_panes(&self) -> bool {
+        true
     }
 
     /// Ask the host to mint a pane, then pass it to
     /// [`MullionModel::drop_activity`].
     ///
-    /// Returns `false` if no factory is installed, the factory refuses, or the
-    /// model rejects the generated pane; refusal leaves factory creation policy
-    /// and model validation as the only error channel.
+    /// A configured factory may refuse by returning `None`. Without an override,
+    /// the destination pane's data is cloned and an internal collision-free id is
+    /// generated. Model validation remains the final error channel.
     pub fn drop_activity(
         &self,
         model: &mut MullionModel<D>,
@@ -349,10 +355,19 @@ impl<D: PaneData> DockConfig<D> {
         destination: &PaneId,
         edge: DropEdge,
     ) -> bool {
-        let Some(factory) = &self.new_pane_factory else {
-            return false;
+        let generated = if let Some(factory) = &self.new_pane_factory {
+            factory(activity, destination, edge)
+        } else {
+            let data = match model.tree().find(destination) {
+                Some(PaneNode::Leaf { data, .. }) => data.clone(),
+                _ => return false,
+            };
+            Some((
+                crate::tree::internal_pane_id(model.tree(), destination, "activity"),
+                data,
+            ))
         };
-        let Some((new_id, new_data)) = factory(activity, destination, edge) else {
+        let Some((new_id, new_data)) = generated else {
             return false;
         };
         model.drop_activity(activity, destination, edge, new_id, new_data)
@@ -522,14 +537,35 @@ mod tests {
     fn dock_config_refusal_is_inert_and_success_delegates_to_model() {
         let destination = PaneId::new("only");
         let activity = ActivityId::new("logs");
-        let mut model = MullionModel::new(PaneNode::leaf(destination.clone(), "old".to_string()));
-        assert!(!DockConfig::new().drop_activity(
-            &mut model,
+        let mut default_model =
+            MullionModel::new(PaneNode::leaf(destination.clone(), "old".to_string()));
+        let defaults = DockConfig::new();
+        assert!(defaults.drop_activity(
+            &mut default_model,
             &activity,
             &destination,
             DropEdge::Right
         ));
+        assert!(matches!(
+            default_model.tree().find(&PaneId::new("only--activity")),
+            Some(PaneNode::Leaf {
+                active_activity: Some(active),
+                data,
+                ..
+            }) if active == &activity && data == "old"
+        ));
+        assert!(defaults.drop_activity(
+            &mut default_model,
+            &activity,
+            &destination,
+            DropEdge::Left
+        ));
+        assert!(default_model
+            .tree()
+            .find(&PaneId::new("only--activity-2"))
+            .is_some());
 
+        let mut model = MullionModel::new(PaneNode::leaf(destination.clone(), "old".to_string()));
         let refusing = DockConfig::new().with_new_pane_factory(|_, _, _| None);
         assert!(!refusing.drop_activity(&mut model, &activity, &destination, DropEdge::Right));
         assert_eq!(model.tree().leaf_ids(), vec![destination.clone()]);

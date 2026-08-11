@@ -452,7 +452,16 @@ impl<D: PaneData> MullionModel<D> {
                     |id: &PaneId, direction, data: &D| factory(id, direction, data);
                 self.execute_inner(command, Some(&mut split_factory), options.resize_step)
             }
-            None => self.execute_inner(command, None, options.resize_step),
+            None => {
+                let default_id = self
+                    .focused
+                    .as_ref()
+                    .map(|id| crate::tree::internal_pane_id(&self.tree, id, "split"));
+                let mut split_factory = move |_: &PaneId, _direction, data: &D| {
+                    default_id.clone().map(|id| (id, data.clone()))
+                };
+                self.execute_inner(command, Some(&mut split_factory), options.resize_step)
+            }
         }
     }
 

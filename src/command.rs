@@ -294,8 +294,10 @@ pub type PaneSplitFactory<D> =
 
 /// Host-configurable behavior for command execution.
 ///
-/// The default disables [`PaneCommand::Split`] and grows panes by `0.05` of a
-/// split's axis per [`PaneCommand::Resize`] invocation.
+/// By default [`PaneCommand::Split`] mints a collision-free internal pane id
+/// and clones the focused pane's data. A host factory overrides that policy for
+/// durable/custom identity and initialization. Resize commands grow panes by
+/// `0.05` of a split's axis per invocation.
 #[derive(Clone)]
 pub struct PaneCommandExecutionOptions<D> {
     pub(crate) split_factory: Option<PaneSplitFactory<D>>,
@@ -318,12 +320,12 @@ impl<D> PaneCommandExecutionOptions<D> {
         self
     }
 
-    /// Return the configured split factory, if splitting is enabled.
+    /// Return the configured split factory override, if present.
     pub fn split_factory(&self) -> Option<&PaneSplitFactory<D>> {
         self.split_factory.as_ref()
     }
 
-    /// Replace the split factory. Passing `None` disables split commands.
+    /// Replace the split factory override. Passing `None` restores default cloning.
     pub fn set_split_factory(&mut self, factory: Option<PaneSplitFactory<D>>) {
         self.split_factory = factory;
     }
@@ -353,9 +355,11 @@ impl<D> PaneCommandExecutionOptions<D> {
         self
     }
 
-    /// Returns whether a split factory is configured.
-    pub fn can_split(&self) -> bool {
-        self.split_factory.is_some()
+    /// Returns whether split commands are available.
+    ///
+    /// Splitting is always available because the default clones the source pane.
+    pub const fn can_split(&self) -> bool {
+        true
     }
 
     /// Replaces the dimensionless resize increment when it is finite and positive.

@@ -333,6 +333,21 @@ pub enum PaneNode<D: PaneData> {
     },
 }
 
+pub(crate) fn internal_pane_id<D: PaneData>(
+    tree: &PaneNode<D>,
+    source: &PaneId,
+    purpose: &str,
+) -> PaneId {
+    let base = format!("{}--{purpose}", source.as_ref());
+    let mut candidate = PaneId::new(base.clone());
+    let mut suffix = 2_u64;
+    while tree.find(&candidate).is_some() {
+        candidate = PaneId::new(format!("{base}-{suffix}"));
+        suffix += 1;
+    }
+    candidate
+}
+
 impl<D: PaneData> PaneNode<D> {
     /// Create a new leaf node.
     pub fn leaf(id: PaneId, data: D) -> Self {

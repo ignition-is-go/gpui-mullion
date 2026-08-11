@@ -80,7 +80,7 @@ Native pane detachment is the sole explicit non-goal: it is additive desktop fun
 
 ### MUL-P1-003 — Activity-to-new-pane docking — **Implemented**
 
-`DockDrag::new_activity`, `NewPaneFactory`, `DockConfig`, and view factory setters distinguish copy from pane move, mint host ID/data, support all five zones/single panes, focus the new pane, and order `ActivityDropped` before `TreeChanged`. Evidence: drag/model tests, `events_compatibility::{activity_drop_trace_contains_host_values_and_focuses_last,rejected_activity_drops_are_atomic_and_silent}`, and the rendered all-zones activity-drag test.
+`DockDrag::new_activity`, `NewPaneFactory`, `DockConfig`, and view factory setters distinguish copy from pane move, support all five zones/single panes, focus the new pane, and order `ActivityDropped` before `TreeChanged`. Without a host override Mullion mints a collision-free internal id and clones destination pane data; factories override identity/data and may refuse. Evidence: drag/model tests, `events_compatibility::{activity_drop_trace_contains_host_values_and_focuses_last,rejected_activity_drops_are_atomic_and_silent}`, and rendered default/factory activity-drag tests.
 
 ### MUL-P1-004 — Activity-bar information architecture — **Implemented**
 

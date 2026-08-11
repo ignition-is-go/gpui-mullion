@@ -484,10 +484,13 @@ fn execution_options_preserve_legacy_execution_and_configure_split_and_resize() 
     use std::sync::Arc;
     let options = PaneCommandExecutionOptions::default().with_resize_step(0.2);
     let mut model = three_panes();
-    assert_eq!(
-        model.execute_with_options(PaneCommand::Split(SplitDirection::Horizontal), &options),
-        Err(PaneCommandError::SplitUnavailable)
-    );
+    model
+        .execute_with_options(PaneCommand::Split(SplitDirection::Horizontal), &options)
+        .unwrap();
+    assert!(matches!(
+        model.tree().find(&PaneId::new("a--split")),
+        Some(PaneNode::Leaf { data: Data(1), .. })
+    ));
     model
         .execute_with_options(PaneCommand::Resize(PaneDirection::Right), &options)
         .unwrap();

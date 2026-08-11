@@ -40,6 +40,9 @@ pub type ChromeRenderer<D> = Rc<dyn Fn(&PaneId, &D, &mut Window, &mut App) -> An
 #[derive(Clone)]
 pub struct ActivityChrome<D: PaneData> {
     /// Optional icon displayed by the activity bar.
+    ///
+    /// When absent, Mullion renders a compact neutral placeholder; it never
+    /// compresses the activity's full name into the icon slot.
     pub icon: Option<ActivityIcon>,
     /// Optional pane-header chrome rendered with current pane data.
     pub header: Option<ChromeRenderer<D>>,
@@ -83,6 +86,9 @@ impl<D: PaneData> ActivityChrome<D> {
 #[derive(Clone, Default)]
 pub struct CategoryChrome {
     /// Optional icon displayed beside the category label.
+    ///
+    /// When absent, Mullion renders the same compact neutral placeholder used
+    /// for activities. The category name remains in label and accessibility chrome.
     pub icon: Option<ActivityIcon>,
     /// Overrides the category's base `color` when present.
     pub color: Option<Hsla>,
