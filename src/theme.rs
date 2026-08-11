@@ -271,6 +271,36 @@ impl MullionTheme {
         }
     }
 
+    /// Build a complete theme from nine semantic colors.
+    ///
+    /// Mullion maps these colors into every component token while preserving
+    /// the reference geometry. Callers may then override individual public
+    /// component fields when they need an intentional exception.
+    #[allow(clippy::too_many_arguments)]
+    pub fn custom(
+        background: Hsla,
+        surface: Hsla,
+        border: Hsla,
+        accent: Hsla,
+        text: Hsla,
+        muted_text: Hsla,
+        focused: Hsla,
+        focus_indicator: Hsla,
+        drop_target: Hsla,
+    ) -> Self {
+        Self::from_colors(ThemeColors {
+            background,
+            surface,
+            border,
+            accent,
+            text,
+            muted_text,
+            focused,
+            focus_indicator,
+            drop_target,
+        })
+    }
+
     fn from_colors(colors: ThemeColors) -> Self {
         Self {
             background: colors.background,
@@ -441,5 +471,62 @@ mod tests {
         assert_eq!(styles.split_handle.hover_color, theme.focused);
         assert_eq!(styles.pane.focus_indicator, theme.focus_indicator);
         assert_eq!(styles.pane.unfocused_wash, theme.background);
+    }
+    #[test]
+    fn custom_semantic_colors_flow_into_every_component_color() {
+        let background = rgb(0x010101).into();
+        let surface = rgb(0x020202).into();
+        let border = rgb(0x030303).into();
+        let accent = rgb(0x040404).into();
+        let text = rgb(0x050505).into();
+        let muted_text = rgb(0x060606).into();
+        let focused = rgb(0x070707).into();
+        let focus_indicator = rgb(0x080808).into();
+        let drop_target = rgb(0x090909).into();
+
+        let theme = MullionTheme::custom(
+            background,
+            surface,
+            border,
+            accent,
+            text,
+            muted_text,
+            focused,
+            focus_indicator,
+            drop_target,
+        );
+
+        assert_eq!(theme.background, background);
+        assert_eq!(theme.surface, surface);
+        assert_eq!(theme.border, border);
+        assert_eq!(theme.accent, accent);
+        assert_eq!(theme.text, text);
+        assert_eq!(theme.muted_text, muted_text);
+        assert_eq!(theme.focused, focused);
+        assert_eq!(theme.focus_indicator, focus_indicator);
+        assert_eq!(theme.drop_target, drop_target);
+        assert_eq!(theme.root.background, background);
+        assert_eq!(theme.pane.background, surface);
+        assert_eq!(theme.pane.text, text);
+        assert_eq!(theme.pane.border, border);
+        assert_eq!(theme.pane.focus_indicator, focus_indicator);
+        assert_eq!(theme.pane.unfocused_wash, background);
+        assert_eq!(theme.activity_bar.background, surface);
+        assert_eq!(theme.activity_bar.border, border);
+        assert_eq!(theme.activity_bar.icon, text);
+        assert_eq!(theme.activity_bar.category_label, muted_text);
+        assert_eq!(theme.pane_controls.capsule_background, surface);
+        assert_eq!(theme.pane_controls.capsule_border, border);
+        assert_eq!(theme.split_handle.color, border);
+        assert_eq!(theme.split_handle.hover_color, focused);
+        assert_eq!(theme.drop_overlay.indicator_color, drop_target);
+        assert_eq!(theme.header.background, surface);
+        assert_eq!(theme.header.text, text);
+        assert_eq!(theme.header.title, text);
+        assert_eq!(theme.header.border, border);
+        assert_eq!(theme.workspace_switcher.background, accent);
+        assert_eq!(theme.workspace_switcher.text, muted_text);
+        assert_eq!(theme.workspace_switcher.active_background, focused);
+        assert_eq!(theme.workspace_switcher.active_text, text);
     }
 }

@@ -61,6 +61,7 @@ let view = view.with_theme(theme);
 ```
 
 Use `MullionTheme::light()`, `dark()`, or `system(window_appearance)` to construct complete themes.
+`MullionTheme::custom(...)` maps nine application semantic colors coherently into every component.
 `with_theme_provider` is evaluated once per root render. Fixed and provider setters are last-wins;
 clearing the provider restores the last fixed theme or system-following default. Hosts must
 invalidate windows when provider state changes.

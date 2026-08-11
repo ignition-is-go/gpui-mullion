@@ -24,7 +24,8 @@ The look API intentionally has no compatibility aliases:
   `with_theme_provider`, and `set_theme_provider`.
 - Replace theme-mode APIs with `MullionTheme::light()`, `dark()`, or
   `system(window_appearance)`; an unconfigured view follows the window automatically.
-- Customize geometry directly on the complete theme before installing it.
+- Build application themes with `MullionTheme::custom(...)`, then customize geometry directly on
+  the complete theme before installing it.
 - Application adapters should return only `MullionTheme`.
 
 ## Stability classes
