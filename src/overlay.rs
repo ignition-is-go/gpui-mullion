@@ -7,6 +7,7 @@
 
 use gpui::{AnyElement, App, Window};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
 use std::rc::Rc;
@@ -418,12 +419,10 @@ impl OverlayStack {
     }
 
     pub fn validate(&self) -> Result<(), OverlayError> {
-        for (index, overlay) in self.overlays.iter().enumerate() {
+        let mut ids = HashSet::with_capacity(self.overlays.len());
+        for overlay in &self.overlays {
             overlay.policy.validate()?;
-            if self.overlays[..index]
-                .iter()
-                .any(|prior| prior.policy.id == overlay.policy.id)
-            {
+            if !ids.insert(&overlay.policy.id) {
                 return Err(OverlayError::DuplicateId(overlay.policy.id.clone()));
             }
         }
