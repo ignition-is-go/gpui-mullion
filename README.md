@@ -16,7 +16,7 @@ This repository is the GPUI successor to the Leptos `mullion` library and is int
 - Portable, validated, serde-compatible `PaneNode<D>` with stable string pane/activity/category IDs and reference command/event semantics.
 - Split, close, move, swap, proportional resize, rotate, balance, five standard layouts, geometric navigation, five-zone pane docking, and activity-to-new-pane docking.
 - Stateful per-`(workspace, pane, activity)` GPUI entities with optional headers, update hooks, stable topology lifecycle, and deterministic disposal.
-- Recursive activity catalogs with primary/trailing groups, typed icons/chrome, four-edge pinned/hidden/auto-hide rails, configurable hover intent, and host slots.
+- Recursive activity catalogs with primary/trailing groups, typed icons/chrome, four-edge pinned/hidden/auto-hide rails, configurable hover delay/duration, scrolling overflow, and host slots.
 - Complete command metadata/actions and direct/prefix keymaps, configurable focus/presentation, validated mounted workspaces, root overlays, palette/accessibility adapters, and typed light/dark/system styling.
 - Rendered GPUI interactions plus executed Chrome/WASM canvas interactions and a 15-second native Wayland demo smoke in CI.
 
@@ -121,7 +121,7 @@ The model/interaction core has GPUI-native implementations, but pixel-for-pixel 
 | persisted tree, validation, geometry, commands, errors, and event traces | implemented and compatibility-tested |
 | stateful activity/header lifecycle and recursive activity catalogs | implemented and rendered-tested |
 | proportional resize and five-zone pane/activity docking | interaction core tested; visible affordances still incomplete |
-| four-edge activity rails, nested/trailing groups, hide/auto-hide/hover intent | structural core only; label/category flyouts and pixel parity open |
+| four-edge activity rails, nested/trailing groups, hide/auto-hide, timed name flyouts, scrolling overflow | implemented; final screenshot pixel parity remains open |
 | complete actions/keymaps, focus settings, workspaces, palette/accessibility | model/action core tested; visible split controls open |
 | host chrome slots, typed styles/themes, and root overlays | APIs exist; pixel-exact chrome rebuild open |
 | browser/WASM canvas interactions | behavioral path validated; screenshot parity open |

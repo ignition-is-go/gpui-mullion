@@ -30,7 +30,7 @@ Native pane detachment is the sole explicit non-goal: it is additive desktop fun
 | Headless model commands | **Implemented** | `MullionModel::{try_new,execute_with_options,...}`, exact error/focus semantics; `tests/command_compatibility.rs` and model tests. |
 | Activity body rendering | **Implemented** | `ActivityFactoryRegistry`, `ActivityInstance`, stable `(workspace,pane,activity)` cache, update/header/dispose hooks; activity cache tests and `rendered_stateful_activity_is_lazy_stable_updated_and_filtered`. |
 | Activity definitions and categories | **Implemented** | `ActivityCatalog`, recursive `ActivityProjection`, typed activity/category chrome and validation; `src/activity_catalog.rs` tests and `rendered_catalog_composes_recursive_chrome_slots_activation_and_trailing_cache`. |
-| Activity bar | **Incomplete visual parity** | `ActivityBarConfig` with four edges, pinned/hidden/auto-hide, configurable open-only hover intent, nested categories, primary/trailing groups, icons and host slots; `src/activity_bar.rs` and rendered rail tests. |
+| Activity bar | **Incomplete visual parity** | `ActivityBarConfig` with four edges, pinned/hidden/auto-hide, configurable hover delay and transition duration, scrolling overflow, nested categories, primary/trailing groups, icons and host slots; `src/activity_bar.rs` and rendered rail tests. |
 | Split resizing | **Implemented** | proportional pointer tracking against parent bounds, clamp/cancel, splitter actions and cursor context in `MullionView`; `horizontal_split_drag_is_proportional_clamped_exact_and_released` and `nested_vertical_drag_uses_its_parent_bounds_and_cancels`. |
 | Pane docking | **Implemented** | `DockDrag`, `DockHover`, `DropEdge`, explicit pane handle, five-zone feedback/self-drop/cancel; portable drag tests and two rendered pane-drag tests. |
 | Activity-to-new-pane drag | **Core implemented; shared affordance incomplete** | `DockConfig::with_new_pane_factory`, `MullionView::{with_new_pane_factory,set_new_pane_factory}`, `PaneEvent::ActivityDropped`; model/event tests and `typed_nested_and_trailing_activity_drags_create_panes_in_all_five_zones`. |
@@ -84,7 +84,7 @@ Native pane detachment is the sole explicit non-goal: it is additive desktop fun
 
 ### MUL-P1-004 — Activity-bar information architecture — **Implemented**
 
-`ActivityCatalog` preserves arbitrary nesting, order, active paths, inherited color and typed GPUI icon/header chrome; primary/trailing trees remain distinct. `ActivityBarConfig` provides four edges, `Pinned`/`Hidden`/`AutoHide`, and `ActivityBarHoverIntent::expand_delay_ms`, matching reference HEAD's configurable open-only hover intent. `ActivityBarSlots`/`PaneHeaderConfig` provide app icon, move handle composition, controls, accessories, and leading/trailing host content. Evidence: catalog/bar unit tests and rendered catalog/hidden-auto-hide tests.
+`ActivityCatalog` preserves arbitrary nesting, order, active paths, inherited color and typed GPUI icon/header chrome; primary/trailing trees remain distinct. `ActivityBarConfig` provides four edges, `Pinned`/`Hidden`/`AutoHide`, and `ActivityBarHoverIntent::{expand_delay_ms, transition_duration_ms}`, with scrollable overflow and animated name flyouts. `ActivityBarSlots`/`PaneHeaderConfig` provide app icon, move handle composition, controls, accessories, and leading/trailing host content. Evidence: catalog/bar unit tests and rendered catalog/hidden-auto-hide tests.
 
 ### MUL-P1-005 — Entire command set through GPUI actions — **Implemented**
 

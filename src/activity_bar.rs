@@ -101,12 +101,36 @@ pub enum ActivityBarMode {
     AutoHide,
 }
 
-/// Open-only hover intent. Leaving always invalidates a pending open and
-/// collapses immediately.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Hover flyout timing. The delay applies only when opening; leaving cancels
+/// a pending open immediately and animates closed over the configured duration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ActivityBarHoverIntent {
+    /// Time the pointer must remain over the rail before the flyout opens.
     pub expand_delay_ms: u32,
+    /// Duration of both the opening and closing flyout transitions.
+    pub transition_duration_ms: u32,
+}
+
+impl Default for ActivityBarHoverIntent {
+    fn default() -> Self {
+        Self {
+            expand_delay_ms: 0,
+            transition_duration_ms: 150,
+        }
+    }
+}
+
+impl ActivityBarHoverIntent {
+    pub const fn with_expand_delay_ms(mut self, delay_ms: u32) -> Self {
+        self.expand_delay_ms = delay_ms;
+        self
+    }
+
+    pub const fn with_transition_duration_ms(mut self, duration_ms: u32) -> Self {
+        self.transition_duration_ms = duration_ms;
+        self
+    }
 }
 
 /// Interaction semantics independent of styling.
@@ -410,6 +434,7 @@ mod tests {
         assert_eq!(default.mode, ActivityBarMode::Pinned);
         assert!(default.behavior.hover_expand);
         assert_eq!(default.behavior.hover_intent.expand_delay_ms, 0);
+        assert_eq!(default.behavior.hover_intent.transition_duration_ms, 150);
 
         let config = ActivityBarConfig {
             edge: ActivityBarEdge::Bottom,
@@ -418,6 +443,7 @@ mod tests {
                 hover_expand: false,
                 hover_intent: ActivityBarHoverIntent {
                     expand_delay_ms: 175,
+                    transition_duration_ms: 240,
                 },
             },
         };
@@ -425,6 +451,10 @@ mod tests {
         assert_eq!(json["edge"], "Bottom");
         assert_eq!(json["mode"], "AutoHide");
         assert_eq!(json["behavior"]["hover_intent"]["expand_delay_ms"], 175);
+        assert_eq!(
+            json["behavior"]["hover_intent"]["transition_duration_ms"],
+            240
+        );
         assert_eq!(
             serde_json::from_value::<ActivityBarConfig>(json).unwrap(),
             config

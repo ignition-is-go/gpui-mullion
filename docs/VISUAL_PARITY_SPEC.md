@@ -139,7 +139,7 @@ All dimensions below are exact CSS transition endpoints:
 | autohide target | invisible 12px full-length edge strip, z 9 | invisible 12px full-width edge strip, z 9 |
 | autohide open | translated to 0 over content | translated to 0; hovered item expands without a second intent delay |
 
-Base transitions are `width 0.15s ease`, edge padding `0.15s ease`, `transform 0.15s ease`, and label opacity `0.15s ease`. Intent delay applies only on entry via `--ab-hover-expand-delay`; leave removes the delayed selector and collapses immediately. Capture at 0, 75, and 150ms after effective transition start, plus settled 200ms. For delayed fixtures (`175ms`), also capture 0, 174, 175, 250, and 325ms. Native drag holds the bar open even after pointer hover is lost; drag end restores the applicable hover/autohide state.
+The default transitions are 150ms ease for width, edge padding, transform, and label opacity; GPUI exposes this as `transition_duration_ms`. Intent delay (`expand_delay_ms`) applies only on entry; leave cancels pending intent immediately and animates closed. Capture at start, configured midpoint, endpoint, and settled. For the canonical delayed fixture (175ms delay, 150ms duration), capture 0, 174, 175, 250, and 325ms. Native drag holds the bar open even after pointer hover is lost; drag end restores the applicable hover/autohide state. When activity content exceeds the available rail length, the rail scrolls on its primary axis without resizing pane content.
 
 Left/right/top/bottom mirror border, padding, dot, stripe, transform, and source/trailing order exactly. A bottom bar follows content in flex order and uses a top border; a right bar uses left border/padding and its category markers on the right.
 

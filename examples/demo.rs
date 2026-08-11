@@ -1331,6 +1331,14 @@ fn browser_test_action(action: wasm_bindgen::JsValue, payload: wasm_bindgen::JsV
                             .and_then(|v| v.as_str())
                             .map(str::to_owned)
                     };
+                    let field_u32 = |names: &[&str]| {
+                        names.iter().find_map(|name| {
+                            payload_json
+                                .get(name)
+                                .and_then(|value| value.as_u64())
+                                .and_then(|value| u32::try_from(value).ok())
+                        })
+                    };
                     if matches!(action.as_str(), "barHover" | "bar-hover") {
                         let pane =
                             PaneId::new(field("pane").unwrap_or_else(|| payload_text.clone()));
@@ -1492,11 +1500,28 @@ fn browser_test_action(action: wasm_bindgen::JsValue, payload: wasm_bindgen::JsV
                                     }
                                     _ => ActivityBarMode::Pinned,
                                 };
+                                let mut behavior = current.behavior;
+                                if let Some(delay_ms) = field_u32(&[
+                                    "delayMs",
+                                    "delay_ms",
+                                    "expandDelayMs",
+                                    "expand_delay_ms",
+                                ]) {
+                                    behavior.hover_intent.expand_delay_ms = delay_ms;
+                                }
+                                if let Some(duration_ms) = field_u32(&[
+                                    "durationMs",
+                                    "duration_ms",
+                                    "transitionDurationMs",
+                                    "transition_duration_ms",
+                                ]) {
+                                    behavior.hover_intent.transition_duration_ms = duration_ms;
+                                }
                                 view.set_activity_bar_config(
                                     ActivityBarConfig {
                                         edge,
                                         mode,
-                                        ..current
+                                        behavior,
                                     },
                                     cx,
                                 );
