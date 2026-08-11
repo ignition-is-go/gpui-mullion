@@ -12,7 +12,7 @@ categories = ["gui"]
 
 [dependencies]
 gpui = { git = "https://github.com/zed-industries/zed.git", rev = "08827f9208b4848d62f3faf86ffa15155966d63c" }
-gpui-command-palette = { git = "https://github.com/ignition-is-go/gpui-command-palette.git", rev = "48111f55826e7926285a2e8b89e45a52453b5cfa" }
+gpui-command-palette = { git = "https://github.com/ignition-is-go/gpui-command-palette.git", rev = "a14f56ac3eebb16eea9c0f7aa31b0deae0797ec1" }
 gpui_platform = { git = "https://github.com/zed-industries/zed.git", rev = "08827f9208b4848d62f3faf86ffa15155966d63c", features = ["wayland", "x11"] }
 serde = { version = "1", features = ["derive"] }
 scheduler = { git = "https://github.com/zed-industries/zed.git", rev = "08827f9208b4848d62f3faf86ffa15155966d63c" }

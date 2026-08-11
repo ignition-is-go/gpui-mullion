@@ -96,7 +96,7 @@ struct ActivityMotion {
     from: f32,
     target: bool,
     started_at: Option<scheduler::Instant>,
-    generation: u64,
+    duration: Duration,
 }
 
 impl Default for ActivityMotion {
@@ -106,7 +106,7 @@ impl Default for ActivityMotion {
             from: 0.0,
             target: false,
             started_at: None,
-            generation: 0,
+            duration: Duration::ZERO,
         }
     }
 }
@@ -128,12 +128,12 @@ impl ActivityMotion {
         }
     }
 
-    fn advance(&mut self, now: scheduler::Instant, duration: Duration) -> bool {
+    fn advance(&mut self, now: scheduler::Instant) -> bool {
         let Some(started_at) = self.started_at else {
             return false;
         };
         let delta =
-            now.saturating_duration_since(started_at).as_secs_f32() / duration.as_secs_f32();
+            now.saturating_duration_since(started_at).as_secs_f32() / self.duration.as_secs_f32();
         self.progress = self.from
             + (Self::endpoint(self.target) - self.from) * ease_in_out(delta.clamp(0.0, 1.0));
         if delta >= 1.0 {
@@ -150,23 +150,23 @@ impl ActivityMotion {
         duration: Duration,
         immediate: bool,
         from: Option<f32>,
-    ) -> Option<u64> {
-        self.advance(now, duration);
+    ) -> bool {
+        self.advance(now);
+        self.duration = duration;
         if let Some(from) = from {
             self.progress = from.clamp(0.0, 1.0);
         }
         self.target = target;
-        self.generation = self.generation.wrapping_add(1);
         let endpoint = Self::endpoint(target);
         if immediate || (self.progress - endpoint).abs() <= f32::EPSILON {
             self.progress = endpoint;
             self.from = endpoint;
             self.started_at = None;
-            None
+            false
         } else {
             self.from = self.progress;
             self.started_at = Some(now);
-            Some(self.generation)
+            true
         }
     }
 }
@@ -455,6 +455,7 @@ pub struct MullionView<D: PaneData> {
     focus_motion: HashMap<PaneId, ActivityMotion>,
     focus_frame_motion: HashMap<PaneId, ActivityMotion>,
     motion_focus: Option<PaneId>,
+    motion_tick_running: bool,
     dock_drag_active: bool,
     focus_handle: FocusHandle,
     workspaces: Option<WorkspaceSet<D>>,
@@ -467,18 +468,25 @@ pub struct MullionView<D: PaneData> {
     split_starts: Rc<RefCell<HashMap<PaneId, Point<Pixels>>>>,
     active_split: ActiveSplit,
     keyboard_split: Option<PaneId>,
+    pending_split_resize: Option<(PaneId, f64)>,
+    split_resize_tick_running: bool,
     dock_hover: Option<DockHover>,
     overlay_host: Option<OverlayHostConfig>,
     last_overlay_error: Option<OverlayError>,
     command_palette: Option<gpui::Entity<gpui_command_palette::CommandPalette<PaletteInvocation>>>,
+    palette_dirty: bool,
     #[cfg(test)]
     routed_commands: Vec<crate::PaneCommand>,
     #[cfg(test)]
     activity_cache_syncs: usize,
     #[cfg(test)]
+    split_move_events: usize,
+    #[cfg(test)]
     split_move_mutations: usize,
     #[cfg(test)]
     notifications: usize,
+    #[cfg(test)]
+    motion_tick_starts: usize,
 }
 
 impl<D: PaneData> EventEmitter<PaneEvent<D>> for MullionView<D> {}
@@ -514,6 +522,7 @@ impl<D: PaneData> MullionView<D> {
             focus_motion: HashMap::new(),
             focus_frame_motion: HashMap::new(),
             motion_focus: None,
+            motion_tick_running: false,
             dock_drag_active: false,
             focus_handle: cx.focus_handle(),
             workspaces: None,
@@ -526,18 +535,25 @@ impl<D: PaneData> MullionView<D> {
             split_starts: Rc::default(),
             active_split: Rc::default(),
             keyboard_split: None,
+            pending_split_resize: None,
+            split_resize_tick_running: false,
             dock_hover: None,
             overlay_host: None,
             last_overlay_error: None,
             command_palette: None,
+            palette_dirty: true,
             #[cfg(test)]
             routed_commands: Vec::new(),
             #[cfg(test)]
             activity_cache_syncs: 0,
             #[cfg(test)]
+            split_move_events: 0,
+            #[cfg(test)]
             split_move_mutations: 0,
             #[cfg(test)]
             notifications: 0,
+            #[cfg(test)]
+            motion_tick_starts: 0,
         }
     }
 
@@ -675,8 +691,7 @@ impl<D: PaneData> MullionView<D> {
         }
 
         self.host.activity_bar = config;
-        // Keep generation tombstones so already-spawned hover and animation
-        // callbacks cannot collide with fresh state after the policy change.
+        // Invalidate delayed hover callbacks before resetting the visual state.
         for state in self.hover.values_mut() {
             state.leave();
         }
@@ -686,7 +701,6 @@ impl<D: PaneData> MullionView<D> {
             .values_mut()
             .chain(self.item_motion.values_mut())
         {
-            motion.generation = motion.generation.wrapping_add(1);
             motion.progress = 0.0;
             motion.from = 0.0;
             motion.target = false;
@@ -721,6 +735,7 @@ impl<D: PaneData> MullionView<D> {
         cx: &mut Context<Self>,
     ) {
         self.command_palette = palette;
+        self.palette_dirty = true;
         cx.notify();
     }
     pub fn command_palette(
@@ -1143,6 +1158,14 @@ impl<D: PaneData> MullionView<D> {
                     [PaneEvent::Resized { .. }, PaneEvent::TreeChanged { .. }]
                 )
             });
+        self.palette_dirty |= events.iter().any(|event| {
+            matches!(
+                event,
+                PaneEvent::FocusChanged { .. }
+                    | PaneEvent::ActivityChanged { .. }
+                    | PaneEvent::DataChanged { .. }
+            )
+        }) || (tree_changed && !ratio_only);
         if tree_changed {
             if !ratio_only {
                 self.activity_cache_dirty = true;
@@ -1163,6 +1186,84 @@ impl<D: PaneData> MullionView<D> {
             cx.notify();
         }
     }
+    fn apply_split_resize(&mut self, key: PaneId, ratio: f64, cx: &mut Context<Self>) {
+        if self.model.resize(&key, ratio) {
+            #[cfg(test)]
+            {
+                self.split_move_mutations += 1;
+            }
+            self.finish(cx);
+        }
+    }
+
+    fn flush_pending_split_resize(&mut self, cx: &mut Context<Self>) {
+        if let Some((key, ratio)) = self.pending_split_resize.take() {
+            self.apply_split_resize(key, ratio, cx);
+        }
+    }
+
+    fn queue_split_resize(
+        &mut self,
+        key: PaneId,
+        ratio: f64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_split_resize = Some((key, ratio));
+        if self.split_resize_tick_running {
+            return;
+        }
+        self.split_resize_tick_running = true;
+        let view = cx.entity().downgrade();
+        // GPUI's browser window is already driven by requestAnimationFrame. Apply only
+        // the latest raw pointer position on that presentation clock, so a high-rate
+        // mouse cannot force hundreds of tree clones and persistence events per second.
+        window.on_next_frame(move |_, cx| {
+            view.update(cx, |this, cx| {
+                this.split_resize_tick_running = false;
+                this.flush_pending_split_resize(cx);
+            })
+            .ok();
+        });
+    }
+
+    fn handle_split_drag_move(
+        &mut self,
+        event: &gpui::DragMoveEvent<SplitDrag>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        #[cfg(test)]
+        {
+            self.split_move_events += 1;
+        }
+        let drag = event.drag(cx);
+        let Some(start) = drag.start_cursor.get() else {
+            return;
+        };
+        // The drag captures its split's bounds when it starts. Retain the recorder
+        // lookup as a fallback for synthetic/platform drags that begin without them.
+        let bounds = drag.parent_bounds.get().unwrap_or_else(|| {
+            self.split_bounds
+                .borrow()
+                .get(&drag.split_key)
+                .copied()
+                .unwrap_or(event.bounds)
+        });
+        let (delta, extent) = match drag.direction {
+            SplitDirection::Horizontal => (event.event.position.x - start.x, bounds.size.width),
+            SplitDirection::Vertical => (event.event.position.y - start.y, bounds.size.height),
+        };
+        if extent > px(0.) {
+            self.queue_split_resize(
+                drag.split_key.clone(),
+                drag.start_ratio + f64::from(delta / extent),
+                window,
+                cx,
+            );
+        }
+    }
+
     /// Execute a command through the view, forwarding events and repainting.
     /// The factory is consulted only for [`crate::PaneCommand::Split`].
     pub fn execute<F>(
@@ -1201,6 +1302,7 @@ impl<D: PaneData> MullionView<D> {
             return;
         }
         self.dock_hover = None;
+        self.pending_split_resize = None;
         if let Some((key, start_ratio)) = split {
             self.model.resize(&key, start_ratio);
             self.finish(cx);
@@ -1575,8 +1677,6 @@ impl<D: PaneData> MullionView<D> {
                             ),
                     );
 
-                let active_on_drop = self.active_split.clone();
-                let move_handler_key = key.clone();
                 let parent = div()
                     .id(SharedString::from(format!("split-container:{}", key.0)))
                     .debug_selector({
@@ -1586,43 +1686,6 @@ impl<D: PaneData> MullionView<D> {
                     .size_full()
                     .relative()
                     .overflow_hidden()
-                    .on_drag_move::<SplitDrag>(cx.listener(
-                        move |this, event: &gpui::DragMoveEvent<SplitDrag>, _, cx| {
-                            let drag = event.drag(cx);
-                            // Drag-move bubbles through every ancestor split container. Only
-                            // the physical splitter that created this drag may mutate it.
-                            if drag.split_key != move_handler_key {
-                                return;
-                            }
-                            let Some(start) = drag.start_cursor.get() else {
-                                return;
-                            };
-                            let bounds = drag.parent_bounds.get().unwrap_or(event.bounds);
-                            let (delta, extent) = match drag.direction {
-                                SplitDirection::Horizontal => {
-                                    (event.event.position.x - start.x, bounds.size.width)
-                                }
-                                SplitDirection::Vertical => {
-                                    (event.event.position.y - start.y, bounds.size.height)
-                                }
-                            };
-                            if extent > px(0.)
-                                && this.model.resize(
-                                    &drag.split_key,
-                                    drag.start_ratio + f64::from(delta / extent),
-                                )
-                            {
-                                #[cfg(test)]
-                                {
-                                    this.split_move_mutations += 1;
-                                }
-                                this.finish(cx);
-                            }
-                        },
-                    ))
-                    .on_drop::<SplitDrag>(move |_, _, _| {
-                        active_on_drop.borrow_mut().take();
-                    })
                     .child(
                         div()
                             .absolute()
@@ -1740,6 +1803,21 @@ impl<D: PaneData> MullionView<D> {
         }
     }
 
+    fn advance_motion(
+        motion: &mut ActivityMotion,
+        now: scheduler::Instant,
+        force_endpoint: bool,
+    ) -> bool {
+        if force_endpoint {
+            motion.progress = ActivityMotion::endpoint(motion.target);
+            motion.from = motion.progress;
+            motion.started_at = None;
+            false
+        } else {
+            motion.advance(now)
+        }
+    }
+
     fn start_motion(
         &mut self,
         key: MotionKey,
@@ -1752,35 +1830,48 @@ impl<D: PaneData> MullionView<D> {
             || (self.dock_drag_active
                 && !matches!(key, MotionKey::Focus(_) | MotionKey::FocusFrame(_)));
         let now = cx.background_executor().now();
-        let Some(generation) = self
+        if !self
             .motion_mut(&key)
             .start(target, now, duration, immediate, from)
-        else {
+            || self.motion_tick_running
+        {
             return;
-        };
+        }
+
+        // One ticker advances every active motion and invalidates the root once per frame.
+        // A task per bar/item/focus motion caused redundant full-tree renders on WASM.
+        self.motion_tick_running = true;
+        #[cfg(test)]
+        {
+            self.motion_tick_starts += 1;
+        }
         cx.spawn(async move |this, cx| loop {
             cx.background_executor()
                 .timer(Duration::from_millis(15))
                 .await;
             let keep_running = this
                 .update(cx, |this, cx| {
-                    let force_endpoint = cx.reduce_motion()
-                        || (this.dock_drag_active
-                            && !matches!(key, MotionKey::Focus(_) | MotionKey::FocusFrame(_)));
+                    let reduce_motion = cx.reduce_motion();
+                    let force_dock_motion = reduce_motion || this.dock_drag_active;
                     let now = cx.background_executor().now();
-                    let motion = this.motion_mut(&key);
-                    if motion.generation != generation {
-                        return false;
+                    let mut active = false;
+                    for motion in this
+                        .bar_motion
+                        .values_mut()
+                        .chain(this.item_motion.values_mut())
+                    {
+                        active |= Self::advance_motion(motion, now, force_dock_motion);
                     }
-                    if force_endpoint {
-                        motion.progress = ActivityMotion::endpoint(motion.target);
-                        motion.from = motion.progress;
-                        motion.started_at = None;
-                    } else {
-                        motion.advance(now, duration);
+                    for motion in this
+                        .focus_motion
+                        .values_mut()
+                        .chain(this.focus_frame_motion.values_mut())
+                    {
+                        active |= Self::advance_motion(motion, now, reduce_motion);
                     }
+                    this.motion_tick_running = active;
                     cx.notify();
-                    motion.started_at.is_some()
+                    active
                 })
                 .unwrap_or(false);
             if !keep_running {
@@ -1801,7 +1892,6 @@ impl<D: PaneData> MullionView<D> {
                 .values_mut()
                 .chain(self.item_motion.values_mut())
             {
-                motion.generation = motion.generation.wrapping_add(1);
                 motion.progress = 1.0;
                 motion.from = 1.0;
                 motion.started_at = None;
@@ -3800,19 +3890,22 @@ impl<D: PaneData> Render for MullionView<D> {
         if let Some(mode) = self.theme_mode {
             self.theme = mode.resolve(window.appearance());
         }
-        if let Some(palette) = &self.command_palette {
-            let registry = palette.read(cx).registry().clone();
-            let entries = self.palette_entries();
-            let live_ids = entries
-                .iter()
-                .map(|entry| entry.id.clone())
-                .collect::<HashSet<_>>();
-            for entry in entries {
-                registry.register(entry).forget();
-            }
-            for id in registry.commands().into_iter().map(|entry| entry.id) {
-                if !live_ids.contains(&id) {
-                    registry.unregister_command(&id);
+        let sync_palette = std::mem::take(&mut self.palette_dirty);
+        if sync_palette {
+            if let Some(palette) = &self.command_palette {
+                let registry = palette.read(cx).registry().clone();
+                let entries = self.palette_entries();
+                let live_ids = entries
+                    .iter()
+                    .map(|entry| entry.id.clone())
+                    .collect::<HashSet<_>>();
+                for entry in entries {
+                    registry.register(entry).forget();
+                }
+                for id in registry.commands().into_iter().map(|entry| entry.id) {
+                    if !live_ids.contains(&id) {
+                        registry.unregister_command(&id);
+                    }
                 }
             }
         }
@@ -3914,6 +4007,7 @@ impl<D: PaneData> Render for MullionView<D> {
         } else {
             crate::MULLION_KEY_CONTEXT
         };
+        let active_split_on_drop = self.active_split.clone();
         div()
             .key_context(key_context)
             .track_focus(&self.focus_handle)
@@ -4083,11 +4177,23 @@ impl<D: PaneData> Render for MullionView<D> {
             .on_action(cx.listener(|this, _: &CancelSplitResize, window, cx| {
                 this.cancel_split_resize(window, cx)
             }))
+            // A single root listener handles split motion. Registering one on every
+            // recursive split made each raw browser pointer event invoke O(split count)
+            // typed drag callbacks before the frame-coalesced resize could run.
+            .on_drag_move::<SplitDrag>(cx.listener(
+                |this, event: &gpui::DragMoveEvent<SplitDrag>, window, cx| {
+                    this.handle_split_drag_move(event, window, cx);
+                },
+            ))
+            .on_drop::<SplitDrag>(move |_, _, _| {
+                active_split_on_drop.borrow_mut().take();
+            })
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
                     let was_active = this.active_split.borrow_mut().take().is_some();
                     this.split_starts.borrow_mut().clear();
+                    this.flush_pending_split_resize(cx);
                     if was_active {
                         cx.notify();
                     }
@@ -4122,7 +4228,15 @@ impl<D: PaneData> Render for MullionView<D> {
                     .children(overlays),
             )
             .when_some(self.command_palette.clone(), |element, palette| {
-                element.child(palette)
+                element.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        // Suppress Mullion pane bindings while the palette's text input owns
+                        // focus. The shared widget adds its own CommandPalette context below.
+                        .key_context("MullionEditable")
+                        .child(palette),
+                )
             })
     }
 }
@@ -5105,7 +5219,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn twenty_nine_pane_drag_has_constant_lifecycle_and_exact_event_budget(
+    fn twenty_nine_pane_drag_coalesces_raw_moves_to_one_tree_update_per_frame(
         cx: &mut TestAppContext,
     ) {
         PERF_FILTER_CALLS.store(0, Ordering::SeqCst);
@@ -5161,8 +5275,12 @@ mod tests {
             gpui::Modifiers::none(),
         );
         events.borrow_mut().clear();
-        let (base_mutations, base_notifications) = view.read_with(cx, |view, _| {
-            (view.split_move_mutations, view.notifications)
+        let (base_moves, base_mutations, base_notifications) = view.read_with(cx, |view, _| {
+            (
+                view.split_move_events,
+                view.split_move_mutations,
+                view.notifications,
+            )
         });
         for step in 1..=4 {
             cx.simulate_mouse_move(
@@ -5171,18 +5289,21 @@ mod tests {
                 gpui::Modifiers::none(),
             );
         }
-        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
 
         let logged = events.borrow();
-        assert_eq!(logged.len(), 8);
+        assert_eq!(logged.len(), 2);
         for pair in logged.chunks_exact(2) {
             assert!(matches!(pair[0], PaneEvent::Resized { .. }));
             assert!(matches!(pair[1], PaneEvent::TreeChanged { .. }));
         }
         drop(logged);
         view.read_with(cx, |view, _| {
-            assert_eq!(view.split_move_mutations - base_mutations, 4);
-            assert_eq!(view.notifications - base_notifications, 4);
+            assert_eq!(view.split_move_events - base_moves, 4);
+            assert_eq!(view.split_move_mutations - base_mutations, 1);
+            assert_eq!(view.notifications - base_notifications, 1);
         });
         assert_eq!(PERF_FILTER_CALLS.load(Ordering::SeqCst), initial_filters);
         assert_eq!(view.read_with(cx, |view, _| view.activity_cache_syncs), 1);
@@ -5198,7 +5319,9 @@ mod tests {
         for _ in 0..4 {
             cx.simulate_mouse_move(clamped, Some(MouseButton::Left), gpui::Modifiers::none());
         }
-        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
         assert_eq!(events.borrow().len(), 2);
         view.read_with(cx, |view, _| {
             assert_eq!(view.split_move_mutations - base_mutations, 1);
@@ -5253,6 +5376,9 @@ mod tests {
             Some(MouseButton::Left),
             gpui::Modifiers::none(),
         );
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
         assert_eq!(ratio(&view, "b", cx), 0.75);
 
         let logged = events.borrow();
@@ -5273,6 +5399,9 @@ mod tests {
             Some(MouseButton::Left),
             gpui::Modifiers::none(),
         );
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
         assert_eq!(ratio(&view, "b", cx), 0.9);
         cx.simulate_mouse_up(
             gpui::point(parent.right() + parent.size.width, start.y),
@@ -5307,6 +5436,9 @@ mod tests {
             Some(MouseButton::Left),
             gpui::Modifiers::none(),
         );
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
         assert_eq!(ratio(&view, "c", cx), 0.75);
         assert_eq!(ratio(&view, "b", cx), 0.4);
 
@@ -6735,6 +6867,11 @@ mod tests {
             view.finish(cx);
         });
         cx.run_until_parked();
+        assert_eq!(
+            view.read_with(cx, |view, _| view.motion_tick_starts),
+            1,
+            "initial and changed focus motions share one animation ticker",
+        );
         cx.executor().advance_clock(Duration::from_millis(60));
         cx.run_until_parked();
         let expected = ease_in_out(60.0 / 125.0);

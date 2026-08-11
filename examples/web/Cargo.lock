@@ -2118,7 +2118,7 @@ dependencies = [
 [[package]]
 name = "gpui-command-palette"
 version = "0.1.0"
-source = "git+https://github.com/ignition-is-go/gpui-command-palette.git?rev=48111f55826e7926285a2e8b89e45a52453b5cfa#48111f55826e7926285a2e8b89e45a52453b5cfa"
+source = "git+https://github.com/ignition-is-go/gpui-command-palette.git?rev=a14f56ac3eebb16eea9c0f7aa31b0deae0797ec1#a14f56ac3eebb16eea9c0f7aa31b0deae0797ec1"
 dependencies = [
  "gpui",
  "gpui_platform",
@@ -3220,7 +3220,6 @@ name = "mullion-web-demo"
 version = "0.1.0"
 dependencies = [
  "gpui",
- "gpui-command-palette",
  "gpui-mullion",
  "gpui_platform",
  "js-sys",

@@ -109,3 +109,33 @@ fn installed_global_toggle_routes_once(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(!palette.read_with(cx, |palette, _| palette.state().is_open()));
 }
+
+#[gpui::test]
+fn installed_palette_accepts_text_and_arrow_navigation(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        MullionView::new(PaneNode::leaf(PaneId::new("only"), true), Vec::new(), cx)
+    });
+    let palette = cx.update(|window, app| {
+        let palette = install_command_palette_for_view(&view, window, app);
+        window.activate_window();
+        palette.update(app, |palette, cx| palette.open(window, cx));
+        palette
+    });
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes("f");
+    assert_eq!(
+        palette.read_with(cx, |palette, _| palette.state().query().to_owned()),
+        "f"
+    );
+
+    assert_eq!(
+        palette.read_with(cx, |palette, _| palette.state().selected_index()),
+        0
+    );
+    cx.simulate_keystrokes("down");
+    assert_eq!(
+        palette.read_with(cx, |palette, _| palette.state().selected_index()),
+        1
+    );
+}

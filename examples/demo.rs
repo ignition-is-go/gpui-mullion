@@ -864,7 +864,7 @@ fn host_config() -> ActivityBarHostConfig<DemoData> {
                     .child("⌘K")
                     .on_click(move |_, window, cx| {
                         window.dispatch_action(
-                            Box::new(gpui_command_palette::ToggleCommandPalette),
+                            Box::new(gpui_mullion::gpui_command_palette::ToggleCommandPalette),
                             cx,
                         );
                     })
@@ -1062,7 +1062,7 @@ impl gpui::Render for DemoRoot {
 
 fn launch(cx: &mut App) {
     register_key_bindings(cx);
-    gpui_command_palette::init(cx);
+    gpui_mullion::gpui_command_palette::init(cx);
     let control = Arc::new(DemoControl::default());
     control.reset();
     let overlays = Rc::new(RefCell::new(OverlayStack::new()));

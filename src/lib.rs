@@ -28,6 +28,9 @@ pub use command_actions::*;
 pub use drag::*;
 pub use events::*;
 pub use focus::*;
+/// The exact shared palette crate used by Mullion, re-exported so hosts cannot
+/// accidentally link a second revision and register duplicate GPUI actions.
+pub use gpui_command_palette;
 pub use keybindings::*;
 pub use model::*;
 pub use overlay::*;
