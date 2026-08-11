@@ -315,17 +315,11 @@ fn direct_command<D: PaneData>(
     let handler_view = view.clone();
     let mut command = Command::with_handler(id, name, move |_, cx| {
         let invocation = invocation.clone();
-        let handler_view = handler_view.clone();
-        // CommandPalette executes handlers while its own entity is on GPUI's
-        // update stack. Invocation may resynchronize registrations, so wait
-        // until palette dispatch and close have fully unwound.
-        cx.defer(move |cx| {
-            handler_view
-                .update(cx, |view, cx| {
-                    let _ = view.invoke_palette(invocation, cx);
-                })
-                .ok();
-        });
+        handler_view
+            .update(cx, |view, cx| {
+                let _ = view.invoke_palette(invocation, cx);
+            })
+            .ok();
     });
     if let Some(description) = description {
         command = command.description(description);
