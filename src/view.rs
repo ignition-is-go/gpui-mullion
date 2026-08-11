@@ -492,6 +492,7 @@ pub struct MullionView<D: PaneData> {
     activity_cache: ActivityCache<D>,
     activity_render_cache: HashMap<(Option<WorkspaceId>, PaneId), Rc<PaneActivityRenderData<D>>>,
     activity_cache_dirty: bool,
+    activity_reconcile_scheduled: bool,
     split_bounds: SplitBounds,
     split_starts: Rc<RefCell<HashMap<PaneId, Point<Pixels>>>>,
     active_split: ActiveSplit,
@@ -561,6 +562,7 @@ impl<D: PaneData> MullionView<D> {
             activity_cache: ActivityCache::default(),
             activity_render_cache: HashMap::new(),
             activity_cache_dirty: true,
+            activity_reconcile_scheduled: false,
             split_bounds: Rc::default(),
             split_starts: Rc::default(),
             active_split: Rc::default(),
@@ -1419,11 +1421,25 @@ impl<D: PaneData> MullionView<D> {
         let mut render_cache = HashMap::with_capacity(panes.len());
         let mut valid = HashSet::new();
         let mut pane_data = HashMap::with_capacity(panes.len());
+        let mut selected_instances = Vec::with_capacity(panes.len());
         for ((workspace, pane), (active, data)) in &panes {
             let activities = self.all_activities(data);
             valid.extend(activities.iter().map(|activity| {
                 ActivityCacheKey::new(workspace.clone(), pane.clone(), activity.id.clone())
             }));
+            if let Some(activity) = active
+                .as_ref()
+                .and_then(|active| activities.iter().find(|activity| &activity.id == active))
+                .or_else(|| activities.first())
+                .cloned()
+            {
+                selected_instances.push((
+                    ActivityCacheKey::new(workspace.clone(), pane.clone(), activity.id.clone()),
+                    pane.clone(),
+                    data.clone(),
+                    activity,
+                ));
+            }
             let projection = self.catalog.visible(data, active.as_ref());
             render_cache.insert(
                 (workspace.clone(), pane.clone()),
@@ -1448,6 +1464,32 @@ impl<D: PaneData> MullionView<D> {
         // change; eviction and disposal are its only lifecycle transitions.
         for (update, data) in self.activity_cache.changed_callbacks(&pane_data) {
             update(&data, window, cx);
+        }
+        // Host factories run during explicit deferred reconciliation, never while
+        // GPUI is borrowing this view to project its element tree.
+        for (key, pane, data, activity) in selected_instances {
+            if self.activity_cache.get(&key).is_some() {
+                continue;
+            }
+            let instance = if let Some(factory) = self.activity_factories.get(&activity.id) {
+                factory(&pane, &data, window, cx)
+            } else {
+                let body = cx.new(|_| LegacyActivityBody {
+                    pane: pane.clone(),
+                    data: data.clone(),
+                    render: activity.render.clone(),
+                });
+                let update_body = body.clone();
+                crate::ActivityInstance::new(body).with_update(move |data: &D, _, cx| {
+                    update_body.update(cx, |body, cx| {
+                        if body.data != *data {
+                            body.data = data.clone();
+                            cx.notify();
+                        }
+                    });
+                })
+            };
+            self.activity_cache.insert(key, instance, data);
         }
     }
 
@@ -3042,28 +3084,6 @@ impl<D: PaneData> MullionView<D> {
         let cached = selected.as_ref().and_then(|activity| {
             let key =
                 ActivityCacheKey::new(self.workspace_namespace(), id.clone(), activity.id.clone());
-            if self.activity_cache.get(&key).is_none() {
-                let instance = if let Some(factory) = self.activity_factories.get(&activity.id) {
-                    factory(id, data, window, cx)
-                } else {
-                    let body = cx.new(|_| LegacyActivityBody {
-                        pane: id.clone(),
-                        data: data.clone(),
-                        render: activity.render.clone(),
-                    });
-                    let update_body = body.clone();
-                    crate::ActivityInstance::new(body).with_update(move |data: &D, _, cx| {
-                        update_body.update(cx, |body, cx| {
-                            if body.data != *data {
-                                body.data = data.clone();
-                                cx.notify();
-                            }
-                        });
-                    })
-                };
-                self.activity_cache
-                    .insert(key.clone(), instance, data.clone());
-            }
             self.activity_cache
                 .get(&key)
                 .map(|entry| (entry.instance.body.clone(), entry.instance.header.clone()))
@@ -4004,7 +4024,14 @@ impl<D: PaneData> Render for MullionView<D> {
         if self.motion_tick_running && self.advance_motions(cx) {
             window.request_animation_frame();
         }
-        self.sync_activity_cache(window, cx);
+        if self.activity_cache_dirty && !self.activity_reconcile_scheduled {
+            self.activity_reconcile_scheduled = true;
+            cx.defer_in(window, |this, window, cx| {
+                this.activity_reconcile_scheduled = false;
+                this.sync_activity_cache(window, cx);
+                cx.notify();
+            });
+        }
         let tree = self
             .model
             .zoomed()
