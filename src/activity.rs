@@ -209,12 +209,54 @@ pub struct Activity<D: PaneData> {
     pub render: ActivityRenderer<D>,
 }
 
+impl<D: PaneData> Activity<D> {
+    /// Define an activity with a stable identity and a legacy stateless renderer.
+    ///
+    /// Stateful GPUI content should register an [`ActivityFactoryRegistry`]
+    /// factory for the same id; this renderer remains the compatibility fallback.
+    pub fn new(
+        id: impl Into<ActivityId>,
+        name: impl Into<SharedString>,
+        render: impl Fn(&PaneId, &D) -> AnyElement + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            filter: |_| true,
+            render: Arc::new(render),
+        }
+    }
+
+    /// Restrict visibility to panes accepted by `filter`.
+    pub fn with_filter(mut self, filter: fn(&D) -> bool) -> Self {
+        self.filter = filter;
+        self
+    }
+}
+
 #[derive(Clone)]
 pub struct ActivityCategory<D: PaneData> {
     pub id: CategoryId,
     pub name: SharedString,
     pub color: gpui::Hsla,
     pub children: Vec<ActivityNode<D>>,
+}
+
+impl<D: PaneData> ActivityCategory<D> {
+    /// Define a recursive activity category.
+    pub fn new(
+        id: impl Into<CategoryId>,
+        name: impl Into<SharedString>,
+        color: gpui::Hsla,
+        children: impl IntoIterator<Item = ActivityNode<D>>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            color,
+            children: children.into_iter().collect(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -325,6 +367,14 @@ mod tests {
                 ActivityInstance::new(cx.new(|_| StatefulView(2)))
             })
             .is_some());
+    }
+
+    #[test]
+    fn activity_builder_accepts_string_ids_and_defaults_visible() {
+        let activity = Activity::new("files", "Files", |_, _: &String| div().into_any_element());
+        assert_eq!(activity.id.as_ref(), "files");
+        assert_eq!(activity.name.as_ref(), "Files");
+        assert!((activity.filter)(&"data".to_owned()));
     }
 
     #[test]

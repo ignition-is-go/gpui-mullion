@@ -24,19 +24,13 @@ This repository is the GPUI successor to the Leptos `mullion` library and is int
 ## Quick start
 
 ```rust
-use std::sync::Arc;
 use gpui::{div, prelude::*};
 use gpui_mullion::*;
 
 // D must be Clone + PartialEq + serde + Send + Sync + 'static.
-let activity = Activity {
-    id: ActivityId::new("files"),
-    name: "Files".into(),
-    filter: |_| true,
-    render: Arc::new(|pane, _data: &MyData| {
-        div().child(format!("Files in {}", pane.0)).into_any_element()
-    }),
-};
+let activity = Activity::new("files", "Files", |pane, _data: &MyData| {
+    div().child(format!("Files in {pane}")).into_any_element()
+});
 let tree = PaneNode::leaf_with_activity(
     PaneId::new("main"), ActivityId::new("files"), my_data,
 );

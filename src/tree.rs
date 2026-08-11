@@ -29,6 +29,38 @@ impl CategoryId {
     }
 }
 
+macro_rules! impl_id_conversions {
+    ($type:ty) => {
+        impl From<&str> for $type {
+            fn from(value: &str) -> Self {
+                Self::new(value)
+            }
+        }
+
+        impl From<String> for $type {
+            fn from(value: String) -> Self {
+                Self::new(value)
+            }
+        }
+
+        impl AsRef<str> for $type {
+            fn as_ref(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl fmt::Display for $type {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(&self.0)
+            }
+        }
+    };
+}
+
+impl_id_conversions!(PaneId);
+impl_id_conversions!(ActivityId);
+impl_id_conversions!(CategoryId);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SplitDirection {
     Horizontal,

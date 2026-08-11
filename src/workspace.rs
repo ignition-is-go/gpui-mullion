@@ -13,6 +13,53 @@ pub struct Workspace<D: PaneData> {
     pub tree: PaneNode<D>,
 }
 
+impl WorkspaceId {
+    /// Construct a stable workspace identity.
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    /// Borrow the underlying stable identifier.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for WorkspaceId {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<String> for WorkspaceId {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
+
+impl AsRef<str> for WorkspaceId {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl fmt::Display for WorkspaceId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl<D: PaneData> Workspace<D> {
+    /// Construct a workspace around a pane-tree snapshot.
+    pub fn new(id: impl Into<WorkspaceId>, name: impl Into<String>, tree: PaneNode<D>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            tree,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceSet<D: PaneData> {
     pub active: WorkspaceId,
@@ -323,6 +370,18 @@ mod tests {
             first: Box::new(PaneNode::leaf(PaneId::new("duplicate"), "a".into())),
             second: Box::new(PaneNode::leaf(PaneId::new("duplicate"), "b".into())),
         }
+    }
+
+    #[test]
+    fn workspace_builder_accepts_string_identity() {
+        let workspace = Workspace::new(
+            "one",
+            "One",
+            PaneNode::leaf(PaneId::new("pane"), "data".to_owned()),
+        );
+        assert_eq!(workspace.id.as_str(), "one");
+        assert_eq!(workspace.id.to_string(), "one");
+        assert_eq!(workspace.name, "One");
     }
 
     #[test]
