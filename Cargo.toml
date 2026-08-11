@@ -10,6 +10,12 @@ repository = "https://github.com/ignition-is-go/gpui-mullion"
 keywords = ["gpui", "panes", "split-view"]
 categories = ["gui"]
 
+
+[features]
+default = []
+# Deterministic state/input probes for integration tests and the browser demo harness.
+test-support = []
+
 [dependencies]
 gpui = { git = "https://github.com/zed-industries/zed.git", rev = "08827f9208b4848d62f3faf86ffa15155966d63c" }
 gpui-command-palette = { git = "https://github.com/ignition-is-go/gpui-command-palette.git", rev = "a14f56ac3eebb16eea9c0f7aa31b0deae0797ec1" }

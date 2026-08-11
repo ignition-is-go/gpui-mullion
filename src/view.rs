@@ -648,21 +648,25 @@ impl<D: PaneData> MullionView<D> {
     pub fn styles(&self) -> Option<&MullionStyles> {
         self.styles.as_ref()
     }
-    /// Whether pointer hover has expanded this pane's activity bar.
+    /// Test-support probe for whether pointer hover expanded a pane's activity bar.
     ///
-    /// This reports resolved interaction state, not merely that an input event
+    /// Available only to crate tests and the opt-in `test-support` feature. This
+    /// reports resolved interaction state, not merely that an input event
     /// was dispatched, so browser hosts can make honest end-to-end assertions.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn activity_bar_is_expanded(&self, pane: &PaneId) -> bool {
         self.hover
             .get(pane)
             .is_some_and(|state| state.is_expanded())
     }
-    /// Deliver a host-resolved activity-bar hover event.
+    /// Deliver a test-adapter activity-bar hover event.
     ///
+    /// Available only to crate tests and the opt-in `test-support` feature.
     /// Native GPUI pointers call the same state transition internally. This
     /// public event hook lets embedded canvas hosts and deterministic browser
     /// bridges forward their own hit-tested pointer state without claiming
     /// success before the panel actually expands.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn set_activity_bar_hovered(
         &mut self,
         pane: &PaneId,
