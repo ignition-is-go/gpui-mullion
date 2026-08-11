@@ -9,6 +9,24 @@ fn visible(_: &bool) -> bool {
     true
 }
 
+struct SharedPaletteRoot {
+    view: gpui::Entity<MullionView<bool>>,
+    palette: gpui::Entity<gpui_command_palette::CommandPalette<()>>,
+}
+
+impl gpui::Render for SharedPaletteRoot {
+    fn render(
+        &mut self,
+        _window: &mut gpui::Window,
+        _cx: &mut gpui::Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .size_full()
+            .child(self.view.clone())
+            .child(self.palette.clone())
+    }
+}
+
 #[gpui::test]
 fn shared_widget_tracks_dynamic_entries_and_invokes_mullion(cx: &mut TestAppContext) {
     let activity = ActivityNode::Activity(Activity {
@@ -124,6 +142,45 @@ fn shared_attachment_injects_without_rendering_palette_inside_mullion(cx: &mut T
     cx.update(|window, app| palette.update(app, |palette, cx| palette.open(window, cx)));
     cx.run_until_parked();
     assert!(cx.debug_bounds("command-palette-dialog").is_none());
+}
+
+#[gpui::test]
+fn shared_palette_defers_split_execution_until_dispatch_unwinds(cx: &mut TestAppContext) {
+    let (root, cx) = cx.add_window_view(|_, cx| {
+        let view = cx
+            .new(|cx| MullionView::new(PaneNode::leaf(PaneId::new("only"), true), Vec::new(), cx));
+        let palette = cx.new(gpui_command_palette::CommandPalette::<()>::new);
+        gpui_mullion::attach_command_palette(&view, palette.clone(), cx);
+        SharedPaletteRoot { view, palette }
+    });
+    let (view, palette) = root.read_with(cx, |root, _| (root.view.clone(), root.palette.clone()));
+    cx.update(|window, app| {
+        window.activate_window();
+        palette.update(app, |palette, cx| {
+            palette.open(window, cx);
+            palette.set_query("Split Pane Left/Right", cx);
+        });
+    });
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+
+    assert!(view.read_with(cx, |view, _| view
+        .model()
+        .tree()
+        .find(&PaneId::new("only--split"))
+        .is_some()));
+    let commands = palette.read_with(cx, |palette, _| palette.registry().commands());
+    let focus_children = commands
+        .iter()
+        .find(|command| command.id == "mullion.focus.pane")
+        .and_then(|command| command.resolve_children())
+        .unwrap();
+    assert_eq!(focus_children.len(), 2);
+    assert!(focus_children
+        .iter()
+        .any(|command| command.id == "mullion.focus.pane.only--split"));
 }
 
 #[gpui::test]
