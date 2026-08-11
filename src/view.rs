@@ -503,7 +503,6 @@ pub struct MullionView<D: PaneData> {
     last_overlay_error: Option<OverlayError>,
     command_palette: Option<gpui::Entity<gpui_command_palette::CommandPalette<PaletteInvocation>>>,
     palette_registrations: Vec<gpui_command_palette::Registration<PaletteInvocation>>,
-    palette_dirty: bool,
     #[cfg(test)]
     routed_commands: Vec<crate::PaneCommand>,
     #[cfg(test)]
@@ -573,7 +572,6 @@ impl<D: PaneData> MullionView<D> {
             last_overlay_error: None,
             command_palette: None,
             palette_registrations: Vec::new(),
-            palette_dirty: true,
             #[cfg(test)]
             routed_commands: Vec::new(),
             #[cfg(test)]
@@ -771,9 +769,19 @@ impl<D: PaneData> MullionView<D> {
         // before replacing the entity prevents stale commands from outliving this view.
         self.palette_registrations.clear();
         self.command_palette = palette;
-        self.palette_dirty = true;
+        self.sync_command_palette(cx);
         cx.notify();
     }
+
+    fn sync_command_palette(&mut self, cx: &App) {
+        self.palette_registrations.clear();
+        let entries = self.palette_entries();
+        if let Some(palette) = &self.command_palette {
+            let registry = palette.read(cx).registry().clone();
+            self.palette_registrations = registry.register_many(entries);
+        }
+    }
+
     pub fn command_palette(
         &self,
     ) -> Option<&gpui::Entity<gpui_command_palette::CommandPalette<PaletteInvocation>>> {
@@ -1194,7 +1202,7 @@ impl<D: PaneData> MullionView<D> {
                     [PaneEvent::Resized { .. }, PaneEvent::TreeChanged { .. }]
                 )
             });
-        self.palette_dirty |= events.iter().any(|event| {
+        let palette_changed = events.iter().any(|event| {
             matches!(
                 event,
                 PaneEvent::FocusChanged { .. }
@@ -1211,6 +1219,9 @@ impl<D: PaneData> MullionView<D> {
                 // revalidating every inactive workspace on each live resize frame.
                 workspaces.persist_model_snapshot(self.model.snapshot());
             }
+        }
+        if palette_changed {
+            self.sync_command_palette(cx);
         }
         let notify = !events.is_empty();
         for event in events {
@@ -3981,16 +3992,6 @@ impl<D: PaneData> Render for MullionView<D> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(mode) = self.theme_mode {
             self.theme = mode.resolve(window.appearance());
-        }
-        let sync_palette = std::mem::take(&mut self.palette_dirty);
-        if sync_palette {
-            // CommandRegistry registrations are RAII. Retain the handles for exactly
-            // as long as this Mullion view owns the corresponding palette entries.
-            self.palette_registrations.clear();
-            if let Some(palette) = &self.command_palette {
-                let registry = palette.read(cx).registry().clone();
-                self.palette_registrations = registry.register_many(self.palette_entries());
-            }
         }
         let styles = self
             .styles
