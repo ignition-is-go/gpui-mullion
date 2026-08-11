@@ -486,6 +486,7 @@ pub struct MullionView<D: PaneData> {
     motion_focus: Option<PaneId>,
     motion_tick_running: bool,
     dock_drag_active: bool,
+    drag_reconcile_scheduled: bool,
     focus_handle: FocusHandle,
     workspaces: Option<WorkspaceSet<D>>,
     workspace_switcher_visible: bool,
@@ -556,6 +557,7 @@ impl<D: PaneData> MullionView<D> {
             motion_focus: None,
             motion_tick_running: false,
             dock_drag_active: false,
+            drag_reconcile_scheduled: false,
             focus_handle: cx.focus_handle(),
             workspaces: None,
             workspace_switcher_visible: true,
@@ -4140,9 +4142,18 @@ impl<D: PaneData> Render for MullionView<D> {
         let styles = self
             .styles
             .unwrap_or_else(|| MullionStyles::from_theme(self.theme));
-        if !cx.has_active_drag() {
-            self.dock_hover = None;
-            self.set_dock_drag_active(false, cx);
+        if !cx.has_active_drag()
+            && (self.dock_hover.is_some() || self.dock_drag_active)
+            && !self.drag_reconcile_scheduled
+        {
+            self.drag_reconcile_scheduled = true;
+            cx.defer_in(window, |this, _, cx| {
+                this.drag_reconcile_scheduled = false;
+                if !cx.has_active_drag() {
+                    this.dock_hover = None;
+                    this.set_dock_drag_active(false, cx);
+                }
+            });
         }
         self.sync_focus_motion(cx);
         if self.motion_tick_running && self.advance_motions(cx) {
