@@ -3352,7 +3352,9 @@ impl<D: PaneData> MullionView<D> {
                 // The animated cross-axis extent still clips each individual row.
                 .when(horizontal, |panel| panel.overflow_x_scroll())
                 .when(!horizontal, |panel| panel.overflow_y_scroll())
-                .restrict_scroll_to_axis()
+                // Only one axis is scrollable, so GPUI's gesture-axis lock is
+                // unnecessary. Avoid it on WASM: upstream currently calls
+                // std::time::Instant::now there, which panics in browsers.
                 .bg(styles.activity_bar.background)
                 .border_color(styles.activity_bar.border)
                 .when(horizontal, |panel| {
