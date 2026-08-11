@@ -4,13 +4,14 @@ use crate::{
     PaneCommandResult, PaneData, PaneDirection, PaneEvent, PaneId, PaneLayout, PaneNode,
     PaneRotation, PaneValidationError, SplitDirection,
 };
+use std::rc::Rc;
 
 type MutablePaneSplitFactory<'a, D> =
     dyn FnMut(&PaneId, SplitDirection, &D) -> Option<(PaneId, D)> + 'a;
 
 /// Toolkit-independent state machine. UI adapters translate input into these methods.
 pub struct MullionModel<D: PaneData> {
-    tree: PaneNode<D>,
+    tree: Rc<PaneNode<D>>,
     focused: Option<PaneId>,
     zoomed: Option<PaneId>,
     events: Vec<PaneEvent<D>>,
@@ -22,7 +23,7 @@ impl<D: PaneData> MullionModel<D> {
         tree.validate()?;
         let focused = tree.leaf_ids().into_iter().next();
         Ok(Self {
-            tree,
+            tree: Rc::new(tree),
             focused,
             zoomed: None,
             events: Vec::new(),
@@ -37,10 +38,17 @@ impl<D: PaneData> MullionModel<D> {
         Self::try_new(tree).expect("MullionModel::new requires a valid pane tree")
     }
     pub fn tree(&self) -> &PaneNode<D> {
-        &self.tree
+        self.tree.as_ref()
     }
     pub fn snapshot(&self) -> PaneNode<D> {
+        self.tree.as_ref().clone()
+    }
+    /// Share the immutable tree for render projection without cloning pane data.
+    pub(crate) fn shared_tree(&self) -> Rc<PaneNode<D>> {
         self.tree.clone()
+    }
+    fn tree_mut(&mut self) -> &mut PaneNode<D> {
+        Rc::make_mut(&mut self.tree)
     }
     pub fn focused(&self) -> Option<&PaneId> {
         self.focused.as_ref()
@@ -53,7 +61,7 @@ impl<D: PaneData> MullionModel<D> {
     }
     fn changed(&mut self) {
         self.events.push(PaneEvent::TreeChanged {
-            tree: self.tree.clone(),
+            tree: self.tree.as_ref().clone(),
         });
     }
     fn try_replace_tree_inner(
@@ -64,7 +72,7 @@ impl<D: PaneData> MullionModel<D> {
         tree.validate()?;
         let previous_focus = self.focused.clone();
         let previous_zoom = self.zoomed.clone();
-        self.tree = tree;
+        self.tree = Rc::new(tree);
 
         if self
             .zoomed
@@ -185,7 +193,7 @@ impl<D: PaneData> MullionModel<D> {
     ) -> bool {
         if self.tree.contains(&new_id)
             || !self
-                .tree
+                .tree_mut()
                 .split(target, direction, new_id.clone(), data.clone())
         {
             return false;
@@ -212,7 +220,7 @@ impl<D: PaneData> MullionModel<D> {
             .get(at + 1)
             .or_else(|| at.checked_sub(1).and_then(|previous| ids.get(previous)))
             .cloned();
-        let data = self.tree.close(pane)?;
+        let data = self.tree_mut().close(pane)?;
         self.events.push(PaneEvent::Closed {
             id: pane.clone(),
             data: data.clone(),
@@ -237,7 +245,7 @@ impl<D: PaneData> MullionModel<D> {
         if !ratio.is_finite() {
             return false;
         }
-        if !self.tree.set_split_ratio(split_key, ratio) {
+        if !self.tree_mut().set_split_ratio(split_key, ratio) {
             return false;
         }
         // Report the ratio actually persisted by PaneNode (including its
@@ -262,7 +270,7 @@ impl<D: PaneData> MullionModel<D> {
         self.resize(&key, old + amount.abs() * sign)
     }
     pub fn move_pane(&mut self, source: &PaneId, destination: &PaneId, edge: DropEdge) -> bool {
-        if !self.tree.move_pane(source, destination, edge) {
+        if !self.tree_mut().move_pane(source, destination, edge) {
             return false;
         }
         self.events.push(PaneEvent::Moved {
@@ -286,7 +294,7 @@ impl<D: PaneData> MullionModel<D> {
         new_data: D,
     ) -> bool {
         if self.tree.contains(&new_id)
-            || !self.tree.insert_leaf(
+            || !self.tree_mut().insert_leaf(
                 destination,
                 edge,
                 new_id.clone(),
@@ -309,7 +317,7 @@ impl<D: PaneData> MullionModel<D> {
     }
 
     pub fn swap(&mut self, a: &PaneId, b: &PaneId) -> bool {
-        if !self.tree.swap_panes(a, b) {
+        if !self.tree_mut().swap_panes(a, b) {
             false
         } else {
             self.changed();
@@ -317,7 +325,7 @@ impl<D: PaneData> MullionModel<D> {
         }
     }
     pub fn set_direction(&mut self, pane: &PaneId, direction: SplitDirection) -> bool {
-        if !self.tree.change_direction(pane, direction) {
+        if !self.tree_mut().change_direction(pane, direction) {
             return false;
         }
         self.events.push(PaneEvent::DirectionChanged {
@@ -328,7 +336,7 @@ impl<D: PaneData> MullionModel<D> {
         true
     }
     pub fn balance(&mut self) -> bool {
-        if self.tree.balance_splits() == 0 {
+        if self.tree_mut().balance_splits() == 0 {
             return false;
         }
         let mut splits = Vec::new();
@@ -342,7 +350,7 @@ impl<D: PaneData> MullionModel<D> {
         true
     }
     pub fn rotate(&mut self, rotation: PaneRotation) -> bool {
-        if !self.tree.rotate_panes(rotation) {
+        if !self.tree_mut().rotate_panes(rotation) {
             false
         } else {
             self.changed();
@@ -351,7 +359,7 @@ impl<D: PaneData> MullionModel<D> {
     }
     pub fn apply_layout(&mut self, layout: PaneLayout) -> bool {
         let focus = self.focused.clone();
-        if !self.tree.apply_layout(layout, focus.as_ref()) {
+        if !self.tree_mut().apply_layout(layout, focus.as_ref()) {
             false
         } else {
             self.changed();
@@ -361,7 +369,7 @@ impl<D: PaneData> MullionModel<D> {
     pub fn set_activity(&mut self, pane: &PaneId, activity: Option<ActivityId>) -> bool {
         let Some(PaneNode::Leaf {
             active_activity, ..
-        }) = self.tree.find_mut(pane)
+        }) = self.tree_mut().find_mut(pane)
         else {
             return false;
         };
@@ -374,7 +382,7 @@ impl<D: PaneData> MullionModel<D> {
         true
     }
     pub fn update_data(&mut self, pane: &PaneId, data: D) -> bool {
-        let Some(PaneNode::Leaf { data: old, .. }) = self.tree.find_mut(pane) else {
+        let Some(PaneNode::Leaf { data: old, .. }) = self.tree_mut().find_mut(pane) else {
             return false;
         };
         *old = data.clone();

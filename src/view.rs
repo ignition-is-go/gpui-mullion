@@ -4156,8 +4156,8 @@ impl<D: PaneData> Render for MullionView<D> {
             .model
             .zoomed()
             .and_then(|id| self.model.tree().find(id))
-            .unwrap_or(self.model.tree())
-            .clone();
+            .map(|node| Rc::new(node.clone()))
+            .unwrap_or_else(|| self.model.shared_tree());
         let pane_ids = tree.leaf_ids();
         let workspace_tabs = self
             .workspace_switcher_visible
@@ -4530,6 +4530,47 @@ mod tests {
             Arc,
         },
     };
+
+    #[derive(Debug)]
+    struct CloneCountedData {
+        value: u8,
+        clones: Rc<Cell<usize>>,
+    }
+
+    impl Clone for CloneCountedData {
+        fn clone(&self) -> Self {
+            self.clones.set(self.clones.get() + 1);
+            Self {
+                value: self.value,
+                clones: self.clones.clone(),
+            }
+        }
+    }
+
+    impl PartialEq for CloneCountedData {
+        fn eq(&self, other: &Self) -> bool {
+            self.value == other.value
+        }
+    }
+
+    #[gpui::test]
+    fn unrelated_root_render_does_not_clone_pane_data(cx: &mut TestAppContext) {
+        let clones = Rc::new(Cell::new(0));
+        let data = CloneCountedData {
+            value: 1,
+            clones: clones.clone(),
+        };
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::new(PaneNode::leaf(PaneId::new("pane"), data), vec![], cx)
+        });
+        cx.run_until_parked();
+        clones.set(0);
+
+        view.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+
+        assert_eq!(clones.get(), 0);
+    }
 
     fn test_overlay(id: &str, tier: crate::OverlayTier) -> MullionOverlay {
         let selector = id.to_owned();
