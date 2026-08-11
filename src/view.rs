@@ -235,6 +235,7 @@ fn interpolate_hsla(from: Hsla, to: Hsla, progress: f32) -> Hsla {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ReferencePaneIcon {
+    Move,
     SplitHorizontal,
     SplitVertical,
     Close,
@@ -242,19 +243,27 @@ enum ReferencePaneIcon {
 
 fn reference_icon_polygons(icon: ReferencePaneIcon) -> &'static [&'static [(f32, f32)]] {
     match icon {
+        ReferencePaneIcon::Move => &[
+            &[(4., 3.), (6., 3.), (6., 5.), (4., 5.)],
+            &[(10., 3.), (12., 3.), (12., 5.), (10., 5.)],
+            &[(4., 7.), (6., 7.), (6., 9.), (4., 9.)],
+            &[(10., 7.), (12., 7.), (12., 9.), (10., 9.)],
+            &[(4., 11.), (6., 11.), (6., 13.), (4., 13.)],
+            &[(10., 11.), (12., 11.), (12., 13.), (10., 13.)],
+        ],
         ReferencePaneIcon::SplitHorizontal => &[
             &[(1., 1.), (15., 1.), (15., 2.), (1., 2.)],
             &[(1., 14.), (15., 14.), (15., 15.), (1., 15.)],
             &[(1., 2.), (2., 2.), (2., 14.), (1., 14.)],
             &[(14., 2.), (15., 2.), (15., 14.), (14., 14.)],
-            &[(7.5, 2.), (8.5, 2.), (8.5, 14.), (7.5, 14.)],
+            &[(7., 2.), (9., 2.), (9., 14.), (7., 14.)],
         ],
         ReferencePaneIcon::SplitVertical => &[
             &[(1., 1.), (15., 1.), (15., 2.), (1., 2.)],
             &[(1., 14.), (15., 14.), (15., 15.), (1., 15.)],
             &[(1., 2.), (2., 2.), (2., 14.), (1., 14.)],
             &[(14., 2.), (15., 2.), (15., 14.), (14., 14.)],
-            &[(2., 7.5), (14., 7.5), (14., 8.5), (2., 8.5)],
+            &[(2., 7.), (14., 7.), (14., 9.), (2., 9.)],
         ],
         ReferencePaneIcon::Close => &[
             &[
@@ -1840,6 +1849,21 @@ impl<D: PaneData> MullionView<D> {
         }
     }
 
+    fn animation_now(cx: &Context<Self>) -> scheduler::Instant {
+        // gpui_web's dispatcher clock currently falls through to std's unsupported
+        // WASM clock on some browser/thread configurations. web_time (re-exported by
+        // scheduler) reads Performance.now directly and avoids that panic.
+        #[cfg(target_family = "wasm")]
+        {
+            let _ = cx;
+            scheduler::Instant::now()
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            cx.background_executor().now()
+        }
+    }
+
     fn start_motion(
         &mut self,
         key: MotionKey,
@@ -1851,7 +1875,7 @@ impl<D: PaneData> MullionView<D> {
         let immediate = cx.reduce_motion()
             || (self.dock_drag_active
                 && !matches!(key, MotionKey::Focus(_) | MotionKey::FocusFrame(_)));
-        let now = cx.background_executor().now();
+        let now = Self::animation_now(cx);
         if !self
             .motion_mut(&key)
             .start(target, now, duration, immediate, from)
@@ -1875,7 +1899,7 @@ impl<D: PaneData> MullionView<D> {
                 .update(cx, |this, cx| {
                     let reduce_motion = cx.reduce_motion();
                     let force_dock_motion = reduce_motion || this.dock_drag_active;
-                    let now = cx.background_executor().now();
+                    let now = Self::animation_now(cx);
                     let mut active = false;
                     for motion in this
                         .bar_motion
@@ -2160,7 +2184,6 @@ impl<D: PaneData> MullionView<D> {
         pane: &PaneId,
         nodes: &[VisibleActivityNode<D>],
         selected: Option<&ActivityId>,
-        depth: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
@@ -2611,12 +2634,6 @@ impl<D: PaneData> MullionView<D> {
                         .flex_shrink_0()
                         .when(horizontal, |wrapper| wrapper.flex().flex_row().h_full())
                         .when(!horizontal, |wrapper| wrapper.flex().flex_col().w_full())
-                        .when(depth == 0 && edge == ActivityBarEdge::Left, |wrapper| {
-                            wrapper.mr(-styles.activity_bar.expanded_padding)
-                        })
-                        .when(depth == 0 && edge == ActivityBarEdge::Right, |wrapper| {
-                            wrapper.ml(-styles.activity_bar.expanded_padding)
-                        })
                         .bg(if expanded {
                             styles.activity_bar.category_card_background
                         } else {
@@ -2667,7 +2684,6 @@ impl<D: PaneData> MullionView<D> {
                             pane,
                             &category.children,
                             selected,
-                            depth + 1,
                             window,
                             cx,
                         );
@@ -2767,7 +2783,13 @@ impl<D: PaneData> MullionView<D> {
                     .justify_center()
                     .text_size(style.icon_size)
                     .child(icon.map_or_else(
-                        || div().child("⠿").into_any_element(),
+                        || {
+                            reference_pane_icon(
+                                ReferencePaneIcon::Move,
+                                style.icon_size,
+                                style.theme.text,
+                            )
+                        },
                         |icon| reference_pane_icon(icon, style.icon_size, style.theme.text),
                     )),
             )
@@ -2908,7 +2930,13 @@ impl<D: PaneData> MullionView<D> {
                             .items_center()
                             .justify_center()
                             .text_size(style.icon_size)
-                            .child(icon.unwrap_or_else(|| div().child("⠿").into_any_element())),
+                            .child(icon.unwrap_or_else(|| {
+                                reference_pane_icon(
+                                    ReferencePaneIcon::Move,
+                                    style.icon_size,
+                                    style.theme.text,
+                                )
+                            })),
                     ),
             )
             .child(div().min_w_0().overflow_hidden().child(""))
@@ -2997,9 +3025,9 @@ impl<D: PaneData> MullionView<D> {
                 .or_default();
         }
         let primary_tabs =
-            self.render_activity_nodes(id, &projection.primary, selected_id, 0, window, cx);
+            self.render_activity_nodes(id, &projection.primary, selected_id, window, cx);
         let trailing_tabs =
-            self.render_activity_nodes(id, &projection.trailing, selected_id, 0, window, cx);
+            self.render_activity_nodes(id, &projection.trailing, selected_id, window, cx);
         let cached = selected.as_ref().and_then(|activity| {
             let key =
                 ActivityCacheKey::new(self.workspace_namespace(), id.clone(), activity.id.clone());
@@ -3282,7 +3310,6 @@ impl<D: PaneData> MullionView<D> {
                 styles.activity_bar.expanded_padding,
             );
             let panel_extent = px(panel_sample.vertical_extent);
-            let edge_padding = px(panel_sample.edge_padding);
 
             let primary_group = div()
                 .debug_selector({
@@ -3342,13 +3369,11 @@ impl<D: PaneData> MullionView<D> {
                     panel
                         .left(-panel_extent * (1.0 - reveal_progress))
                         .border_r(styles.activity_bar.border_width)
-                        .pr(edge_padding)
                 })
                 .when(edge == ActivityBarEdge::Right, |panel| {
                     panel
                         .right(-panel_extent * (1.0 - reveal_progress))
                         .border_l(styles.activity_bar.border_width)
-                        .pl(edge_padding)
                 })
                 .when(edge == ActivityBarEdge::Top, |panel| {
                     panel
@@ -6397,12 +6422,15 @@ mod tests {
         cx.run_until_parked();
         cx.executor().advance_clock(Duration::from_millis(200));
         cx.run_until_parked();
+        let expanded_panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
+        assert_eq!(expanded_panel.size.width, px(158.));
         assert_eq!(
-            cx.debug_bounds("activity-bar-panel:pane")
+            cx.debug_bounds("activity:pane:activity")
                 .unwrap()
                 .size
                 .width,
-            px(158.)
+            expanded_panel.size.width - px(1.),
+            "vertical rows fill the flyout up to its one-pixel border",
         );
         assert_eq!(cx.debug_bounds("pane-content:pane").unwrap(), content);
         view.read_with(cx, |view, _| {
@@ -7092,6 +7120,7 @@ mod tests {
     #[test]
     fn reference_vector_icons_stay_inside_the_exact_sixteen_unit_viewbox() {
         for icon in [
+            ReferencePaneIcon::Move,
             ReferencePaneIcon::SplitHorizontal,
             ReferencePaneIcon::SplitVertical,
             ReferencePaneIcon::Close,
@@ -7099,10 +7128,10 @@ mod tests {
             let polygons = reference_icon_polygons(icon);
             assert_eq!(
                 polygons.len(),
-                if icon == ReferencePaneIcon::Close {
-                    2
-                } else {
-                    5
+                match icon {
+                    ReferencePaneIcon::Move => 6,
+                    ReferencePaneIcon::Close => 2,
+                    ReferencePaneIcon::SplitHorizontal | ReferencePaneIcon::SplitVertical => 5,
                 }
             );
             for &(x, y) in polygons.iter().flat_map(|polygon| polygon.iter()) {
@@ -7112,11 +7141,11 @@ mod tests {
         }
         assert_eq!(
             reference_icon_polygons(ReferencePaneIcon::SplitHorizontal)[4],
-            &[(7.5, 2.), (8.5, 2.), (8.5, 14.), (7.5, 14.)]
+            &[(7., 2.), (9., 2.), (9., 14.), (7., 14.)]
         );
         assert_eq!(
             reference_icon_polygons(ReferencePaneIcon::SplitVertical)[4],
-            &[(2., 7.5), (14., 7.5), (14., 8.5), (2., 8.5)]
+            &[(2., 7.), (14., 7.), (14., 9.), (2., 9.)]
         );
     }
 
@@ -7212,15 +7241,15 @@ mod tests {
         let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
         let row = cx.debug_bounds("activity:pane:activity").unwrap();
         assert_eq!(panel.size.width, px(93.));
-        assert_eq!(row.size.width, px(88.));
-        assert_eq!(panel.size.width - row.size.width - px(1.), px(4.));
+        assert_eq!(row.size.width, px(92.));
+        assert_eq!(panel.size.width - row.size.width, px(1.));
         cx.executor().advance_clock(Duration::from_millis(75));
         cx.run_until_parked();
         let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
         let row = cx.debug_bounds("activity:pane:activity").unwrap();
         assert_eq!(panel.size.width, px(158.));
-        assert_eq!(row.size.width, px(149.));
-        assert_eq!(panel.size.width - row.size.width - px(1.), px(8.));
+        assert_eq!(row.size.width, px(157.));
+        assert_eq!(panel.size.width - row.size.width, px(1.));
 
         view.update(cx, |view, cx| {
             view.host.activity_bar.edge = ActivityBarEdge::Top;
