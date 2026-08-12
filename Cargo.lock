@@ -2150,6 +2150,7 @@ dependencies = [
 [[package]]
 name = "gpui-command-palette"
 version = "0.1.0"
+source = "git+https://github.com/ignition-is-go/gpui-command-palette.git#e2ed487262540312984025fe29abb867b1e5064b"
 dependencies = [
  "gpui",
  "gpui_platform",
