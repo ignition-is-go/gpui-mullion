@@ -11,6 +11,7 @@ fn visible(_: &bool) -> bool {
 
 fn install_themes(cx: &mut TestAppContext) {
     cx.update(|cx| {
+        gpui_command_palette::init(cx);
         gpui_mullion::set_mullion_theme(cx, gpui_mullion::MullionTheme::dark());
         gpui_command_palette::set_command_palette_theme(
             cx,
@@ -21,7 +22,7 @@ fn install_themes(cx: &mut TestAppContext) {
 
 struct SharedPaletteRoot {
     view: gpui::Entity<MullionView<bool>>,
-    palette: gpui::Entity<gpui_command_palette::CommandPalette<()>>,
+    palette: gpui::Entity<gpui_command_palette::CommandPaletteState<()>>,
 }
 
 impl gpui::Render for SharedPaletteRoot {
@@ -142,7 +143,12 @@ fn shared_attachment_injects_without_rendering_palette_inside_mullion(cx: &mut T
     let (view, cx) = cx.add_window_view(|_, cx| {
         MullionView::new(PaneNode::leaf(PaneId::new("only"), true), Vec::new(), cx)
     });
-    let palette = cx.new(gpui_command_palette::CommandPalette::<()>::new);
+    let palette = cx.new(|cx| {
+        gpui_command_palette::CommandPaletteState::<()>::new(
+            gpui_command_palette::CommandRegistry::new(),
+            cx,
+        )
+    });
     let _binding =
         cx.update(|_, app| gpui_mullion::attach_command_palette(&view, palette.clone(), app));
     cx.run_until_parked();
@@ -162,7 +168,12 @@ fn shared_palette_defers_split_execution_until_dispatch_unwinds(cx: &mut TestApp
     let (root, cx) = cx.add_window_view(|_, cx| {
         let view = cx
             .new(|cx| MullionView::new(PaneNode::leaf(PaneId::new("only"), true), Vec::new(), cx));
-        let palette = cx.new(gpui_command_palette::CommandPalette::<()>::new);
+        let palette = cx.new(|cx| {
+            gpui_command_palette::CommandPaletteState::<()>::new(
+                gpui_command_palette::CommandRegistry::new(),
+                cx,
+            )
+        });
         gpui_mullion::attach_command_palette(&view, palette.clone(), cx);
         SharedPaletteRoot { view, palette }
     });

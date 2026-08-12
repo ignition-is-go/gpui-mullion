@@ -489,7 +489,7 @@ pub struct MullionView<D: PaneData> {
     dock_hover: Option<DockHover>,
     overlay_host: Option<OverlayHostConfig>,
     last_overlay_error: Option<OverlayError>,
-    command_palette: Option<gpui::Entity<gpui_command_palette::CommandPalette<()>>>,
+    command_palette: Option<gpui::Entity<gpui_command_palette::CommandPaletteState<()>>>,
     command_palette_binding: Option<MullionPaletteBinding>,
     focused_pane_commands: Option<FocusedPaneCommandProvider<D>>,
     render_command_palette: bool,
@@ -821,7 +821,7 @@ impl<D: PaneData> MullionView<D> {
     /// host owns those global responsibilities.
     pub fn attach_command_palette(
         &mut self,
-        palette: gpui::Entity<gpui_command_palette::CommandPalette<()>>,
+        palette: gpui::Entity<gpui_command_palette::CommandPaletteState<()>>,
         cx: &mut Context<Self>,
     ) -> MullionPaletteBinding {
         self.detach_command_palette(cx);
@@ -840,7 +840,7 @@ impl<D: PaneData> MullionView<D> {
     /// window/root overlay level instead.
     pub fn set_command_palette(
         &mut self,
-        palette: Option<gpui::Entity<gpui_command_palette::CommandPalette<()>>>,
+        palette: Option<gpui::Entity<gpui_command_palette::CommandPaletteState<()>>>,
         cx: &mut Context<Self>,
     ) {
         match palette {
@@ -882,7 +882,7 @@ impl<D: PaneData> MullionView<D> {
     /// Return the attached shared or standalone command-palette entity.
     pub fn command_palette(
         &self,
-    ) -> Option<&gpui::Entity<gpui_command_palette::CommandPalette<()>>> {
+    ) -> Option<&gpui::Entity<gpui_command_palette::CommandPaletteState<()>>> {
         self.command_palette.as_ref()
     }
     /// Configure activity-to-new-pane docking.

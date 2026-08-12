@@ -18,7 +18,7 @@ test-support = []
 
 [dependencies]
 gpui = { git = "https://github.com/zed-industries/zed.git", rev = "08827f9208b4848d62f3faf86ffa15155966d63c" }
-gpui-command-palette = { git = "https://github.com/ignition-is-go/gpui-command-palette.git", rev = "e2ed487262540312984025fe29abb867b1e5064b" }
+gpui-command-palette = { git = "https://github.com/ignition-is-go/gpui-command-palette.git", rev = "2c8ff787e79461f4bc1ded0f106b3fb131a38b71" }
 lucide-icons = "1.31"
 gpui_platform = { git = "https://github.com/zed-industries/zed.git", rev = "08827f9208b4848d62f3faf86ffa15155966d63c", features = ["wayland", "x11"] }
 serde = { version = "1", features = ["derive"] }

@@ -22,13 +22,15 @@ pub struct MullionPaletteBinding {
 }
 
 struct MullionPaletteBindingCore {
-    palette: gpui::Entity<gpui_command_palette::CommandPalette<()>>,
+    palette: gpui::Entity<gpui_command_palette::CommandPaletteState<()>>,
     registrations: Vec<gpui_command_palette::Registration<()>>,
     active: bool,
 }
 
 impl MullionPaletteBinding {
-    pub(crate) fn new(palette: gpui::Entity<gpui_command_palette::CommandPalette<()>>) -> Self {
+    pub(crate) fn new(
+        palette: gpui::Entity<gpui_command_palette::CommandPaletteState<()>>,
+    ) -> Self {
         Self {
             core: Rc::new(RefCell::new(MullionPaletteBindingCore {
                 palette,
@@ -39,7 +41,7 @@ impl MullionPaletteBinding {
     }
 
     /// Return the shared palette receiving Mullion registrations.
-    pub fn palette(&self) -> gpui::Entity<gpui_command_palette::CommandPalette<()>> {
+    pub fn palette(&self) -> gpui::Entity<gpui_command_palette::CommandPaletteState<()>> {
         self.core.borrow().palette.clone()
     }
 
@@ -362,7 +364,7 @@ pub(crate) fn direct_palette_commands<D: PaneData>(
 /// one window/root-level palette and retains it independently of Mullion layout.
 pub fn attach_command_palette<D: PaneData>(
     view: &gpui::Entity<crate::MullionView<D>>,
-    palette: gpui::Entity<gpui_command_palette::CommandPalette<()>>,
+    palette: gpui::Entity<gpui_command_palette::CommandPaletteState<()>>,
     cx: &mut gpui::App,
 ) -> MullionPaletteBinding {
     view.update(cx, |view, cx| view.attach_command_palette(palette, cx))
@@ -377,18 +379,21 @@ pub fn attach_command_palette<D: PaneData>(
 pub fn command_palette_for_view<D: PaneData>(
     view: &gpui::Entity<crate::MullionView<D>>,
     cx: &mut gpui::App,
-) -> gpui::Entity<gpui_command_palette::CommandPalette<()>> {
+) -> gpui::Entity<gpui_command_palette::CommandPaletteState<()>> {
     let palette = cx.new(|cx| {
-        gpui_command_palette::CommandPalette::new(cx)
-            // GPUI resolves percentage padding against width. Use positioned
-            // percentages so the shared widget matches the reference's top:20%.
-            .with_position(gpui_command_palette::CommandPalettePosition::Custom {
-                top: Some(gpui_command_palette::PaletteLength::percent(20.0)),
-                right: None,
-                bottom: None,
-                left: Some(gpui_command_palette::PaletteLength::percent(50.0)),
-                transform: Some(gpui_command_palette::PaletteTransform::pixels(-250.0, 0.0)),
-            })
+        gpui_command_palette::CommandPaletteState::new(
+            gpui_command_palette::CommandRegistry::new(),
+            cx,
+        )
+        // GPUI resolves percentage padding against width. Use positioned
+        // percentages so the shared widget matches the reference's top:20%.
+        .position(gpui_command_palette::CommandPalettePosition::Custom {
+            top: Some(gpui_command_palette::PaletteLength::percent(20.0)),
+            right: None,
+            bottom: None,
+            left: Some(gpui_command_palette::PaletteLength::percent(50.0)),
+            transform: Some(gpui_command_palette::PaletteTransform::pixels(-250.0, 0.0)),
+        })
     });
     view.update(cx, |view, cx| {
         view.set_command_palette(Some(palette.clone()), cx)
@@ -405,7 +410,7 @@ pub fn install_command_palette_for_view<D: PaneData>(
     view: &gpui::Entity<crate::MullionView<D>>,
     window: &gpui::Window,
     cx: &mut gpui::App,
-) -> gpui::Entity<gpui_command_palette::CommandPalette<()>> {
+) -> gpui::Entity<gpui_command_palette::CommandPaletteState<()>> {
     let palette = command_palette_for_view(view, cx);
     gpui_command_palette::install_palette(&palette, window, cx);
     palette
