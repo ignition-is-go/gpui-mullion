@@ -88,6 +88,72 @@ pub struct WorkspaceSet<D: PaneData> {
     pub workspaces: Vec<Workspace<D>>,
 }
 
+/// Consumer-owned persistence hook for mounted workspace changes.
+///
+/// Mullion owns no storage or async runtime. The callback receives each complete,
+/// validated snapshot after a user or view API mutation. Consumers can map it to
+/// their server DTO and spawn an asynchronous save through the supplied context.
+pub type WorkspaceChangedCallback<D> =
+    std::rc::Rc<dyn Fn(WorkspaceSet<D>, &mut gpui::Context<crate::MullionView<D>>)>;
+
+/// Styled workspace-switcher behavior and consumer persistence integration.
+pub struct WorkspaceControls<D: PaneData> {
+    rename_enabled: bool,
+    on_changed: Option<WorkspaceChangedCallback<D>>,
+}
+
+impl<D: PaneData> Clone for WorkspaceControls<D> {
+    fn clone(&self) -> Self {
+        Self {
+            rename_enabled: self.rename_enabled,
+            on_changed: self.on_changed.clone(),
+        }
+    }
+}
+
+impl<D: PaneData> Default for WorkspaceControls<D> {
+    fn default() -> Self {
+        Self {
+            rename_enabled: false,
+            on_changed: None,
+        }
+    }
+}
+
+impl<D: PaneData> WorkspaceControls<D> {
+    /// Enable styled inline renaming by double-click, Enter/F2, and keyboard editing.
+    pub fn editable() -> Self {
+        Self {
+            rename_enabled: true,
+            on_changed: None,
+        }
+    }
+
+    /// Enable or disable inline workspace renaming.
+    pub fn with_rename_enabled(mut self, enabled: bool) -> Self {
+        self.rename_enabled = enabled;
+        self
+    }
+
+    /// Receive complete validated snapshots after accepted local mutations.
+    pub fn on_changed(
+        mut self,
+        callback: impl Fn(WorkspaceSet<D>, &mut gpui::Context<crate::MullionView<D>>) + 'static,
+    ) -> Self {
+        self.on_changed = Some(std::rc::Rc::new(callback));
+        self
+    }
+
+    /// Return whether inline renaming is enabled.
+    pub const fn rename_enabled(&self) -> bool {
+        self.rename_enabled
+    }
+
+    pub(crate) fn changed_callback(&self) -> Option<&WorkspaceChangedCallback<D>> {
+        self.on_changed.as_ref()
+    }
+}
+
 /// An invariant or requested-operation error for a [`WorkspaceSet`].
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]

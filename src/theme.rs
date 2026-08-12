@@ -1,5 +1,5 @@
-use gpui::{px, rgb, App, Hsla, Pixels, WindowAppearance};
-use std::rc::Rc;
+use gpui::{px, rgb, App, Global, Hsla, Pixels, WindowAppearance};
+use std::sync::Arc;
 
 /// Style tokens for the root Mullion surface.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -411,10 +411,31 @@ impl Default for MullionTheme {
     }
 }
 
-/// UI-local theme source evaluated once per Mullion root render.
+struct GlobalMullionTheme(Arc<MullionTheme>);
+
+impl Global for GlobalMullionTheme {}
+
+/// Install or replace the complete application-global Mullion theme.
 ///
-/// Hosts must invalidate their windows when provider state changes.
-pub type MullionThemeProvider = Rc<dyn Fn(&App) -> MullionTheme>;
+/// This does not refresh windows. Applications updating several ambient themes
+/// should install them all and call `App::refresh_windows` once.
+pub fn set_mullion_theme(cx: &mut App, theme: impl Into<Arc<MullionTheme>>) {
+    cx.set_global(GlobalMullionTheme(theme.into()));
+}
+
+/// Access the complete Mullion theme explicitly installed in the application.
+pub trait ActiveMullionTheme {
+    /// Return the required application-global Mullion theme.
+    ///
+    /// Panics if [`set_mullion_theme`] has not been called.
+    fn mullion_theme(&self) -> &Arc<MullionTheme>;
+}
+
+impl ActiveMullionTheme for App {
+    fn mullion_theme(&self) -> &Arc<MullionTheme> {
+        &self.global::<GlobalMullionTheme>().0
+    }
+}
 
 macro_rules! component_default {
     ($component:ident, $field:ident) => {

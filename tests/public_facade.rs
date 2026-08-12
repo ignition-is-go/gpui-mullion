@@ -4,6 +4,22 @@ use gpui_mullion::{
 };
 
 #[test]
+fn public_facade_exposes_direct_global_theme_api() {
+    fn assert_active_theme<T: ActiveMullionTheme>() {}
+    assert_active_theme::<gpui_mullion::gpui::App>();
+    let theme = MullionTheme::light();
+    assert_eq!(theme.root.background, theme.background);
+}
+
+#[gpui_mullion::gpui::test]
+fn installed_theme_preserves_snapshot_identity(cx: &mut gpui_mullion::gpui::TestAppContext) {
+    let snapshot = std::sync::Arc::new(MullionTheme::dark());
+    let installed = std::sync::Arc::clone(&snapshot);
+    cx.update(|app| set_mullion_theme(app, installed));
+    cx.update(|app| assert!(std::sync::Arc::ptr_eq(app.mullion_theme(), &snapshot)));
+}
+
+#[test]
 fn prelude_supports_the_documented_core_vocabulary() {
     let pane = PaneId::new("pane");
     let activity = ActivityId::new("activity");
@@ -11,6 +27,9 @@ fn prelude_supports_the_documented_core_vocabulary() {
     let tree = PaneNode::leaf_with_activity(pane.clone(), activity.clone(), String::new());
     let workspace = Workspace::new("workspace", "Workspace", tree.clone());
     let set = WorkspaceSet::try_new("workspace".into(), vec![workspace]).unwrap();
+    let _controls: WorkspaceControls<String> = WorkspaceControls::editable()
+        .with_rename_enabled(true)
+        .on_changed(|_, _| {});
     let category_node: ActivityNode<String> = ActivityNode::Category(ActivityCategory::new(
         category,
         "Category",
@@ -26,7 +45,6 @@ fn prelude_supports_the_documented_core_vocabulary() {
     let _ = MullionConfig::default();
     let theme = MullionTheme::light();
     assert_eq!(theme.root.background, theme.background);
-    let _provider: MullionThemeProvider = std::rc::Rc::new(|_| MullionTheme::dark());
 }
 
 #[gpui_mullion::gpui::test]

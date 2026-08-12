@@ -11,22 +11,26 @@ Mullion is pre-1.0, but its public surface is designed for use by multiple appli
   untrusted input. Infallible `new` is reserved for host-built input and panics on invalid identity
   or topology.
 - `MullionTheme` is the only look type. It contains semantic colors and all resolved component
-  colors and geometry; configure it only through the theme and theme-provider methods.
-- Mullion re-exports its exact `gpui` and `gpui_command_palette` revisions for type-identity-safe
-  downstream integration.
+  colors and geometry; install it explicitly with the application-global `set_mullion_theme`.
+- Mullion re-exports its `gpui` and shared local `gpui_command_palette` dependencies for
+  type-identity-safe downstream integration.
+- `WorkspaceControls::editable().on_changed(...)` is the storage-neutral workspace boundary:
+  consumers receive complete snapshots and own async persistence. `replace_workspaces` applies
+  validated server state without calling the persistence hook back.
 
 ## Single-theme migration
 
 The look API intentionally has no compatibility aliases:
 
 - Replace `MullionStyles` or `MullionAppearance` with `MullionTheme`.
-- Replace old appearance setters/providers with `with_theme`, `set_theme`,
-  `with_theme_provider`, and `set_theme_provider`.
+- Replace per-view appearance setters and providers with one application-level
+  `set_mullion_theme(cx, complete_theme)` installation.
 - Replace theme-mode APIs with `MullionTheme::light()`, `dark()`, or
-  `system(window_appearance)`; an unconfigured view follows the window automatically.
+  `system(window_appearance)`, then explicitly install the complete result before rendering.
 - Build application themes with `MullionTheme::custom(...)`, then customize geometry directly on
   the complete theme before installing it.
-- Application adapters should return only `MullionTheme`.
+- Application adapters should return only `MullionTheme` or `Arc<MullionTheme>`.
+  Replacing the global does not repaint by itself; the application batches all theme installs and refreshes windows once.
 
 ## Stability classes
 

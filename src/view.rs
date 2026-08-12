@@ -1,16 +1,16 @@
 use crate::activity::ActivityCache;
 use crate::{
-    Activity, ActivityBarConfig, ActivityBarEdge, ActivityBarHostConfig, ActivityBarHoverState,
-    ActivityBarMode, ActivityCacheKey, ActivityCatalog, ActivityCatalogValidationError,
-    ActivityExpansionState, ActivityFactoryRegistry, ActivityId, ActivityNode, ActivityProjection,
-    DockBounds, DockConfig, DockDrag, DockHover, DockPayload, DropEdge, FocusPresentation,
-    FocusedPaneCommandProvider, MullionModel, MullionOverlay, MullionPaletteBinding,
-    MullionSettings, MullionTheme, MullionThemeProvider, NewPaneFactory, OverlayAlignment,
+    ActiveMullionTheme, Activity, ActivityBarConfig, ActivityBarEdge, ActivityBarHostConfig,
+    ActivityBarHoverState, ActivityBarMode, ActivityCacheKey, ActivityCatalog,
+    ActivityCatalogValidationError, ActivityExpansionState, ActivityFactoryRegistry, ActivityId,
+    ActivityNode, ActivityProjection, DockBounds, DockConfig, DockDrag, DockHover, DockPayload,
+    DropEdge, FocusPresentation, FocusedPaneCommandProvider, MullionModel, MullionOverlay,
+    MullionPaletteBinding, MullionSettings, MullionTheme, NewPaneFactory, OverlayAlignment,
     OverlayError, OverlayHostConfig, OverlayLength, PaletteEntry, PaletteInvocation,
     PaletteInvocationError, PaletteSearchResult, PaneCommandExecutionOptions, PaneControl,
     PaneData, PaneDirection, PaneEvent, PaneFocusBehavior, PaneId, PaneNode, PaneSplitFactory,
-    SplitDirection, VisibleActivityNode, WorkspaceChanged, WorkspaceEvent, WorkspaceId,
-    WorkspaceSet, WorkspaceSetError,
+    SplitDirection, VisibleActivityNode, WorkspaceChanged, WorkspaceControls, WorkspaceEvent,
+    WorkspaceId, WorkspaceSet, WorkspaceSetError,
 };
 use gpui::{
     actions, canvas, div, ease_in_out, point, prelude::*, px, relative, AnyElement, App, Bounds,
@@ -73,6 +73,11 @@ struct PaneRenderPosition<'a> {
     edges: InternalEdges,
 }
 
+struct WorkspaceRenameEditor {
+    id: WorkspaceId,
+    draft: String,
+}
+
 struct LeafRenderData<'a, D> {
     id: &'a PaneId,
     active: Option<&'a ActivityId>,
@@ -91,17 +96,17 @@ type PaneActivityKey = (Option<WorkspaceId>, PaneId);
 type PaneActivitySource<D> = (Option<ActivityId>, D);
 
 #[derive(Clone, Copy)]
-struct PaneMoveRenderStyle {
+struct PaneMoveRenderStyle<'a> {
     size: Pixels,
     row_extent: Pixels,
     icon_size: Pixels,
     end_padding: Pixels,
     focus_progress: f32,
-    theme: MullionTheme,
+    theme: &'a MullionTheme,
     horizontal: bool,
 }
 
-struct PaneControlRenderStyle {
+struct PaneControlRenderStyle<'a> {
     size: Pixels,
     row_extent: Pixels,
     icon_size: Pixels,
@@ -109,7 +114,7 @@ struct PaneControlRenderStyle {
     show_label: bool,
     label_opacity: f32,
     end_padding: Pixels,
-    theme: MullionTheme,
+    theme: &'a MullionTheme,
 }
 
 type SplitBounds = Rc<RefCell<HashMap<PaneId, Bounds<Pixels>>>>;
@@ -556,8 +561,6 @@ pub struct MullionView<D: PaneData> {
     dock_config: DockConfig<D>,
     command_options: PaneCommandExecutionOptions<D>,
     catalog: ActivityCatalog<D>,
-    fixed_theme: Option<Rc<MullionTheme>>,
-    theme_provider: Option<MullionThemeProvider>,
     host: ActivityBarHostConfig<D>,
     settings: MullionSettings,
     focus_presentation: FocusPresentation,
@@ -582,6 +585,9 @@ pub struct MullionView<D: PaneData> {
     focus_handle: FocusHandle,
     workspaces: Option<WorkspaceSet<D>>,
     workspace_switcher_visible: bool,
+    workspace_controls: WorkspaceControls<D>,
+    workspace_rename_editor: Option<WorkspaceRenameEditor>,
+    workspace_rename_focus: FocusHandle,
     activity_factories: ActivityFactoryRegistry<D>,
     activity_cache: ActivityCache<D>,
     activity_render_cache: HashMap<(Option<WorkspaceId>, PaneId), Rc<PaneActivityRenderData<D>>>,
@@ -654,8 +660,6 @@ impl<D: PaneData> MullionView<D> {
             dock_config: DockConfig::default(),
             command_options: PaneCommandExecutionOptions::default(),
             catalog,
-            fixed_theme: None,
-            theme_provider: None,
             host: ActivityBarHostConfig::default(),
             settings: MullionSettings::default(),
             focus_presentation: FocusPresentation::default(),
@@ -678,6 +682,9 @@ impl<D: PaneData> MullionView<D> {
             focus_handle: cx.focus_handle(),
             workspaces: None,
             workspace_switcher_visible: true,
+            workspace_controls: WorkspaceControls::default(),
+            workspace_rename_editor: None,
+            workspace_rename_focus: cx.focus_handle(),
             activity_factories: ActivityFactoryRegistry::new(),
             activity_cache: ActivityCache::default(),
             activity_render_cache: HashMap::new(),
@@ -756,54 +763,6 @@ impl<D: PaneData> MullionView<D> {
         Ok(view)
     }
 
-    /// Use one fixed complete Mullion theme.
-    pub fn with_theme(mut self, theme: MullionTheme) -> Self {
-        self.fixed_theme = Some(Rc::new(theme));
-        self.theme_provider = None;
-        self
-    }
-
-    /// Resolve the complete theme from a pure UI-local provider once per root render.
-    ///
-    /// The host must invalidate the window when provider state changes.
-    pub fn with_theme_provider(
-        mut self,
-        provider: impl Fn(&App) -> MullionTheme + 'static,
-    ) -> Self {
-        self.theme_provider = Some(Rc::new(provider));
-        self
-    }
-
-    /// Replace the fixed complete theme, clearing any provider, and repaint.
-    pub fn set_theme(&mut self, theme: MullionTheme, cx: &mut Context<Self>) {
-        self.fixed_theme = Some(Rc::new(theme));
-        self.theme_provider = None;
-        cx.notify();
-    }
-
-    /// Replace or clear the theme provider and repaint.
-    ///
-    /// Clearing restores the last fixed theme, or system resolution when no
-    /// fixed theme has been installed.
-    pub fn set_theme_provider(
-        &mut self,
-        provider: Option<MullionThemeProvider>,
-        cx: &mut Context<Self>,
-    ) {
-        self.theme_provider = provider;
-        cx.notify();
-    }
-
-    /// Return whether a theme provider is active.
-    pub const fn has_theme_provider(&self) -> bool {
-        self.theme_provider.is_some()
-    }
-
-    /// Return the configured fixed theme. `None` means follow the window theme.
-    pub fn theme(&self) -> Option<&MullionTheme> {
-        self.fixed_theme.as_deref()
-    }
-
     /// Test-support probe for whether pointer hover expanded a pane's activity bar.
     ///
     /// Available only to crate tests and the opt-in `test-support` feature. This
@@ -859,6 +818,29 @@ impl<D: PaneData> MullionView<D> {
     /// Whether the built-in workspace tab strip is visible.
     pub const fn workspace_switcher_visible(&self) -> bool {
         self.workspace_switcher_visible
+    }
+    /// Configure styled workspace editing and consumer-owned persistence.
+    pub fn with_workspace_controls(mut self, controls: WorkspaceControls<D>) -> Self {
+        self.workspace_controls = controls;
+        self
+    }
+
+    /// Replace styled workspace editing and persistence behavior.
+    pub fn set_workspace_controls(
+        &mut self,
+        controls: WorkspaceControls<D>,
+        cx: &mut Context<Self>,
+    ) {
+        self.workspace_controls = controls;
+        if !self.workspace_controls.rename_enabled() {
+            self.workspace_rename_editor = None;
+        }
+        cx.notify();
+    }
+
+    /// Borrow the current workspace-control configuration.
+    pub const fn workspace_controls(&self) -> &WorkspaceControls<D> {
+        &self.workspace_controls
     }
     /// Replace activities with a validated recursive catalog.
     pub fn with_activity_catalog(
@@ -1280,11 +1262,132 @@ impl<D: PaneData> MullionView<D> {
     }
 
     fn emit_workspace_snapshot(&self, cx: &mut Context<Self>) {
-        if let Some(workspaces) = &self.workspaces {
+        let Some(workspaces) = &self.workspaces else {
+            return;
+        };
+        let snapshot = workspaces.clone();
+        cx.emit(WorkspaceEvent::SnapshotChanged {
+            workspaces: snapshot.clone(),
+        });
+        if let Some(callback) = self.workspace_controls.changed_callback().cloned() {
+            callback(snapshot, cx);
+        }
+    }
+
+    fn begin_workspace_rename(
+        &mut self,
+        id: &WorkspaceId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.workspace_controls.rename_enabled() {
+            return;
+        }
+        let Some(workspace) = self.workspace(id) else {
+            return;
+        };
+        self.workspace_rename_editor = Some(WorkspaceRenameEditor {
+            id: id.clone(),
+            draft: workspace.name.clone(),
+        });
+        self.workspace_rename_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    fn commit_workspace_rename(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.workspace_rename_editor.take() else {
+            return;
+        };
+        let name = editor.draft.trim();
+        if !name.is_empty() {
+            let _ = self.rename_workspace(&editor.id, name.to_owned(), cx);
+        } else {
+            cx.notify();
+        }
+    }
+
+    fn edit_workspace_name_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.as_str();
+        match key {
+            "enter" => self.commit_workspace_rename(cx),
+            "escape" => {
+                self.workspace_rename_editor = None;
+                cx.notify();
+            }
+            "backspace" => {
+                if let Some(editor) = self.workspace_rename_editor.as_mut() {
+                    editor.draft.pop();
+                }
+                cx.notify();
+            }
+            _ if !event.keystroke.modifiers.control
+                && !event.keystroke.modifiers.platform
+                && event.keystroke.key_char.is_some() =>
+            {
+                if let (Some(editor), Some(text)) = (
+                    self.workspace_rename_editor.as_mut(),
+                    event.keystroke.key_char.as_ref(),
+                ) {
+                    if !text.chars().any(char::is_control) {
+                        editor.draft.push_str(text);
+                    }
+                }
+                cx.notify();
+            }
+            _ => return,
+        }
+        cx.stop_propagation();
+        window.prevent_default();
+    }
+
+    /// Replace the complete workspace collection with an authoritative snapshot.
+    ///
+    /// This is intended for initial server loads and server reconciliation. The
+    /// snapshot is validated before mutation and does not invoke the local-change
+    /// persistence callback, preventing save loops. It does emit the ordinary
+    /// snapshot and active-workspace events for observers.
+    pub fn replace_workspaces(
+        &mut self,
+        workspaces: WorkspaceSet<D>,
+        cx: &mut Context<Self>,
+    ) -> Result<Option<WorkspaceSet<D>>, WorkspaceSetError> {
+        workspaces.validate()?;
+        let previous_active = self.workspaces.as_ref().map(|set| set.active.clone());
+        let active = workspaces.active.clone();
+        let tree = workspaces
+            .active()
+            .expect("validated workspace set has an active workspace")
+            .tree
+            .clone();
+        let previous = self.workspaces.replace(workspaces);
+        self.workspace_rename_editor = None;
+        self.model.set_tree(tree);
+        self.activity_cache_dirty = true;
+        for event in self.model.take_events() {
+            cx.emit(event);
+        }
+        self.sync_focus_motion(cx);
+        self.sync_command_palette(cx);
+        if let Some(snapshot) = &self.workspaces {
             cx.emit(WorkspaceEvent::SnapshotChanged {
-                workspaces: workspaces.clone(),
+                workspaces: snapshot.clone(),
             });
         }
+        if let Some(previous_active) = previous_active {
+            if previous_active != active {
+                cx.emit(WorkspaceChanged {
+                    previous: previous_active,
+                    active,
+                });
+            }
+        }
+        cx.notify();
+        Ok(previous)
     }
 
     /// Add a workspace to this mounted view.
@@ -1859,7 +1962,7 @@ impl<D: PaneData> MullionView<D> {
         node: &PaneNode<D>,
         pane_ids: &[PaneId],
         edges: InternalEdges,
-        theme: MullionTheme,
+        theme: &MullionTheme,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -2615,7 +2718,7 @@ impl<D: PaneData> MullionView<D> {
     fn render_activity_nodes(
         &mut self,
         data: ActivityNodesRenderData<'_, D>,
-        theme: MullionTheme,
+        theme: &MullionTheme,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
@@ -3408,7 +3511,7 @@ impl<D: PaneData> MullionView<D> {
     fn render_leaf(
         &mut self,
         leaf: LeafRenderData<'_, D>,
-        theme: MullionTheme,
+        theme: &MullionTheme,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -4440,14 +4543,10 @@ impl<D: PaneData> MullionView<D> {
 
 impl<D: PaneData> Render for MullionView<D> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = if let Some(provider) = &self.theme_provider {
-            provider(cx)
-        } else if let Some(theme) = &self.fixed_theme {
-            **theme
-        } else {
-            MullionTheme::system(window.appearance())
-        };
-        let styles = theme;
+        // Snapshot the application-global theme exactly once so every child in this
+        // root render observes the same complete immutable aggregate.
+        let theme = std::sync::Arc::clone(cx.mullion_theme());
+        let styles = theme.as_ref();
         if !cx.has_active_drag()
             && (self.dock_hover.is_some() || self.dock_drag_active)
             && !self.drag_reconcile_scheduled
@@ -4484,6 +4583,12 @@ impl<D: PaneData> Render for MullionView<D> {
             .and_then(|id| tree.find(id))
             .unwrap_or(tree.as_ref());
         let pane_ids = rendered_tree.leaf_ids();
+        let rename_editor = self
+            .workspace_rename_editor
+            .as_ref()
+            .map(|editor| (editor.id.clone(), editor.draft.clone()));
+        let rename_enabled = self.workspace_controls.rename_enabled();
+        let rename_focus = self.workspace_rename_focus.clone();
         let workspace_tabs = self
             .workspace_switcher_visible
             .then_some(self.workspaces.as_ref())
@@ -4499,6 +4604,14 @@ impl<D: PaneData> Render for MullionView<D> {
                         let key_id = workspace.id.clone();
                         let a11y_id = workspace.id.clone();
                         let selected = id == active;
+                        let editing = rename_editor
+                            .as_ref()
+                            .is_some_and(|(editor_id, _)| editor_id == &id);
+                        let label = rename_editor
+                            .as_ref()
+                            .filter(|(editor_id, _)| editor_id == &id)
+                            .map_or_else(|| workspace.name.clone(), |(_, draft)| draft.clone());
+                        let mouse_id = id.clone();
                         let accessibility = crate::MullionAccessibilityNode::workspace(
                             &workspace.id,
                             &workspace.name,
@@ -4535,12 +4648,38 @@ impl<D: PaneData> Render for MullionView<D> {
                             } else {
                                 styles.workspace_switcher.background
                             })
+                            .when(editing, |element| {
+                                element
+                                    .track_focus(&rename_focus)
+                                    .border_1()
+                                    .border_color(styles.focus_indicator)
+                            })
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(
+                                    move |this, event: &gpui::MouseDownEvent, window, cx| {
+                                        if rename_enabled && event.click_count >= 2 {
+                                            this.begin_workspace_rename(&mouse_id, window, cx);
+                                            cx.stop_propagation();
+                                            window.prevent_default();
+                                        }
+                                    },
+                                ),
+                            )
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.switch_workspace(&id, cx);
+                                if !editing {
+                                    this.switch_workspace(&id, cx);
+                                }
                             }))
                             .on_key_down(cx.listener(
-                                move |this, event: &gpui::KeyDownEvent, _, cx| {
-                                    if matches!(
+                                move |this, event: &gpui::KeyDownEvent, window, cx| {
+                                    if editing {
+                                        this.edit_workspace_name_key(event, window, cx);
+                                    } else if rename_enabled && event.keystroke.key == "f2" {
+                                        this.begin_workspace_rename(&key_id, window, cx);
+                                        cx.stop_propagation();
+                                        window.prevent_default();
+                                    } else if matches!(
                                         event.keystroke.key.as_str(),
                                         "enter" | "space" | " "
                                     ) {
@@ -4556,7 +4695,7 @@ impl<D: PaneData> Render for MullionView<D> {
                                         .ok();
                                 }
                             })
-                            .child(workspace.name.clone())
+                            .child(label)
                     })
                     .collect::<Vec<_>>()
             });
@@ -4765,7 +4904,7 @@ impl<D: PaneData> Render for MullionView<D> {
                 rendered_tree,
                 &pane_ids,
                 InternalEdges::default(),
-                theme,
+                styles,
                 window,
                 cx,
             )))
@@ -4886,6 +5025,7 @@ mod tests {
 
     #[gpui::test]
     fn unrelated_root_render_does_not_clone_pane_data(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let clones = Rc::new(Cell::new(0));
         let data = CloneCountedData {
             value: 1,
@@ -4905,6 +5045,7 @@ mod tests {
 
     #[gpui::test]
     fn zoomed_render_does_not_clone_pane_data(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let clones = Rc::new(Cell::new(0));
         let counted = |value| CloneCountedData {
             value,
@@ -4948,6 +5089,7 @@ mod tests {
 
     #[gpui::test]
     fn workspace_switcher_visibility_is_host_configurable(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let view = cx.new(|cx| {
             MullionView::new(leaf("pane"), vec![], cx).with_workspace_switcher_visible(false)
         });
@@ -4956,6 +5098,7 @@ mod tests {
 
     #[gpui::test]
     fn rendered_overlay_layer_escapes_panes_and_preserves_tier_order(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let calls = Rc::new(RefCell::new(Vec::new()));
         let stack = crate::OverlayStack::from_overlays([
             {
@@ -5009,6 +5152,7 @@ mod tests {
 
     #[gpui::test]
     fn rendered_overlay_supports_every_alignment_and_length(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let overlays = [
             MullionOverlay::new("start-pixels", |_, _| div().into_any_element())
                 .with_tier(crate::OverlayTier::Toast)
@@ -5083,6 +5227,7 @@ mod tests {
 
     #[gpui::test]
     fn rendered_overlay_geometry_backdrop_and_true_outside_dismiss(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let dismissed = Rc::new(Cell::new(0));
         let count = dismissed.clone();
         let overlay = test_overlay("dialog", crate::OverlayTier::Modal)
@@ -5116,6 +5261,7 @@ mod tests {
 
     #[gpui::test]
     fn click_through_overlay_preserves_workspace_input(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let overlay = MullionOverlay::new("pass-through", |_, _| div().into_any_element())
             .with_tier(crate::OverlayTier::Drag)
             .with_placement(crate::OverlayPlacement::FILL)
@@ -5141,6 +5287,7 @@ mod tests {
 
     #[gpui::test]
     fn controlled_overlay_updates_and_invalid_snapshot_fails_safe(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let snapshot = Rc::new(RefCell::new(
             crate::OverlayStack::from_overlays([test_overlay("first", crate::OverlayTier::Toast)])
                 .unwrap(),
@@ -5174,6 +5321,7 @@ mod tests {
 
     #[gpui::test]
     fn every_gpui_command_action_routes_through_the_configured_dispatcher(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let (view, cx) = cx.add_window_view(|_, cx| {
             MullionView::new(
                 PaneNode::leaf(PaneId::new("only"), "data".to_owned()),
@@ -5233,6 +5381,7 @@ mod tests {
 
     #[gpui::test]
     fn complete_default_keymap_dispatches_through_the_rendered_view(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         cx.update(register_key_bindings);
         let keymap = crate::MullionKeymap::default();
         let expected = keymap.normalized_sequences();
@@ -5262,6 +5411,7 @@ mod tests {
 
     #[gpui::test]
     fn configured_split_factory_and_resize_step_drive_actions(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let calls = Arc::new(AtomicU8::new(0));
         let tree = split(SplitDirection::Horizontal, 0.5, leaf("a"), leaf("b"));
         let (view, cx) = cx
@@ -5344,6 +5494,7 @@ mod tests {
 
     #[gpui::test]
     fn rendered_stateful_activity_is_lazy_stable_updated_and_filtered(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let factory_calls = Rc::new(Cell::new(0));
         let updates = Rc::new(Cell::new(0));
         let disposals = Rc::new(Cell::new(0));
@@ -5411,6 +5562,7 @@ mod tests {
 
     #[gpui::test]
     fn root_release_disposes_cached_instance_exactly_once(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let disposals = Rc::new(Cell::new(0));
         let view = cx.new(|cx| {
             MullionView::new(
@@ -5438,6 +5590,7 @@ mod tests {
 
     #[gpui::test]
     fn explicit_clear_then_root_release_does_not_double_dispose(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let disposals = Rc::new(Cell::new(0));
         let view = cx.new(|cx| {
             MullionView::new(
@@ -5485,6 +5638,7 @@ mod tests {
 
     #[gpui::test]
     fn activity_drag_without_factory_clones_destination_data_and_mints_id(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let activity = rendered_activity("drag", show_activity);
         let tree = split(
             SplitDirection::Horizontal,
@@ -5541,6 +5695,7 @@ mod tests {
     fn typed_nested_and_trailing_activity_drags_create_panes_in_all_five_zones(
         cx: &mut TestAppContext,
     ) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let nested = rendered_activity("nested-drag", show_activity);
         let trailing = rendered_activity("trailing-drag", show_activity);
         let catalog = ActivityCatalog::new(vec![ActivityNode::Category(crate::ActivityCategory {
@@ -5697,6 +5852,7 @@ mod tests {
     fn typed_pane_drag_drives_all_five_zones_with_exact_events_and_indicators(
         cx: &mut TestAppContext,
     ) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let base = split(SplitDirection::Horizontal, 0.5, leaf("a"), leaf("b"));
         let (view, cx) = cx.add_window_view({
             let base = base.clone();
@@ -5808,6 +5964,7 @@ mod tests {
     fn dock_drag_self_right_click_nested_cancel_and_release_are_no_ops_until_valid_drop(
         cx: &mut TestAppContext,
     ) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let nested = split(SplitDirection::Vertical, 0.5, leaf("b"), leaf("c"));
         let base = split(SplitDirection::Horizontal, 0.4, leaf("a"), nested);
         let (view, cx) = cx.add_window_view({
@@ -5907,6 +6064,7 @@ mod tests {
     fn twenty_nine_pane_drag_coalesces_raw_moves_to_one_tree_update_per_frame(
         cx: &mut TestAppContext,
     ) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         PERF_FILTER_CALLS.store(0, Ordering::SeqCst);
         let body_renders = Arc::new(AtomicUsize::new(0));
         let renders = body_renders.clone();
@@ -6018,6 +6176,7 @@ mod tests {
 
     #[gpui::test]
     fn horizontal_split_drag_is_proportional_clamped_exact_and_released(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let tree = split(SplitDirection::Horizontal, 0.5, leaf("a"), leaf("b"));
         let (view, cx) = cx.add_window_view(move |_, cx| MullionView::new(tree, vec![], cx));
         cx.simulate_resize(gpui::size(px(1000.), px(700.)));
@@ -6106,6 +6265,7 @@ mod tests {
 
     #[gpui::test]
     fn nested_vertical_drag_uses_its_parent_bounds_and_cancels(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let nested = split(SplitDirection::Vertical, 0.5, leaf("b"), leaf("c"));
         let tree = split(SplitDirection::Horizontal, 0.4, leaf("a"), nested);
         let (view, cx) = cx.add_window_view(move |_, cx| MullionView::new(tree, vec![], cx));
@@ -6153,6 +6313,7 @@ mod tests {
 
     #[gpui::test]
     fn default_hover_and_click_only_left_press_follow_reference_policy(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let tree = split(SplitDirection::Horizontal, 0.5, leaf("a"), leaf("b"));
         let (view, cx) = cx.add_window_view(move |_, cx| MullionView::new(tree, vec![], cx));
         cx.run_until_parked();
@@ -6182,6 +6343,7 @@ mod tests {
 
     #[gpui::test]
     fn controlled_focus_setting_is_read_live(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let host = Arc::new(AtomicU8::new(0));
         let reader = host.clone();
         let writer = host.clone();
@@ -6223,6 +6385,7 @@ mod tests {
     fn focus_presentation_is_opt_in_internal_and_keeps_washed_panes_interactive(
         cx: &mut TestAppContext,
     ) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let left = split(SplitDirection::Vertical, 0.5, leaf("a"), leaf("c"));
         let tree = split(SplitDirection::Horizontal, 0.5, left, leaf("b"));
         let (view, cx) = cx.add_window_view(move |_, cx| {
@@ -6266,6 +6429,7 @@ mod tests {
 
     #[gpui::test]
     fn keyboard_focus_zoom_close_and_tree_replacement_stay_coherent(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let tree = split(SplitDirection::Horizontal, 0.5, leaf("a"), leaf("b"));
         let (view, cx) = cx.add_window_view(move |_, cx| MullionView::new(tree, vec![], cx));
         cx.run_until_parked();
@@ -6296,6 +6460,7 @@ mod tests {
 
     #[gpui::test]
     fn workspace_switch_reconciles_focus_and_zoom(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let workspaces = WorkspaceSet::try_new(
             WorkspaceId("one".into()),
             vec![
@@ -6351,6 +6516,7 @@ mod tests {
     fn mounted_workspace_operations_emit_complete_snapshots_and_update_active_model(
         cx: &mut TestAppContext,
     ) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let (view, cx) = cx.add_window_view(move |_, cx| {
             MullionView::new_with_workspaces(workspace_set(leaf("c")), vec![], cx).unwrap()
         });
@@ -6410,6 +6576,7 @@ mod tests {
     fn workspace_switch_is_atomic_persists_outgoing_and_orders_transient_events(
         cx: &mut TestAppContext,
     ) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         #[derive(Debug, PartialEq)]
         enum Seen {
             Focus(Option<PaneId>),
@@ -6497,6 +6664,7 @@ mod tests {
 
     #[gpui::test]
     fn typed_workspace_constructor_rejects_invalid_persistence(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let invalid = WorkspaceSet {
             active: WorkspaceId("missing".into()),
             workspaces: vec![crate::Workspace {
@@ -6537,6 +6705,7 @@ mod tests {
     fn workspace_switch_preserves_overlapping_focus_and_zoom_without_transient_events(
         cx: &mut TestAppContext,
     ) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let incoming = split(SplitDirection::Horizontal, 0.5, leaf("b"), leaf("c"));
         let (view, cx) = cx.add_window_view(move |_, cx| {
             MullionView::new_with_workspaces(workspace_set(incoming), vec![], cx).unwrap()
@@ -6569,6 +6738,7 @@ mod tests {
 
     #[gpui::test]
     fn removing_workspace_disposes_only_its_activity_cache_namespace(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let disposals = Rc::new(Cell::new(0));
         let (view, cx) = cx.add_window_view(move |_, cx| {
             MullionView::new_with_workspaces(workspace_set(leaf("c")), vec![], cx).unwrap()
@@ -6605,6 +6775,7 @@ mod tests {
         ($name:ident, $edge:expr) => {
             #[gpui::test]
             fn $name(cx: &mut TestAppContext) {
+                cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
                 let edge = $edge;
                 let host =
                     ActivityBarHostConfig::new().with_activity_bar(crate::ActivityBarConfig {
@@ -6652,6 +6823,7 @@ mod tests {
 
     #[gpui::test]
     fn runtime_activity_bar_config_updates_edge_and_visibility_modes(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let (view, cx) = cx.add_window_view(|_, cx| {
             MullionView::new(
                 leaf("pane"),
@@ -6772,6 +6944,7 @@ mod tests {
     fn pinned_pane_controls_have_exact_bounds_secondary_order_and_split_dispatch(
         cx: &mut TestAppContext,
     ) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let slots = crate::ActivityBarSlots::new()
             .with_leading(|_, _, _, _| {
                 div()
@@ -6871,6 +7044,7 @@ mod tests {
     fn hidden_capsule_has_exact_inset_bounds_order_and_default_split_close_dispatch(
         cx: &mut TestAppContext,
     ) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let host = ActivityBarHostConfig::new().with_activity_bar(crate::ActivityBarConfig {
             mode: ActivityBarMode::Hidden,
             ..crate::ActivityBarConfig::default()
@@ -6919,6 +7093,7 @@ mod tests {
     fn hidden_and_autohide_rails_have_exact_overlay_geometry_and_cancel_stale_intent(
         cx: &mut TestAppContext,
     ) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let hidden = ActivityBarHostConfig::new().with_activity_bar(crate::ActivityBarConfig {
             mode: ActivityBarMode::Hidden,
             ..crate::ActivityBarConfig::default()
@@ -7015,6 +7190,7 @@ mod tests {
     fn pinned_vertical_panel_and_horizontal_item_expand_without_resizing_content(
         cx: &mut TestAppContext,
     ) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         cx.update(|cx| cx.set_reduce_motion(true));
         let catalog = ActivityCatalog::new(vec![ActivityNode::Activity(rendered_activity(
             "activity",
@@ -7090,6 +7266,7 @@ mod tests {
 
     #[gpui::test]
     fn horizontal_activity_name_flyout_honors_delay_and_zero_duration(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let catalog = ActivityCatalog::new(vec![ActivityNode::Activity(rendered_activity(
             "descriptive-activity-name",
             show_activity,
@@ -7154,6 +7331,7 @@ mod tests {
 
     #[gpui::test]
     fn overlong_activity_bar_scrolls_without_resizing_pane_content(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         cx.update(|cx| cx.set_reduce_motion(true));
         let activities = (0..12)
             .map(|index| {
@@ -7194,6 +7372,7 @@ mod tests {
 
     #[gpui::test]
     fn rendered_header_and_focus_frame_use_reference_bounds_and_color(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let catalog = ActivityCatalog::new(vec![ActivityNode::Activity(rendered_activity(
             "activity",
             show_activity,
@@ -7204,7 +7383,7 @@ mod tests {
             PaneNode::leaf_with_activity(PaneId::new("a"), ActivityId::new("activity"), "a".into()),
             PaneNode::leaf_with_activity(PaneId::new("b"), ActivityId::new("activity"), "b".into()),
         );
-        let (view, cx) = cx.add_window_view(move |_, cx| {
+        let (_view, cx) = cx.add_window_view(move |_, cx| {
             MullionView::try_new_with_catalog(tree, catalog, cx)
                 .unwrap()
                 .with_focus_presentation(FocusPresentation::new().with_focus_indicator(true))
@@ -7220,17 +7399,15 @@ mod tests {
         let edge = cx.debug_bounds("focus-edge:a:right").unwrap();
         assert_eq!(edge.size.width, px(1.));
         assert_eq!(edge.right(), content.right());
-        view.read_with(cx, |view, _| {
-            assert!(view.theme().is_none(), "default follows the window theme");
-            assert_eq!(
-                MullionTheme::system(gpui::WindowAppearance::Dark).focus_indicator,
-                gpui::rgb(0x0974a4).into()
-            );
-        });
+        assert_eq!(
+            MullionTheme::system(gpui::WindowAppearance::Dark).focus_indicator,
+            gpui::rgb(0x0974a4).into()
+        );
     }
 
     #[gpui::test]
     fn live_palette_projects_searches_and_executes_typed_invocations(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let activities = vec![
             ActivityNode::Activity(rendered_activity("visible", show_activity)),
             ActivityNode::Activity(rendered_activity("hidden", hide_activity)),
@@ -7319,6 +7496,7 @@ mod tests {
     fn missing_activity_chrome_uses_compact_icons_and_keeps_names_as_labels(
         cx: &mut TestAppContext,
     ) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let activity = ActivityNode::Activity(Activity {
             id: ActivityId::new("stylesheet"),
             name: "Stylesheet Component Gallery With A Deliberately Long Name".into(),
@@ -7364,6 +7542,7 @@ mod tests {
     fn rendered_catalog_composes_recursive_chrome_slots_activation_and_trailing_cache(
         cx: &mut TestAppContext,
     ) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let primary = rendered_activity("primary", show_activity);
         let nested = rendered_activity("nested", show_activity);
         let filtered = rendered_activity("filtered", hide_activity);
@@ -7535,6 +7714,7 @@ mod tests {
     fn autohide_all_edges_reserve_zero_use_exact_trigger_and_reveal_when_collapsed(
         cx: &mut TestAppContext,
     ) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let host = ActivityBarHostConfig::new().with_activity_bar(crate::ActivityBarConfig {
             mode: ActivityBarMode::AutoHide,
             behavior: crate::ActivityBarBehavior {
@@ -7597,7 +7777,8 @@ mod tests {
     }
 
     #[gpui::test]
-    fn custom_theme_is_one_complete_resolved_bundle(cx: &mut TestAppContext) {
+    fn global_theme_is_one_complete_resolved_bundle(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         cx.update(|cx| cx.set_reduce_motion(true));
         let mut theme = MullionTheme::dark();
         theme.activity_bar.thickness = px(47.);
@@ -7607,23 +7788,15 @@ mod tests {
         theme.split_handle.hover_target_thickness = px(13.);
         theme.root.background = gpui::rgb(0x010203).into();
         theme.pane.border = gpui::rgb(0x040506).into();
+        let theme = Arc::new(theme);
+        let installed = Arc::clone(&theme);
+        cx.update(|cx| crate::set_mullion_theme(cx, installed));
         let tree = split(SplitDirection::Horizontal, 0.5, leaf("a"), leaf("b"));
-        let (view, cx) =
-            cx.add_window_view(move |_, cx| MullionView::new(tree, vec![], cx).with_theme(theme));
+        let (_view, cx) = cx.add_window_view(move |_, cx| MullionView::new(tree, vec![], cx));
         cx.run_until_parked();
         assert_eq!(
             cx.debug_bounds("activity-bar:a").unwrap().size.width,
             px(47.)
-        );
-        let content = cx.debug_bounds("pane-content:a").unwrap();
-        cx.simulate_mouse_move(content.center(), None, gpui::Modifiers::none());
-        cx.run_until_parked();
-        let panel = cx.debug_bounds("activity-bar-panel:a").unwrap();
-        cx.simulate_mouse_move(panel.center(), None, gpui::Modifiers::none());
-        cx.run_until_parked();
-        assert_eq!(
-            cx.debug_bounds("activity-bar-panel:a").unwrap().size.width,
-            px(222.)
         );
         assert_eq!(
             cx.debug_bounds("split-handle:b").unwrap().size.width,
@@ -7633,90 +7806,47 @@ mod tests {
             cx.debug_bounds("split-hit-target:b").unwrap().size.width,
             px(13.)
         );
-        view.read_with(cx, |view, _| assert_eq!(view.theme(), Some(&theme)));
+        cx.update(|_, cx| assert!(Arc::ptr_eq(cx.mullion_theme(), &theme)));
     }
 
     #[test]
     fn system_theme_resolves_every_window_appearance() {
-        for theme in [
+        for appearance in [
             gpui::WindowAppearance::Light,
             gpui::WindowAppearance::VibrantLight,
         ] {
-            assert_eq!(MullionTheme::system(theme), MullionTheme::light());
+            assert_eq!(MullionTheme::system(appearance), MullionTheme::light());
         }
-        for theme in [
+        for appearance in [
             gpui::WindowAppearance::Dark,
             gpui::WindowAppearance::VibrantDark,
         ] {
-            assert_eq!(MullionTheme::system(theme), MullionTheme::dark());
+            assert_eq!(MullionTheme::system(appearance), MullionTheme::dark());
         }
     }
 
     #[gpui::test]
-    fn theme_provider_is_live_once_per_render_and_fixed_provider_are_last_wins(
-        cx: &mut TestAppContext,
-    ) {
-        let use_large = Rc::new(Cell::new(false));
-        let provider_state = use_large.clone();
-        let calls = Rc::new(Cell::new(0_usize));
-        let provider_calls = calls.clone();
+    fn replacing_global_theme_updates_the_required_snapshot(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let mut small = MullionTheme::dark();
         small.activity_bar.thickness = px(41.);
-        let mut large = small;
+        cx.update(|cx| crate::set_mullion_theme(cx, small));
+        let (_view, cx) =
+            cx.add_window_view(move |_, cx| MullionView::new(leaf("pane"), vec![], cx));
+        cx.run_until_parked();
+        assert_eq!(
+            cx.debug_bounds("activity-bar:pane").unwrap().size.width,
+            px(41.)
+        );
+        let mut large = MullionTheme::dark();
         large.activity_bar.thickness = px(63.);
-        let (view, cx) = cx.add_window_view(move |_, cx| {
-            MullionView::new(leaf("pane"), vec![], cx).with_theme_provider(move |_| {
-                provider_calls.set(provider_calls.get() + 1);
-                if provider_state.get() {
-                    large
-                } else {
-                    small
-                }
-            })
-        });
-        cx.run_until_parked();
-        assert_eq!(
-            cx.debug_bounds("activity-bar:pane").unwrap().size.width,
-            px(41.)
-        );
-
-        calls.set(0);
-        use_large.set(true);
-        view.update(cx, |_, cx| cx.notify());
-        cx.run_until_parked();
-        assert_eq!(
-            calls.get(),
-            1,
-            "theme provider resolves once per root render"
-        );
-        assert_eq!(
-            cx.debug_bounds("activity-bar:pane").unwrap().size.width,
-            px(63.)
-        );
-
-        view.update(cx, |view, cx| view.set_theme(small, cx));
-        view.read_with(cx, |view, _| {
-            assert!(!view.has_theme_provider());
-            assert_eq!(view.theme(), Some(&small));
-        });
-        cx.run_until_parked();
-        assert_eq!(
-            cx.debug_bounds("activity-bar:pane").unwrap().size.width,
-            px(41.)
-        );
-
-        view.update(cx, |view, cx| {
-            view.set_theme_provider(Some(Rc::new(move |_| large)), cx);
-            view.set_theme_provider(None, cx);
-        });
-        view.read_with(cx, |view, _| {
-            assert!(!view.has_theme_provider());
-            assert_eq!(view.theme(), Some(&small));
-        });
+        cx.update(|_, cx| crate::set_mullion_theme(cx, large));
+        cx.update(|_, cx| assert_eq!(cx.mullion_theme().activity_bar.thickness, px(63.)));
     }
 
     #[gpui::test]
     fn typed_catalog_constructor_rejects_invalid_identity(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let duplicate = rendered_activity("duplicate", show_activity);
         let catalog = ActivityCatalog::new(vec![ActivityNode::Activity(duplicate.clone())])
             .with_trailing(vec![ActivityNode::Activity(duplicate)]);
@@ -7822,6 +7952,7 @@ mod tests {
 
     #[gpui::test]
     fn grabber_focus_motion_uses_125ms_state_and_stops_at_the_endpoint(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let tree = split(SplitDirection::Horizontal, 0.5, leaf("a"), leaf("b"));
         let (view, cx) = cx.add_window_view(move |_, cx| MullionView::new(tree, vec![], cx));
         cx.run_until_parked();
@@ -7933,6 +8064,7 @@ mod tests {
 
     #[gpui::test]
     fn rendered_autohide_translation_reverses_through_the_exact_midpoint(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let host = ActivityBarHostConfig::new().with_activity_bar(crate::ActivityBarConfig {
             mode: ActivityBarMode::AutoHide,
             behavior: crate::ActivityBarBehavior {
@@ -8001,6 +8133,7 @@ mod tests {
     fn rendered_state_motion_reaches_vertical_and_horizontal_midpoints_and_endpoints(
         cx: &mut TestAppContext,
     ) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let catalog = ActivityCatalog::new(vec![ActivityNode::Activity(rendered_activity(
             "activity",
             show_activity,
@@ -8078,6 +8211,7 @@ mod tests {
 
     #[gpui::test]
     fn clicking_draggable_activity_does_not_flash_other_activity_bars(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         cx.update(|cx| cx.set_reduce_motion(true));
         let catalog = ActivityCatalog::new(vec![ActivityNode::Activity(rendered_activity(
             "activity",
@@ -8115,6 +8249,7 @@ mod tests {
     fn rendered_dock_drag_forces_all_horizontal_rows_then_restores_on_cancel(
         cx: &mut TestAppContext,
     ) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let catalog = ActivityCatalog::new(vec![ActivityNode::Activity(rendered_activity(
             "activity",
             show_activity,
@@ -8186,6 +8321,7 @@ mod tests {
 
     #[gpui::test]
     fn absolute_split_geometry_preserves_exact_ratios_and_nested_edges(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let nested = split(SplitDirection::Vertical, 0.5, leaf("b"), leaf("c"));
         let tree = split(SplitDirection::Horizontal, 0.4, leaf("a"), nested);
         let (_, cx) = cx.add_window_view(move |_, cx| MullionView::new(tree, vec![], cx));
@@ -8220,6 +8356,7 @@ mod tests {
     fn pane_header_content_wash_focus_and_host_border_have_reference_bounds(
         cx: &mut TestAppContext,
     ) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let activity = rendered_activity("activity", show_activity);
         let catalog = ActivityCatalog::new(vec![ActivityNode::Activity(activity)]);
         let tree = PaneNode::leaf_with_activity(
@@ -8265,6 +8402,7 @@ mod tests {
 
     #[gpui::test]
     fn workspace_switcher_has_only_reference_gap_and_button_content_box(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let set = WorkspaceSet::try_new(
             WorkspaceId("one".into()),
             vec![
@@ -8300,7 +8438,94 @@ mod tests {
     }
 
     #[gpui::test]
+    fn editable_workspace_controls_rename_and_publish_complete_snapshots(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
+        let set = WorkspaceSet::try_new(
+            WorkspaceId::new("one"),
+            vec![
+                crate::Workspace::new("one", "One", leaf("a")),
+                crate::Workspace::new("two", "Two", leaf("b")),
+            ],
+        )
+        .unwrap();
+        let snapshots = Rc::new(RefCell::new(Vec::new()));
+        let published = snapshots.clone();
+        let controls = WorkspaceControls::editable().on_changed(move |snapshot, _| {
+            published.borrow_mut().push(snapshot);
+        });
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::try_new_with_workspaces(set, vec![], cx)
+                .unwrap()
+                .with_workspace_controls(controls)
+        });
+        cx.run_until_parked();
+
+        let two = cx.debug_bounds("workspace:two").unwrap().center();
+        cx.simulate_click(two, gpui::Modifiers::none());
+        cx.simulate_keystrokes("f2 x enter");
+        cx.run_until_parked();
+
+        let snapshots = snapshots.borrow();
+        assert_eq!(
+            snapshots.len(),
+            2,
+            "switch and rename each publish a snapshot"
+        );
+        let renamed = snapshots.last().unwrap();
+        assert_eq!(renamed.active, WorkspaceId::new("two"));
+        assert_eq!(renamed.workspaces[1].name, "Twox");
+        assert_eq!(renamed.workspaces[1].tree, leaf("b"));
+        view.read_with(cx, |view, _| {
+            assert_eq!(
+                view.workspace(&WorkspaceId::new("two")).unwrap().name,
+                "Twox"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn authoritative_workspace_replacement_validates_and_does_not_resave(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
+        let initial = WorkspaceSet::try_new(
+            WorkspaceId::new("one"),
+            vec![crate::Workspace::new("one", "One", leaf("a"))],
+        )
+        .unwrap();
+        let saves = Rc::new(Cell::new(0));
+        let recorded = saves.clone();
+        let controls = WorkspaceControls::editable().on_changed(move |_, _| {
+            recorded.set(recorded.get() + 1);
+        });
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::try_new_with_workspaces(initial, vec![], cx)
+                .unwrap()
+                .with_workspace_controls(controls)
+        });
+        let authoritative = WorkspaceSet::try_new(
+            WorkspaceId::new("server"),
+            vec![crate::Workspace::new("server", "Server", leaf("remote"))],
+        )
+        .unwrap();
+        view.update(cx, |view, cx| {
+            let previous = view
+                .replace_workspaces(authoritative.clone(), cx)
+                .unwrap()
+                .unwrap();
+            assert_eq!(previous.active, WorkspaceId::new("one"));
+        });
+        assert_eq!(saves.get(), 0, "server reconciliation must not save itself");
+        view.read_with(cx, |view, _| {
+            assert_eq!(
+                view.active_workspace().unwrap().id,
+                WorkspaceId::new("server")
+            );
+            assert!(view.model().tree().find(&PaneId::new("remote")).is_some());
+        });
+    }
+
+    #[gpui::test]
     fn activity_reconciliation_prunes_dead_transient_state(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let tree = split(SplitDirection::Horizontal, 0.5, leaf("a"), leaf("b"));
         let (view, cx) = cx.add_window_view(move |_, cx| MullionView::new(tree, vec![], cx));
         cx.run_until_parked();
@@ -8335,6 +8560,7 @@ mod tests {
 
     #[gpui::test]
     fn empty_pane_has_no_header_or_placeholder_and_body_fills_content(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let (_, cx) = cx.add_window_view(move |_, cx| MullionView::new(leaf("empty"), vec![], cx));
         cx.simulate_resize(gpui::size(px(400.), px(240.)));
         cx.run_until_parked();

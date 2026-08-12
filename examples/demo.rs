@@ -7,9 +7,9 @@ use gpui::{
 };
 use gpui::{Context, Entity};
 use gpui_mullion::{
-    register_key_bindings, Activity, ActivityBarConfig, ActivityBarEdge, ActivityBarHostConfig,
-    ActivityBarMode, ActivityBarSlots, ActivityCatalog, ActivityCategory, ActivityChrome,
-    ActivityIcon, ActivityId, ActivityNode, CategoryChrome, CategoryId, DropEdge,
+    register_key_bindings, set_mullion_theme, Activity, ActivityBarConfig, ActivityBarEdge,
+    ActivityBarHostConfig, ActivityBarMode, ActivityBarSlots, ActivityCatalog, ActivityCategory,
+    ActivityChrome, ActivityIcon, ActivityId, ActivityNode, CategoryChrome, CategoryId, DropEdge,
     FocusPresentation, MullionOverlay, MullionSettings, MullionTheme, MullionView,
     OverlayAlignment, OverlayBackdrop, OverlayHostConfig, OverlayLength, OverlayPlacement,
     OverlaySize, OverlayStack, OverlayTier, PaneFocusBehavior, PaneId, PaneNode, SplitDirection,
@@ -1046,6 +1046,11 @@ impl gpui::Render for DemoRoot {
 
 fn launch(cx: &mut App) {
     register_key_bindings(cx);
+    set_mullion_theme(cx, demo_theme());
+    gpui_mullion::gpui_command_palette::set_command_palette_theme(
+        cx,
+        gpui_mullion::gpui_command_palette::CommandPaletteTheme::default(),
+    );
     gpui_mullion::gpui_command_palette::init(cx);
     let control = Arc::new(DemoControl::default());
     control.reset();
@@ -1117,7 +1122,6 @@ fn launch(cx: &mut App) {
                             .with_focus_indicator(true)
                             .with_unfocused_pane_opacity(0.75),
                     )
-                    .with_theme(demo_theme())
                     .with_workspace_switcher_visible(false)
                     .with_activity_bar_host(host_config())
                     .with_overlay_host(

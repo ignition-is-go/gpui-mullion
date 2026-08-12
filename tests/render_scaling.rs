@@ -81,6 +81,7 @@ fn activities(count: usize) -> Vec<ActivityNode<String>> {
 fn render_cache_synchronization_scales_with_panes_activities_and_workspaces(
     cx: &mut TestAppContext,
 ) {
+    cx.update(|cx| gpui_mullion::set_mullion_theme(cx, gpui_mullion::MullionTheme::dark()));
     for (panes, workspace_count, activity_count) in [(1, 1, 1), (8, 2, 3), (29, 1, 5), (128, 4, 2)]
     {
         FILTER_CALLS.store(0, Ordering::SeqCst);

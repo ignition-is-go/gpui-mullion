@@ -4,6 +4,13 @@ Native split panes and activity surfaces for GPUI, targeting browsers plus Windo
 
 This repository is the GPUI successor to the Leptos `mullion` library and is intended to provide a canonical pane UI on desktop and the web. One shared `MullionView` implementation runs on every target; only the thin application host differs. The Leptos implementation remains migration/reference material rather than a separately maintained frontend. Persisted pane trees deliberately retain Mullion's serde representation so existing layouts migrate cleanly.
 
+## Ecosystem theme API convention
+
+GPUI libraries use `set_<crate>_theme(cx, theme)` for installation and
+`Active<Crate>Theme::<crate>_theme(&self)` for ambient access. The backing
+`Global<Crate>Theme(Arc<CrateTheme>)` remains private. Setters do not refresh or
+fall back; applications batch all crate-theme installs and refresh once.
+
 ## Current implementation baseline
 
 > [!IMPORTANT]
@@ -44,27 +51,20 @@ let view = cx.new(|cx| {
 
 ## Theme
 
-`MullionTheme` is the only look configuration. It contains semantic colors and every resolved
-component color and geometry token:
+`MullionTheme` is the complete look configuration: it contains semantic colors and every resolved
+component color and geometry token. Install one application-global immutable snapshot before any
+`MullionView` renders:
 
 ```rust
-// With no override, Mullion follows the GPUI window appearance.
-let view = MullionView::new(tree, activities, cx);
-
-// Live-map the application theme.
-let view = view.with_theme_provider(pulse_mullion_theme);
-
-// Or install one exact complete theme.
 let mut theme = MullionTheme::dark();
 theme.activity_bar.thickness = gpui::px(52.0);
-let view = view.with_theme(theme);
+set_mullion_theme(cx, theme);
 ```
 
-Use `MullionTheme::light()`, `dark()`, or `system(window_appearance)` to construct complete themes.
-`MullionTheme::custom(...)` maps nine application semantic colors coherently into every component.
-`with_theme_provider` is evaluated once per root render. Fixed and provider setters are last-wins;
-clearing the provider restores the last fixed theme or system-following default. Hosts must
-invalidate windows when provider state changes.
+Use `MullionTheme::light()`, `dark()`, `system(window_appearance)`, or `custom(...)` while building
+an owned value. `set_mullion_theme` also accepts `Arc<MullionTheme>` and preserves its identity.
+The installed theme is required: rendering a Mullion view before installation is a programmer error.
+Access it through `ActiveMullionTheme::mullion_theme`. Replacing the global does not repaint by itself; after installing all affected crate themes, the application calls `cx.refresh_windows()` once.
 
 For durable content, keep the catalog `Activity` descriptor and add a view-owned UI-local factory registry:
 
@@ -96,6 +96,17 @@ All 37 static `PaneCommand`s and dynamic `FocusPane { index }` actions route thr
 Default bindings cooperatively avoid editable descendants. Mullion installs `Mullion` on its root; hosts should install the additional `MullionEditable` key context on text fields, editors, and other controls that must retain editing shortcuts. A custom map can explicitly opt into capturing those shortcuts with `capture_editable_targets(true)`. Splitter-local resize/cancel actions remain separate from `PaneCommand` and become active only in the `MullionSplitter` context after direct splitter selection.
 
 Subscribe to `PaneEvent<D>` for pane/model changes. `MullionView::try_new_with_workspaces` optionally gives the view ownership of a `WorkspaceSet`; every `TreeChanged` snapshot is persisted into its active workspace, the built-in tab strip switches trees in the same window/canvas, and `WorkspaceChanged` is emitted after a successful switch. Use `workspaces()` to inspect the current set and `try_switch_workspace(...)` to switch programmatically.
+
+Enable styled inline renaming and consumer-owned persistence with `WorkspaceControls`. The callback receives a complete validated snapshot and may spawn an async file or server save; Mullion never owns the storage backend:
+
+```rust
+let controls = WorkspaceControls::editable().on_changed(|snapshot, cx| {
+    // Map `snapshot` to the application's DTO and spawn its async save here.
+});
+let view = view.with_workspace_controls(controls);
+```
+
+Double-click a workspace or press F2 to rename it; Enter commits and Escape cancels. Apply an initial load or authoritative server response with `replace_workspaces(snapshot, cx)`. Replacement validates before mutation and deliberately does not invoke `on_changed`, preventing persistence feedback loops.
 
 ## Window architecture
 

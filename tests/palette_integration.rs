@@ -9,6 +9,16 @@ fn visible(_: &bool) -> bool {
     true
 }
 
+fn install_themes(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_mullion::set_mullion_theme(cx, gpui_mullion::MullionTheme::dark());
+        gpui_command_palette::set_command_palette_theme(
+            cx,
+            gpui_command_palette::CommandPaletteTheme::default(),
+        );
+    });
+}
+
 struct SharedPaletteRoot {
     view: gpui::Entity<MullionView<bool>>,
     palette: gpui::Entity<gpui_command_palette::CommandPalette<()>>,
@@ -29,6 +39,7 @@ impl gpui::Render for SharedPaletteRoot {
 
 #[gpui::test]
 fn shared_widget_tracks_dynamic_entries_and_invokes_mullion(cx: &mut TestAppContext) {
+    install_themes(cx);
     let activity = ActivityNode::Activity(Activity {
         id: ActivityId::new("files"),
         name: SharedString::from("Files"),
@@ -127,6 +138,7 @@ fn shared_widget_tracks_dynamic_entries_and_invokes_mullion(cx: &mut TestAppCont
 
 #[gpui::test]
 fn shared_attachment_injects_without_rendering_palette_inside_mullion(cx: &mut TestAppContext) {
+    install_themes(cx);
     let (view, cx) = cx.add_window_view(|_, cx| {
         MullionView::new(PaneNode::leaf(PaneId::new("only"), true), Vec::new(), cx)
     });
@@ -146,6 +158,7 @@ fn shared_attachment_injects_without_rendering_palette_inside_mullion(cx: &mut T
 
 #[gpui::test]
 fn shared_palette_defers_split_execution_until_dispatch_unwinds(cx: &mut TestAppContext) {
+    install_themes(cx);
     let (root, cx) = cx.add_window_view(|_, cx| {
         let view = cx
             .new(|cx| MullionView::new(PaneNode::leaf(PaneId::new("only"), true), Vec::new(), cx));
@@ -185,6 +198,7 @@ fn shared_palette_defers_split_execution_until_dispatch_unwinds(cx: &mut TestApp
 
 #[gpui::test]
 fn installed_global_toggle_routes_once(cx: &mut TestAppContext) {
+    install_themes(cx);
     let (view, cx) = cx.add_window_view(|_, cx| {
         MullionView::new(PaneNode::leaf(PaneId::new("only"), true), Vec::new(), cx)
     });
@@ -206,6 +220,7 @@ fn installed_global_toggle_routes_once(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn installed_palette_accepts_text_and_arrow_navigation(cx: &mut TestAppContext) {
+    install_themes(cx);
     let (view, cx) = cx.add_window_view(|_, cx| {
         MullionView::new(PaneNode::leaf(PaneId::new("only"), true), Vec::new(), cx)
     });
@@ -236,6 +251,7 @@ fn installed_palette_accepts_text_and_arrow_navigation(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn detaching_palette_drops_only_mullion_owned_registrations(cx: &mut TestAppContext) {
+    install_themes(cx);
     let (view, cx) = cx.add_window_view(|_, cx| {
         MullionView::new(PaneNode::leaf(PaneId::new("only"), true), Vec::new(), cx)
     });

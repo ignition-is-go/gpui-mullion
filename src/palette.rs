@@ -389,15 +389,6 @@ pub fn command_palette_for_view<D: PaneData>(
                 left: Some(gpui_command_palette::PaletteLength::percent(50.0)),
                 transform: Some(gpui_command_palette::PaletteTransform::pixels(-250.0, 0.0)),
             })
-            // Match CSS line boxes after GPUI's taller font metrics.
-            .with_input_style(gpui_command_palette::CommandPaletteInputStyle {
-                padding_y: gpui::px(4.5),
-                ..Default::default()
-            })
-            .with_item_style(gpui_command_palette::CommandPaletteItemStyle {
-                padding_y: gpui::px(2.0),
-                ..Default::default()
-            })
     });
     view.update(cx, |view, cx| {
         view.set_command_palette(Some(palette.clone()), cx)

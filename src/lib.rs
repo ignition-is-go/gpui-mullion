@@ -52,11 +52,11 @@ pub mod workspace;
 /// available from their named modules.
 pub mod prelude {
     pub use crate::{
-        register_key_bindings, Activity, ActivityBarConfig, ActivityCatalog, ActivityCategory,
-        ActivityFactoryRegistry, ActivityId, ActivityInstance, ActivityNode, CategoryId,
-        FocusPresentation, MullionConfig, MullionModel, MullionSettings, MullionTheme,
-        MullionThemeProvider, MullionView, PaneData, PaneEvent, PaneFocusBehavior, PaneId,
-        PaneNode, SplitDirection, Workspace, WorkspaceId, WorkspaceSet,
+        register_key_bindings, set_mullion_theme, ActiveMullionTheme, Activity, ActivityBarConfig,
+        ActivityCatalog, ActivityCategory, ActivityFactoryRegistry, ActivityId, ActivityInstance,
+        ActivityNode, CategoryId, FocusPresentation, MullionConfig, MullionModel, MullionSettings,
+        MullionTheme, MullionView, PaneData, PaneEvent, PaneFocusBehavior, PaneId, PaneNode,
+        SplitDirection, Workspace, WorkspaceControls, WorkspaceId, WorkspaceSet,
     };
 }
 pub use accessibility::{
@@ -129,8 +129,9 @@ pub use settings::{
     MullionSettingOption, MullionSettings, MullionSettingsConfig,
 };
 pub use theme::{
-    ActivityBarStyle, DropOverlayStyle, MullionRootStyle, MullionTheme, MullionThemeProvider,
-    PaneControlStyle, PaneHeaderStyle, PaneStyle, SplitHandleStyle, WorkspaceSwitcherStyle,
+    set_mullion_theme, ActiveMullionTheme, ActivityBarStyle, DropOverlayStyle, MullionRootStyle,
+    MullionTheme, PaneControlStyle, PaneHeaderStyle, PaneStyle, SplitHandleStyle,
+    WorkspaceSwitcherStyle,
 };
 pub use tree::{
     collect_split_keys, collect_split_ratios, directional_neighbor, find_ratio,
@@ -145,6 +146,6 @@ pub use view::{
     ToggleZoom,
 };
 pub use workspace::{
-    Workspace, WorkspaceError, WorkspaceId, WorkspaceSet, WorkspaceSetError,
-    WorkspaceValidationError,
+    Workspace, WorkspaceChangedCallback, WorkspaceControls, WorkspaceError, WorkspaceId,
+    WorkspaceSet, WorkspaceSetError, WorkspaceValidationError,
 };
