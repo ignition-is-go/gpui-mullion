@@ -18,12 +18,24 @@ jobs:
         os: [ubuntu-24.04, macos-14, windows-2025]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: gpui-mullion
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: gpui-mullion
+      - name: Check out shared command palette
+        uses: actions/checkout@v4
+        with:
+          repository: ignition-is-go/gpui-command-palette
+          path: gpui-command-palette
       - uses: dtolnay/rust-toolchain@1.95.0
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gpui-mullion
       - name: Linux dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-x11-dev libfontconfig1-dev libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev weston xvfb mesa-vulkan-drivers
@@ -58,13 +70,25 @@ jobs:
     name: wasm32 and browser bundle
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: gpui-mullion
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: gpui-mullion
+      - name: Check out shared command palette
+        uses: actions/checkout@v4
+        with:
+          repository: ignition-is-go/gpui-command-palette
+          path: gpui-command-palette
       - uses: dtolnay/rust-toolchain@nightly
         with:
           targets: wasm32-unknown-unknown
           components: rust-src, rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gpui-mullion/examples/web
       - name: Format browser workspace
         run: cargo fmt --manifest-path examples/web/Cargo.toml -- --check
       - name: Check shared view and browser host
@@ -143,6 +167,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: gpui-mullion
+      - name: Check out shared command palette
+        uses: actions/checkout@v4
+        with:
+          repository: ignition-is-go/gpui-command-palette
+          path: gpui-command-palette
       - name: Check out authoritative Mullion reference
         uses: actions/checkout@v4
         with:
