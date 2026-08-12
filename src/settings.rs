@@ -319,13 +319,6 @@ pub struct MullionConfig {
     pub presentation: FocusPresentation,
 }
 
-/// Descriptive alias for hosts which name persisted values "configuration".
-#[doc(hidden)]
-pub type MullionConfiguration = MullionConfig;
-/// Compatibility-friendly alias for the presentation portion of the config.
-#[doc(hidden)]
-pub type MullionPresentation = FocusPresentation;
-
 fn normalize_pane_opacity(opacity: f64) -> f64 {
     if opacity.is_finite() {
         opacity.clamp(0.0, 1.0)

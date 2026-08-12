@@ -50,5 +50,5 @@ fn workspace_switch_returns_portable_snapshot() {
             tree: tree.clone(),
         }],
     };
-    assert_eq!(set.switch(&WorkspaceId("one".into())), Some(tree));
+    assert_eq!(set.try_switch(&WorkspaceId("one".into())), Ok(tree));
 }

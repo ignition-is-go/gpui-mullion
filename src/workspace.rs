@@ -200,13 +200,6 @@ pub enum WorkspaceSetError {
     },
 }
 
-/// Shorter name for callers which use one error type for workspace operations.
-#[doc(hidden)]
-pub type WorkspaceError = WorkspaceSetError;
-/// Validation-specific name for persistence-loading call sites.
-#[doc(hidden)]
-pub type WorkspaceValidationError = WorkspaceSetError;
-
 impl fmt::Display for WorkspaceSetError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -457,15 +450,6 @@ impl<D: PaneData> WorkspaceSet<D> {
         Ok(tree)
     }
 
-    /// Switch while retaining the original optional API.
-    ///
-    /// Returns `None` for any validation or lookup failure; use [`Self::try_switch`]
-    /// when the failure reason is needed.
-    #[doc(hidden)]
-    pub fn switch(&mut self, id: &WorkspaceId) -> Option<PaneNode<D>> {
-        self.try_switch(id).ok()
-    }
-
     /// Replace the active workspace's tree and return its previous snapshot.
     ///
     /// # Errors
@@ -478,15 +462,6 @@ impl<D: PaneData> WorkspaceSet<D> {
     ) -> Result<PaneNode<D>, WorkspaceSetError> {
         let active = self.active.clone();
         self.update_tree(&active, tree)
-    }
-
-    /// Replace the stored tree of the active workspace, retaining the original bool API.
-    ///
-    /// Returns `false` for any validation failure and leaves the set unchanged;
-    /// use [`Self::try_persist_active`] when the failure reason is needed.
-    #[doc(hidden)]
-    pub fn persist_active(&mut self, tree: PaneNode<D>) -> bool {
-        self.try_persist_active(tree).is_ok()
     }
 
     /// Persist a snapshot produced by an already-validated [`crate::MullionModel`].
@@ -595,7 +570,7 @@ mod tests {
             Err(WorkspaceSetError::WorkspaceNotFound { .. })
         ));
         assert_eq!(set, before);
-        assert!(set.switch(&WorkspaceId("missing".into())).is_none());
+        assert!(set.try_switch(&WorkspaceId("missing".into())).is_err());
         assert_eq!(set, before);
     }
 
@@ -655,14 +630,18 @@ mod tests {
     #[test]
     fn switching_and_persisting_are_internal_set_operations() {
         let mut set = set();
-        assert!(set.persist_active(PaneNode::leaf(PaneId::new("c"), "c".into())));
+        assert!(set
+            .try_persist_active(PaneNode::leaf(PaneId::new("c"), "c".into()))
+            .is_ok());
         assert_eq!(
-            set.switch(&WorkspaceId("two".into())).unwrap().leaf_ids(),
+            set.try_switch(&WorkspaceId("two".into()))
+                .unwrap()
+                .leaf_ids(),
             vec![PaneId::new("b")]
         );
         assert_eq!(set.workspaces[0].tree.leaf_ids(), vec![PaneId::new("c")]);
         let before = set.clone();
-        assert!(!set.persist_active(invalid_tree()));
+        assert!(set.try_persist_active(invalid_tree()).is_err());
         assert_eq!(set, before);
     }
 

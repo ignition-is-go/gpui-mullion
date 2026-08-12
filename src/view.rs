@@ -13,10 +13,10 @@ use crate::{
     WorkspaceId, WorkspaceSet, WorkspaceSetError,
 };
 use gpui::{
-    actions, canvas, div, ease_in_out, point, prelude::*, px, relative, AnyElement, App, Bounds,
-    Context, DragMoveEvent, Element, ElementId, EventEmitter, FocusHandle, GlobalElementId, Hsla,
-    InspectorElementId, LayoutId, MouseButton, PathBuilder, Pixels, Point, SharedString,
-    StyleRefinement, Window,
+    actions, div, ease_in_out, prelude::*, px, relative, AnyElement, App, Bounds, Context,
+    DragMoveEvent, Element, ElementId, EventEmitter, FocusHandle, GlobalElementId, Hsla,
+    InspectorElementId, LayoutId, MouseButton, Pixels, Point, SharedString, StyleRefinement,
+    Window,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -51,7 +51,11 @@ actions!(
         /// Increase the focused splitter's ratio by one keyboard step.
         ResizeSplitIncrease,
         /// Cancel the active split or dock drag and restore its starting state.
-        CancelSplitResize
+        CancelSplitResize,
+        /// Activate the focused Mullion control through its semantic action path.
+        ActivateControl,
+        /// Begin renaming the focused workspace tab.
+        BeginWorkspaceRename
     ]
 );
 
@@ -273,155 +277,38 @@ enum ReferencePaneIcon {
     Close,
 }
 
-fn reference_icon_polygons(icon: ReferencePaneIcon) -> &'static [&'static [(f32, f32)]] {
-    match icon {
-        ReferencePaneIcon::Move => &[
-            &[(4., 3.), (6., 3.), (6., 5.), (4., 5.)],
-            &[(10., 3.), (12., 3.), (12., 5.), (10., 5.)],
-            &[(4., 7.), (6., 7.), (6., 9.), (4., 9.)],
-            &[(10., 7.), (12., 7.), (12., 9.), (10., 9.)],
-            &[(4., 11.), (6., 11.), (6., 13.), (4., 13.)],
-            &[(10., 11.), (12., 11.), (12., 13.), (10., 13.)],
-        ],
-        ReferencePaneIcon::SplitHorizontal => &[
-            &[(1., 1.), (15., 1.), (15., 2.), (1., 2.)],
-            &[(1., 14.), (15., 14.), (15., 15.), (1., 15.)],
-            &[(1., 2.), (2., 2.), (2., 14.), (1., 14.)],
-            &[(14., 2.), (15., 2.), (15., 14.), (14., 14.)],
-            &[(7., 2.), (9., 2.), (9., 14.), (7., 14.)],
-        ],
-        ReferencePaneIcon::SplitVertical => &[
-            &[(1., 1.), (15., 1.), (15., 2.), (1., 2.)],
-            &[(1., 14.), (15., 14.), (15., 15.), (1., 15.)],
-            &[(1., 2.), (2., 2.), (2., 14.), (1., 14.)],
-            &[(14., 2.), (15., 2.), (15., 14.), (14., 14.)],
-            &[(2., 7.), (14., 7.), (14., 9.), (2., 9.)],
-        ],
-        ReferencePaneIcon::Close => &[
-            &[
-                (3.647, 4.354),
-                (4.354, 3.646),
-                (12.354, 11.647),
-                (11.646, 12.354),
-            ],
-            &[
-                (11.647, 3.646),
-                (12.354, 4.354),
-                (4.354, 12.354),
-                (3.647, 11.646),
-            ],
-        ],
-    }
-}
-
 fn reference_pane_icon(icon: ReferencePaneIcon, size: Pixels, color: Hsla) -> AnyElement {
-    canvas(
-        |_, _, _| {},
-        move |bounds, _, window, _| {
-            let scale = size.as_f32() / 16.0;
-            let at = |x: f32, y: f32| {
-                point(
-                    bounds.origin.x + px(x * scale),
-                    bounds.origin.y + px(y * scale),
-                )
-            };
-            let polygons = reference_icon_polygons(icon);
-            for polygon in polygons {
-                let mut builder = PathBuilder::fill();
-                let points = polygon.iter().map(|&(x, y)| at(x, y)).collect::<Vec<_>>();
-                builder.add_polygon(&points, true);
-                if let Ok(path) = builder.build() {
-                    window.paint_path(path, color);
-                }
-            }
-        },
-    )
-    .size(size)
-    .into_any_element()
+    let icon = match icon {
+        ReferencePaneIcon::Move => crate::icons::LucideIcon::GripVertical,
+        ReferencePaneIcon::SplitHorizontal => crate::icons::LucideIcon::Columns2,
+        ReferencePaneIcon::SplitVertical => crate::icons::LucideIcon::Rows2,
+        ReferencePaneIcon::Close => crate::icons::LucideIcon::X,
+    };
+    crate::icons::IconElement::new(icon)
+        .size(size)
+        .color(color)
+        .into_any_element()
 }
 
 fn fallback_activity_icon(size: Pixels, color: Hsla) -> AnyElement {
-    canvas(
-        |_, _, _| {},
-        move |bounds, _, window, _| {
-            let scale = size.as_f32() / 16.0;
-            for &(left, top, right, bottom) in &[
-                (3.0, 3.0, 7.0, 7.0),
-                (9.0, 3.0, 13.0, 7.0),
-                (3.0, 9.0, 7.0, 13.0),
-                (9.0, 9.0, 13.0, 13.0),
-            ] {
-                let points = [
-                    point(
-                        bounds.origin.x + px(left * scale),
-                        bounds.origin.y + px(top * scale),
-                    ),
-                    point(
-                        bounds.origin.x + px(right * scale),
-                        bounds.origin.y + px(top * scale),
-                    ),
-                    point(
-                        bounds.origin.x + px(right * scale),
-                        bounds.origin.y + px(bottom * scale),
-                    ),
-                    point(
-                        bounds.origin.x + px(left * scale),
-                        bounds.origin.y + px(bottom * scale),
-                    ),
-                ];
-                let mut builder = PathBuilder::fill();
-                builder.add_polygon(&points, true);
-                if let Ok(path) = builder.build() {
-                    window.paint_path(path, color);
-                }
-            }
-        },
-    )
-    .size(size)
-    .into_any_element()
-}
-
-fn chevron_rotation(edge: ActivityBarEdge, expanded: bool) -> i32 {
-    if !expanded {
-        0
-    } else if edge.is_horizontal() {
-        180
-    } else {
-        90
-    }
+    crate::icons::IconElement::new(crate::icons::LucideIcon::PanelsTopLeft)
+        .size(size)
+        .color(color)
+        .into_any_element()
 }
 
 fn chevron_icon(edge: ActivityBarEdge, expanded: bool, size: Pixels, color: Hsla) -> AnyElement {
-    canvas(
-        |_, _, _| {},
-        move |bounds, _, window, _| {
-            let rotation = chevron_rotation(edge, expanded);
-            let base = [(5.5_f32, 3.5_f32), (10.5, 8.), (5.5, 12.5)];
-            let rotate = |(x, y): (f32, f32)| match rotation {
-                90 => (16. - y, x),
-                180 => (16. - x, 16. - y),
-                _ => (x, y),
-            };
-            let scale = size.as_f32() / 16.0;
-            let mut builder = PathBuilder::stroke(px(scale));
-            let (x, y) = rotate(base[0]);
-            builder.move_to(point(
-                bounds.origin.x + px(x * scale),
-                bounds.origin.y + px(y * scale),
-            ));
-            for point_value in base[1..].iter().copied().map(rotate) {
-                builder.line_to(point(
-                    bounds.origin.x + px(point_value.0 * scale),
-                    bounds.origin.y + px(point_value.1 * scale),
-                ));
-            }
-            if let Ok(path) = builder.build() {
-                window.paint_path(path, color);
-            }
-        },
-    )
-    .size(size)
-    .into_any_element()
+    let icon = if !expanded {
+        crate::icons::LucideIcon::ChevronRight
+    } else if edge.is_horizontal() {
+        crate::icons::LucideIcon::ChevronLeft
+    } else {
+        crate::icons::LucideIcon::ChevronDown
+    };
+    crate::icons::IconElement::new(icon)
+        .size(size)
+        .color(color)
+        .into_any_element()
 }
 
 struct SplitBoundsRecorder {
@@ -623,6 +510,11 @@ pub struct MullionView<D: PaneData> {
 impl<D: PaneData> EventEmitter<PaneEvent<D>> for MullionView<D> {}
 impl<D: PaneData> EventEmitter<WorkspaceChanged> for MullionView<D> {}
 impl<D: PaneData> EventEmitter<WorkspaceEvent<D>> for MullionView<D> {}
+impl<D: PaneData> gpui::Focusable for MullionView<D> {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
 
 impl<D: PaneData> MullionView<D> {
     /// Construct a shared GPUI view, panicking if the tree or catalog is invalid.
@@ -731,17 +623,6 @@ impl<D: PaneData> MullionView<D> {
             .map_err(MullionViewConstructionError::Catalog)?;
         let model = MullionModel::try_new(tree).map_err(MullionViewConstructionError::Tree)?;
         Ok(Self::from_validated(model, catalog, cx))
-    }
-
-    /// Construct a view which owns and renders a set of internal workspaces.
-    /// Returns `None` when validation fails, preserving the original optional API.
-    #[doc(hidden)]
-    pub fn new_with_workspaces(
-        workspaces: WorkspaceSet<D>,
-        activities: Vec<ActivityNode<D>>,
-        cx: &mut Context<Self>,
-    ) -> Option<Self> {
-        Self::try_new_with_workspaces(workspaces, activities, cx).ok()
     }
 
     /// Typed constructor for persisted workspace input.
@@ -1120,19 +1001,9 @@ impl<D: PaneData> MullionView<D> {
         self.focus_presentation = presentation;
         self
     }
-    /// Compatibility alias for hosts that call the visual configuration simply presentation.
-    #[doc(hidden)]
-    pub fn with_presentation(self, presentation: FocusPresentation) -> Self {
-        self.with_focus_presentation(presentation)
-    }
     /// Return visual focus presentation settings.
     pub const fn focus_presentation(&self) -> FocusPresentation {
         self.focus_presentation
-    }
-    /// Compatibility alias for [`Self::focus_presentation`].
-    #[doc(hidden)]
-    pub const fn presentation(&self) -> FocusPresentation {
-        self.focus_presentation()
     }
     /// Replace visual focus presentation settings and notify GPUI.
     pub fn set_focus_presentation(
@@ -1242,11 +1113,6 @@ impl<D: PaneData> MullionView<D> {
     /// The internally owned workspace set, when this view was constructed with one.
     pub fn workspaces(&self) -> Option<&WorkspaceSet<D>> {
         self.workspaces.as_ref()
-    }
-    /// Compatibility-explicit alias for hosts which call the aggregate a workspace set.
-    #[doc(hidden)]
-    pub fn workspace_set(&self) -> Option<&WorkspaceSet<D>> {
-        self.workspaces()
     }
     /// Return the active owned workspace, if workspace mode is enabled.
     pub fn active_workspace(&self) -> Option<&crate::Workspace<D>> {
@@ -1517,21 +1383,6 @@ impl<D: PaneData> MullionView<D> {
         Ok(true)
     }
 
-    /// Compatibility boolean switching API. A same-workspace request succeeds without
-    /// mutation or notification.
-    #[doc(hidden)]
-    pub fn switch_workspace(&mut self, id: &WorkspaceId, cx: &mut Context<Self>) -> bool {
-        match self.try_switch_workspace(id, cx) {
-            Ok(changed) => {
-                changed
-                    || self
-                        .workspaces
-                        .as_ref()
-                        .is_some_and(|set| &set.active == id)
-            }
-            Err(_) => false,
-        }
-    }
     /// The stable focus handle used for key-action dispatch. Hosts should focus it
     /// after creating the view (and pane pointer interaction does so automatically).
     pub fn focus_handle(&self) -> &FocusHandle {
@@ -2047,7 +1898,6 @@ impl<D: PaneData> MullionView<D> {
                 let increment_key = key.clone();
                 let resize_decrease_key = key.clone();
                 let resize_increase_key = key.clone();
-                let arrow_key = key.clone();
                 let split_accessibility =
                     crate::MullionAccessibilityNode::split(*direction, *ratio, false);
                 // In the CSS reference, the pane's z-index-6 focus frame paints
@@ -2177,19 +2027,15 @@ impl<D: PaneData> MullionView<D> {
                                 this.cancel_split_resize(window, cx);
                             }))
                             .on_key_down(cx.listener(
-                                move |this, event: &gpui::KeyDownEvent, _, cx| {
-                                    let delta = match event.keystroke.key.as_str() {
-                                        "left" | "up" => -KEYBOARD_RESIZE_STEP,
-                                        "right" | "down" => KEYBOARD_RESIZE_STEP,
+                                move |_this, event: &gpui::KeyDownEvent, _, cx| {
+                                    match event.keystroke.key.as_str() {
+                                        "left" | "up" => cx.dispatch_action(&ResizeSplitDecrease),
+                                        "right" | "down" => {
+                                            cx.dispatch_action(&ResizeSplitIncrease)
+                                        }
                                         _ => return,
-                                    };
-                                    if let Some(current) =
-                                        crate::tree::find_ratio(this.model.tree(), &arrow_key)
-                                    {
-                                        this.model.resize(&arrow_key, current + delta);
-                                        this.finish(cx);
-                                        cx.stop_propagation();
                                     }
+                                    cx.stop_propagation();
                                 },
                             ))
                             .on_a11y_action(gpui::AccessibleAction::Decrement, {
@@ -2876,15 +2722,20 @@ impl<D: PaneData> MullionView<D> {
                             this.model.set_activity(&pane_id, Some(activity_id.clone()));
                             this.finish(cx);
                         }))
-                        .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space" | " ") {
-                                this.model.focus(&key_pane_id);
-                                this.model
-                                    .set_activity(&key_pane_id, Some(key_activity_id.clone()));
-                                this.finish(cx);
-                                cx.stop_propagation();
-                            }
+                        .on_action(cx.listener(move |this, _: &ActivateControl, _, cx| {
+                            this.model.focus(&key_pane_id);
+                            this.model
+                                .set_activity(&key_pane_id, Some(key_activity_id.clone()));
+                            this.finish(cx);
                         }))
+                        .on_key_down(cx.listener(
+                            move |_this, event: &gpui::KeyDownEvent, _, cx| {
+                                if matches!(event.keystroke.key.as_str(), "enter" | "space" | " ") {
+                                    cx.dispatch_action(&ActivateControl);
+                                    cx.stop_propagation();
+                                }
+                            },
+                        ))
                         .on_a11y_action(gpui::AccessibleAction::Click, {
                             let view = cx.entity().downgrade();
                             move |_, _, cx| {
@@ -3096,21 +2947,26 @@ impl<D: PaneData> MullionView<D> {
                                 }
                             }),
                         )
-                        .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space" | " ") {
-                                let focus_changed = this.model.focus(&key_pane_id);
-                                this.expansion
-                                    .entry(key_pane_id.clone())
-                                    .or_default()
-                                    .toggle(key_category_id.clone());
-                                if focus_changed {
-                                    this.finish(cx);
-                                } else {
-                                    cx.notify();
-                                }
-                                cx.stop_propagation();
+                        .on_action(cx.listener(move |this, _: &ActivateControl, _, cx| {
+                            let focus_changed = this.model.focus(&key_pane_id);
+                            this.expansion
+                                .entry(key_pane_id.clone())
+                                .or_default()
+                                .toggle(key_category_id.clone());
+                            if focus_changed {
+                                this.finish(cx);
+                            } else {
+                                cx.notify();
                             }
                         }))
+                        .on_key_down(cx.listener(
+                            move |_this, event: &gpui::KeyDownEvent, _, cx| {
+                                if matches!(event.keystroke.key.as_str(), "enter" | "space" | " ") {
+                                    cx.dispatch_action(&ActivateControl);
+                                    cx.stop_propagation();
+                                }
+                            },
+                        ))
                         .on_a11y_action(gpui::AccessibleAction::Click, {
                             let view = cx.entity().downgrade();
                             move |_, _, cx| {
@@ -3380,14 +3236,17 @@ impl<D: PaneData> MullionView<D> {
                         })
                         .ok();
                 })
+                .on_action(move |_: &ActivateControl, _, cx| {
+                    key_view
+                        .update(cx, |this, cx| {
+                            this.model.focus(&pane_key);
+                            this.command(key_command, cx);
+                        })
+                        .ok();
+                })
                 .on_key_down(move |event: &gpui::KeyDownEvent, _, cx| {
                     if matches!(event.keystroke.key.as_str(), "enter" | "space" | " ") {
-                        key_view
-                            .update(cx, |this, cx| {
-                                this.model.focus(&pane_key);
-                                this.command(key_command, cx);
-                            })
-                            .ok();
+                        cx.dispatch_action(&ActivateControl);
                         cx.stop_propagation();
                     }
                 })
@@ -3463,13 +3322,16 @@ impl<D: PaneData> MullionView<D> {
                     .ok();
                 cx.new(|_| drag.clone())
             })
+            .on_action(move |_: &ActivateControl, _, cx| {
+                view.update(cx, |this, cx| {
+                    this.model.focus(&pane_key);
+                    this.finish(cx);
+                })
+                .ok();
+            })
             .on_key_down(move |event: &gpui::KeyDownEvent, _, cx| {
                 if matches!(event.keystroke.key.as_str(), "enter" | "space" | " ") {
-                    view.update(cx, |this, cx| {
-                        this.model.focus(&pane_key);
-                        this.finish(cx);
-                    })
-                    .ok();
+                    cx.dispatch_action(&ActivateControl);
                     cx.stop_propagation();
                 }
             })
@@ -4601,7 +4463,10 @@ impl<D: PaneData> Render for MullionView<D> {
                     .enumerate()
                     .map(|(index, workspace)| {
                         let id = workspace.id.clone();
-                        let key_id = workspace.id.clone();
+                        let action_activate_id = workspace.id.clone();
+                        let key_activate_id = workspace.id.clone();
+                        let action_rename_id = workspace.id.clone();
+                        let key_rename_id = workspace.id.clone();
                         let a11y_id = workspace.id.clone();
                         let selected = id == active;
                         let editing = rename_editor
@@ -4668,22 +4533,34 @@ impl<D: PaneData> Render for MullionView<D> {
                             )
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if !editing {
-                                    this.switch_workspace(&id, cx);
+                                    let _ = this.try_switch_workspace(&id, cx);
                                 }
                             }))
+                            .on_action(cx.listener(move |this, _: &ActivateControl, _, cx| {
+                                if !editing {
+                                    let _ = this.try_switch_workspace(&action_activate_id, cx);
+                                }
+                            }))
+                            .on_action(cx.listener(
+                                move |this, _: &BeginWorkspaceRename, window, cx| {
+                                    if rename_enabled && !editing {
+                                        this.begin_workspace_rename(&action_rename_id, window, cx);
+                                    }
+                                },
+                            ))
                             .on_key_down(cx.listener(
                                 move |this, event: &gpui::KeyDownEvent, window, cx| {
                                     if editing {
                                         this.edit_workspace_name_key(event, window, cx);
                                     } else if rename_enabled && event.keystroke.key == "f2" {
-                                        this.begin_workspace_rename(&key_id, window, cx);
+                                        this.begin_workspace_rename(&key_rename_id, window, cx);
                                         cx.stop_propagation();
                                         window.prevent_default();
                                     } else if matches!(
                                         event.keystroke.key.as_str(),
                                         "enter" | "space" | " "
                                     ) {
-                                        this.switch_workspace(&key_id, cx);
+                                        let _ = this.try_switch_workspace(&key_activate_id, cx);
                                         cx.stop_propagation();
                                     }
                                 },
@@ -4691,8 +4568,10 @@ impl<D: PaneData> Render for MullionView<D> {
                             .on_a11y_action(gpui::AccessibleAction::Click, {
                                 let view = cx.entity().downgrade();
                                 move |_, _, cx| {
-                                    view.update(cx, |this, cx| this.switch_workspace(&a11y_id, cx))
-                                        .ok();
+                                    view.update(cx, |this, cx| {
+                                        this.try_switch_workspace(&a11y_id, cx)
+                                    })
+                                    .ok();
                                 }
                             })
                             .child(label)
@@ -5269,7 +5148,7 @@ mod tests {
             .click_through(true);
         let stack = crate::OverlayStack::from_overlays([overlay]).unwrap();
         let (view, cx) = cx.add_window_view(move |_, cx| {
-            MullionView::new_with_workspaces(workspace_set(leaf("c")), vec![], cx)
+            MullionView::try_new_with_workspaces(workspace_set(leaf("c")), vec![], cx)
                 .unwrap()
                 .with_overlay_host(OverlayHostConfig::controlled(move || stack.clone()))
         });
@@ -6408,7 +6287,9 @@ mod tests {
         });
         cx.run_until_parked();
         assert_eq!(
-            view.read_with(cx, |view, _| view.presentation().unfocused_pane_opacity()),
+            view.read_with(cx, |view, _| view
+                .focus_presentation()
+                .unfocused_pane_opacity()),
             0.0
         );
         assert!(cx.debug_bounds("focus-edge:a:right").is_some());
@@ -6478,14 +6359,16 @@ mod tests {
         )
         .unwrap();
         let (view, cx) = cx.add_window_view(move |_, cx| {
-            MullionView::new_with_workspaces(workspaces, vec![], cx).unwrap()
+            MullionView::try_new_with_workspaces(workspaces, vec![], cx).unwrap()
         });
         view.update(cx, |view, cx| {
             view.update_model(cx, |model| {
                 model.focus(&PaneId::new("b"));
                 model.toggle_zoom();
             });
-            assert!(view.switch_workspace(&WorkspaceId("two".into()), cx));
+            assert!(view
+                .try_switch_workspace(&WorkspaceId("two".into()), cx)
+                .unwrap());
         });
         view.read_with(cx, |view, _| {
             assert_eq!(view.model().focused(), Some(&PaneId::new("c")));
@@ -6518,7 +6401,7 @@ mod tests {
     ) {
         cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let (view, cx) = cx.add_window_view(move |_, cx| {
-            MullionView::new_with_workspaces(workspace_set(leaf("c")), vec![], cx).unwrap()
+            MullionView::try_new_with_workspaces(workspace_set(leaf("c")), vec![], cx).unwrap()
         });
         let snapshots = Rc::new(RefCell::new(Vec::new()));
         let log = snapshots.clone();
@@ -6586,7 +6469,7 @@ mod tests {
         }
         let incoming = split(SplitDirection::Horizontal, 0.5, leaf("b"), leaf("c"));
         let (view, cx) = cx.add_window_view(move |_, cx| {
-            MullionView::new_with_workspaces(workspace_set(incoming), vec![], cx).unwrap()
+            MullionView::try_new_with_workspaces(workspace_set(incoming), vec![], cx).unwrap()
         });
         let seen = Rc::new(RefCell::new(Vec::new()));
         let observed = view.clone();
@@ -6694,9 +6577,9 @@ mod tests {
         let optional_was_none = Rc::new(Cell::new(false));
         let was_none = optional_was_none.clone();
         let _ = cx.add_window_view(move |_, cx| {
-            let result = MullionView::new_with_workspaces(invalid, vec![], cx);
-            was_none.set(result.is_none());
-            result.unwrap_or_else(|| MullionView::new(leaf("fallback"), vec![], cx))
+            let result = MullionView::try_new_with_workspaces(invalid, vec![], cx);
+            was_none.set(result.is_err());
+            result.unwrap_or_else(|_| MullionView::new(leaf("fallback"), vec![], cx))
         });
         assert!(optional_was_none.get());
     }
@@ -6708,7 +6591,7 @@ mod tests {
         cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let incoming = split(SplitDirection::Horizontal, 0.5, leaf("b"), leaf("c"));
         let (view, cx) = cx.add_window_view(move |_, cx| {
-            MullionView::new_with_workspaces(workspace_set(incoming), vec![], cx).unwrap()
+            MullionView::try_new_with_workspaces(workspace_set(incoming), vec![], cx).unwrap()
         });
         let pane_events = Rc::new(RefCell::new(Vec::new()));
         let observed = view.clone();
@@ -6728,7 +6611,9 @@ mod tests {
         cx.run_until_parked();
         pane_events.borrow_mut().clear();
         view.update(cx, |view, cx| {
-            assert!(view.switch_workspace(&WorkspaceId("two".into()), cx));
+            assert!(view
+                .try_switch_workspace(&WorkspaceId("two".into()), cx)
+                .unwrap());
             assert_eq!(view.model().focused(), Some(&PaneId::new("b")));
             assert_eq!(view.model().zoomed(), Some(&PaneId::new("b")));
         });
@@ -6741,7 +6626,7 @@ mod tests {
         cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
         let disposals = Rc::new(Cell::new(0));
         let (view, cx) = cx.add_window_view(move |_, cx| {
-            MullionView::new_with_workspaces(workspace_set(leaf("c")), vec![], cx).unwrap()
+            MullionView::try_new_with_workspaces(workspace_set(leaf("c")), vec![], cx).unwrap()
         });
         view.update(cx, |view, cx| {
             for workspace in ["one", "two"] {
@@ -7358,7 +7243,7 @@ mod tests {
 
         cx.simulate_event(gpui::ScrollWheelEvent {
             position: panel.center(),
-            delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-112.))),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-112.))),
             ..Default::default()
         });
         cx.run_until_parked();
@@ -8019,46 +7904,20 @@ mod tests {
     }
 
     #[test]
-    fn reference_vector_icons_stay_inside_the_exact_sixteen_unit_viewbox() {
-        for icon in [
-            ReferencePaneIcon::Move,
-            ReferencePaneIcon::SplitHorizontal,
-            ReferencePaneIcon::SplitVertical,
-            ReferencePaneIcon::Close,
-        ] {
-            let polygons = reference_icon_polygons(icon);
-            assert_eq!(
-                polygons.len(),
-                match icon {
-                    ReferencePaneIcon::Move => 6,
-                    ReferencePaneIcon::Close => 2,
-                    ReferencePaneIcon::SplitHorizontal | ReferencePaneIcon::SplitVertical => 5,
-                }
-            );
-            for &(x, y) in polygons.iter().flat_map(|polygon| polygon.iter()) {
-                assert!((0.0..=16.0).contains(&x));
-                assert!((0.0..=16.0).contains(&y));
-            }
-        }
-        assert_eq!(
-            reference_icon_polygons(ReferencePaneIcon::SplitHorizontal)[4],
-            &[(7., 2.), (9., 2.), (9., 14.), (7., 14.)]
-        );
-        assert_eq!(
-            reference_icon_polygons(ReferencePaneIcon::SplitVertical)[4],
-            &[(2., 7.), (14., 7.), (14., 9.), (2., 9.)]
-        );
-    }
-
-    #[test]
-    fn chevron_rotation_states_match_each_edge() {
-        for edge in [ActivityBarEdge::Left, ActivityBarEdge::Right] {
-            assert_eq!(chevron_rotation(edge, false), 0);
-            assert_eq!(chevron_rotation(edge, true), 90);
-        }
-        for edge in [ActivityBarEdge::Top, ActivityBarEdge::Bottom] {
-            assert_eq!(chevron_rotation(edge, false), 0);
-            assert_eq!(chevron_rotation(edge, true), 180);
+    fn lucide_reference_icons_have_distinct_bundled_glyphs() {
+        let icons = [
+            crate::icons::LucideIcon::GripVertical,
+            crate::icons::LucideIcon::Columns2,
+            crate::icons::LucideIcon::Rows2,
+            crate::icons::LucideIcon::X,
+            crate::icons::LucideIcon::PanelsTopLeft,
+            crate::icons::LucideIcon::ChevronRight,
+            crate::icons::LucideIcon::ChevronLeft,
+            crate::icons::LucideIcon::ChevronDown,
+        ];
+        let glyphs = icons.map(crate::icons::LucideIcon::unicode);
+        for (index, glyph) in glyphs.iter().enumerate() {
+            assert!(!glyphs[..index].contains(glyph));
         }
     }
 
@@ -8420,7 +8279,7 @@ mod tests {
         )
         .unwrap();
         let (_, cx) = cx.add_window_view(move |_, cx| {
-            MullionView::new_with_workspaces(set, vec![], cx).unwrap()
+            MullionView::try_new_with_workspaces(set, vec![], cx).unwrap()
         });
         cx.run_until_parked();
         let one = cx.debug_bounds("workspace:one").unwrap();
@@ -8568,5 +8427,16 @@ mod tests {
         let content = cx.debug_bounds("pane-content:empty").unwrap();
         let body = cx.debug_bounds("pane-body:empty").unwrap();
         assert_eq!(body, content);
+    }
+    #[test]
+    fn durable_root_has_explicit_render_focus_and_event_contracts() {
+        fn assert_render<T: gpui::Render>() {}
+        fn assert_focusable<T: gpui::Focusable>() {}
+        fn assert_pane_events<T: gpui::EventEmitter<crate::PaneEvent<String>>>() {}
+        fn assert_workspace_events<T: gpui::EventEmitter<crate::WorkspaceChanged>>() {}
+        assert_render::<MullionView<String>>();
+        assert_focusable::<MullionView<String>>();
+        assert_pane_events::<MullionView<String>>();
+        assert_workspace_events::<MullionView<String>>();
     }
 }

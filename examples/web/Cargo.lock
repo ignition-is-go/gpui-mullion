@@ -2118,7 +2118,7 @@ dependencies = [
 [[package]]
 name = "gpui-command-palette"
 version = "0.1.0"
-source = "git+https://github.com/ignition-is-go/gpui-command-palette.git#e2ed487262540312984025fe29abb867b1e5064b"
+source = "git+https://github.com/ignition-is-go/gpui-command-palette.git?rev=e2ed487262540312984025fe29abb867b1e5064b#e2ed487262540312984025fe29abb867b1e5064b"
 dependencies = [
  "gpui",
  "gpui_platform",
@@ -2132,6 +2132,7 @@ dependencies = [
  "gpui",
  "gpui-command-palette",
  "gpui_platform",
+ "lucide-icons",
  "scheduler",
  "serde",
 ]
@@ -3030,6 +3031,12 @@ checksum = "0fae87c125b03c1d2c0150c90365d7d6bcc53fb73a9acaef207d2d065860f062"
 dependencies = [
  "imgref",
 ]
+
+[[package]]
+name = "lucide-icons"
+version = "1.31.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd2faac7a3827365b191b835b3cef3a8609b8e7590e98c4df6cf3499387a80cc"
 
 [[package]]
 name = "lyon"

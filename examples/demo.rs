@@ -1,12 +1,7 @@
-#[path = "demo_assets.rs"]
-mod demo_assets;
-
-use demo_assets::DemoAssets;
-use gpui::{
-    div, prelude::*, px, rgb, size, svg, App, Bounds, FontWeight, WindowBounds, WindowOptions,
-};
+use gpui::{div, prelude::*, px, rgb, size, App, Bounds, FontWeight, WindowBounds, WindowOptions};
 use gpui::{Context, Entity};
 use gpui_mullion::{
+    icons::{self as mullion_icons, LucideIcon},
     register_key_bindings, set_mullion_theme, Activity, ActivityBarConfig, ActivityBarEdge,
     ActivityBarHostConfig, ActivityBarMode, ActivityBarSlots, ActivityCatalog, ActivityCategory,
     ActivityChrome, ActivityIcon, ActivityId, ActivityNode, CategoryChrome, CategoryId, DropEdge,
@@ -136,14 +131,8 @@ fn workspace_set() -> WorkspaceSet<DemoData> {
     }
 }
 
-fn icon(name: &'static str) -> ActivityIcon {
-    ActivityIcon::new(move |_, _| {
-        svg()
-            .path(format!("demo-icons/{name}.svg"))
-            .size_full()
-            .text_color(rgb(0xeeeeee))
-            .into_any_element()
-    })
+fn icon(icon: LucideIcon) -> ActivityIcon {
+    ActivityIcon::new(move |_, _| mullion_icons::IconElement::new(icon).into_any_element())
 }
 
 fn content_shell(title: impl Into<gpui::SharedString>, detail: &'static str) -> gpui::Div {
@@ -694,18 +683,18 @@ fn catalog(control: Arc<DemoControl>) -> ActivityCatalog<DemoData> {
     ];
     let mut catalog = ActivityCatalog::new(primary).with_trailing(vec![settings_activity(control)]);
     for (id, asset) in [
-        ("1", "description"),
-        ("2", "article"),
-        ("3", "timeline"),
-        ("4", "list"),
-        ("5", "search"),
-        ("6", "find_replace"),
-        ("7", "bookmarks"),
-        ("8", "code"),
-        ("9", "settings"),
-        ("10", "palette"),
-        ("11", "keyboard"),
-        ("12", "extension"),
+        ("1", LucideIcon::FileText),
+        ("2", LucideIcon::Newspaper),
+        ("3", LucideIcon::History),
+        ("4", LucideIcon::List),
+        ("5", LucideIcon::Search),
+        ("6", LucideIcon::Replace),
+        ("7", LucideIcon::Bookmark),
+        ("8", LucideIcon::Code),
+        ("9", LucideIcon::Settings),
+        ("10", LucideIcon::Palette),
+        ("11", LucideIcon::Keyboard),
+        ("12", LucideIcon::Blocks),
     ] {
         let mut chrome = ActivityChrome::new(icon(asset));
         if id == "1" {
@@ -719,10 +708,10 @@ fn catalog(control: Arc<DemoControl>) -> ActivityCatalog<DemoData> {
         catalog.insert_activity_chrome(ActivityId::new(id), chrome);
     }
     for (id, asset) in [
-        ("0", "folder"),
-        ("1", "edit_note"),
-        ("2", "settings"),
-        ("3", "tune"),
+        ("0", LucideIcon::Folder),
+        ("1", LucideIcon::NotebookPen),
+        ("2", LucideIcon::Settings),
+        ("3", LucideIcon::SlidersHorizontal),
     ] {
         catalog.insert_category_chrome(CategoryId::new(id), CategoryChrome::new(icon(asset)));
     }
@@ -851,7 +840,7 @@ fn host_config() -> ActivityBarHostConfig<DemoData> {
     };
     ActivityBarHostConfig::new().with_slots(
         ActivityBarSlots::new()
-            .with_app_icon(icon("apps"))
+            .with_app_icon(icon(LucideIcon::PanelsTopLeft))
             .with_leading(hairline())
             .with_trailing(hairline()),
     )
@@ -1014,7 +1003,7 @@ impl gpui::Render for DemoRoot {
                                     .child(format!("{}", index + 1))
                                     .on_click(move |_, _, cx| {
                                         view.update(cx, |view, cx| {
-                                            view.switch_workspace(&id, cx);
+                                            let _ = view.try_switch_workspace(&id, cx);
                                         });
                                     })
                             }),
@@ -1045,6 +1034,7 @@ impl gpui::Render for DemoRoot {
 }
 
 fn launch(cx: &mut App) {
+    mullion_icons::install(cx).expect("bundled Lucide font is valid");
     register_key_bindings(cx);
     set_mullion_theme(cx, demo_theme());
     gpui_mullion::gpui_command_palette::set_command_palette_theme(
@@ -1110,7 +1100,7 @@ fn launch(cx: &mut App) {
                             .store(u8::from(next == PaneFocusBehavior::Hover), Ordering::SeqCst)
                     },
                 );
-                MullionView::new_with_workspaces(workspace_set(), Vec::new(), cx)
+                MullionView::try_new_with_workspaces(workspace_set(), Vec::new(), cx)
                     .expect("demo workspace set is valid")
                     .with_activity_catalog(catalog(control.clone()))
                     .expect("demo catalog is valid")
@@ -1155,9 +1145,7 @@ fn launch(cx: &mut App) {
 
 #[cfg(not(target_family = "wasm"))]
 fn main() {
-    gpui_platform::application()
-        .with_assets(DemoAssets)
-        .run(launch);
+    gpui_platform::application().run(launch);
 }
 
 #[cfg(target_family = "wasm")]
@@ -1396,14 +1384,15 @@ fn browser_test_action(action: wasm_bindgen::JsValue, payload: wasm_bindgen::JsV
                                     view.update_workspace_tree(&WorkspaceId(id.into()), tree, cx)
                                         .unwrap();
                                 }
-                                view.switch_workspace(&WorkspaceId("default".into()), cx);
+                                let _ =
+                                    view.try_switch_workspace(&WorkspaceId("default".into()), cx);
                                 view.update_model(cx, |model| {
                                     model.focus(&PaneId::new("1"));
                                 });
                             }
                             "workspace" => {
                                 let id = field("id").unwrap_or_else(|| payload_text.clone());
-                                view.switch_workspace(&WorkspaceId(id), cx);
+                                let _ = view.try_switch_workspace(&WorkspaceId(id), cx);
                             }
                             "focus" => {
                                 let pane = field("pane").unwrap_or_else(|| payload_text.clone());
@@ -1640,9 +1629,7 @@ fn install_browser_test_bridge() {
 #[cfg(target_family = "wasm")]
 fn main() {
     gpui_platform::web_init();
-    let application = gpui_platform::application()
-        .with_assets(DemoAssets)
-        .run_embedded(launch);
+    let application = gpui_platform::application().run_embedded(launch);
     APPLICATION.with(|slot| *slot.borrow_mut() = Some(application));
     install_browser_test_bridge();
 }

@@ -49,6 +49,23 @@ let view = cx.new(|cx| {
 });
 ```
 
+## Zed-style ownership and construction
+
+Mullion follows the same public visual API ownership rules as the pinned Zed GPUI revision:
+
+- ordinary visual values are named `IntoElement`/`RenderOnce` builders with `Type::new(...)`;
+- simple selection values are caller-controlled and report proposed changes;
+- durable pane/workspace UI is an explicit caller-owned `Entity<MullionView<D>>` implementing
+  `Render`, `Focusable`, and typed `EventEmitter` contracts;
+- model, theme, settings, palette, and geometry records remain non-visual data APIs.
+
+Create the durable root explicitly with `cx.new(|cx| MullionView::new(..., cx))` (or a `try_new*`
+variant for untrusted state), retain the entity, and subscribe to its typed events. Mullion never
+creates a hidden keyed entity or initializes durable semantic state while rendering. Interactive
+controls have stable domain-derived IDs, accessibility metadata, and typed action paths. The bundled
+Lucide API follows the ordinary-builder rule: use `icons::IconElement::new(LucideIcon::...)`, and
+call `icons::install(cx)` once before opening a window.
+
 ## Theme
 
 `MullionTheme` is the complete look configuration: it contains semantic colors and every resolved

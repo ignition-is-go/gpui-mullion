@@ -24,6 +24,8 @@ pub mod drag;
 pub mod events;
 /// Pointer-to-pane focus policies.
 pub mod focus;
+/// Bundled Lucide icons and GPUI font registration.
+pub mod icons;
 /// Serializable Mullion keymaps and normalized key sequences.
 pub mod keybindings;
 /// Toolkit-independent pane state machine and event production.
@@ -125,8 +127,8 @@ pub use platform::{
     DetachError, DetachedWindowService, UnavailableDetachedWindows, WindowCapabilities,
 };
 pub use settings::{
-    FocusPresentation, MullionConfig, MullionConfiguration, MullionPresentation, MullionSetting,
-    MullionSettingOption, MullionSettings, MullionSettingsConfig,
+    FocusPresentation, MullionConfig, MullionSetting, MullionSettingOption, MullionSettings,
+    MullionSettingsConfig,
 };
 pub use theme::{
     set_mullion_theme, ActiveMullionTheme, ActivityBarStyle, DropOverlayStyle, MullionRootStyle,
@@ -140,12 +142,12 @@ pub use tree::{
     PaneRotation, PaneValidationError, Rect, SplitDirection,
 };
 pub use view::{
-    register_key_bindings, register_keymap, try_register_key_bindings, BalancePanes,
-    CancelSplitResize, ClosePane, FocusDown, FocusLeft, FocusNext, FocusPrevious, FocusRight,
-    FocusUp, MullionView, MullionViewConstructionError, ResizeSplitDecrease, ResizeSplitIncrease,
-    ToggleZoom,
+    register_key_bindings, register_keymap, try_register_key_bindings, ActivateControl,
+    BalancePanes, BeginWorkspaceRename, CancelSplitResize, ClosePane, FocusDown, FocusLeft,
+    FocusNext, FocusPrevious, FocusRight, FocusUp, MullionView, MullionViewConstructionError,
+    ResizeSplitDecrease, ResizeSplitIncrease, ToggleZoom,
 };
 pub use workspace::{
-    Workspace, WorkspaceChangedCallback, WorkspaceControls, WorkspaceError, WorkspaceId,
-    WorkspaceSet, WorkspaceSetError, WorkspaceValidationError,
+    Workspace, WorkspaceChangedCallback, WorkspaceControls, WorkspaceId, WorkspaceSet,
+    WorkspaceSetError,
 };
