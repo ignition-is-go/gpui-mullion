@@ -2118,6 +2118,7 @@ dependencies = [
 [[package]]
 name = "gpui-command-palette"
 version = "0.1.0"
+source = "git+https://github.com/ignition-is-go/gpui-command-palette.git?rev=f97bf339a81907972c0a77c829eaa929e60e9294#f97bf339a81907972c0a77c829eaa929e60e9294"
 dependencies = [
  "gpui",
  "gpui_platform",
@@ -7235,23 +7236,3 @@ dependencies = [
  "syn 3.0.3",
  "winnow 1.0.4",
 ]
-
-[[patch.unused]]
-name = "autosocket"
-version = "6.0.0"
-
-[[patch.unused]]
-name = "myko"
-version = "6.0.0"
-
-[[patch.unused]]
-name = "myko-leptos"
-version = "6.0.0"
-
-[[patch.unused]]
-name = "myko-server"
-version = "6.0.0"
-
-[[patch.unused]]
-name = "myko-gpui"
-version = "6.0.0"
