@@ -1,5 +1,6 @@
 [package]
 name = "gpui-mullion"
+publish = false
 version = "0.1.0"
 edition = "2021"
 autoexamples = false
@@ -17,15 +18,15 @@ default = []
 test-support = []
 
 [dependencies]
-gpui = { git = "https://github.com/zed-industries/zed.git", rev = "08827f9208b4848d62f3faf86ffa15155966d63c" }
-gpui-command-palette = { git = "https://github.com/ignition-is-go/gpui-command-palette.git", rev = "2c8ff787e79461f4bc1ded0f106b3fb131a38b71" }
+gpui = { git = "https://github.com/zed-industries/zed.git" }
+gpui-command-palette = { git = "https://github.com/ignition-is-go/gpui-command-palette.git", rev = "f97bf339a81907972c0a77c829eaa929e60e9294" }
 lucide-icons = "1.31"
-gpui_platform = { git = "https://github.com/zed-industries/zed.git", rev = "08827f9208b4848d62f3faf86ffa15155966d63c", features = ["wayland", "x11"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed.git", features = ["wayland", "x11"] }
 serde = { version = "1", features = ["derive"] }
-scheduler = { git = "https://github.com/zed-industries/zed.git", rev = "08827f9208b4848d62f3faf86ffa15155966d63c" }
+scheduler = { git = "https://github.com/zed-industries/zed.git" }
 
 [dev-dependencies]
-gpui = { git = "https://github.com/zed-industries/zed.git", rev = "08827f9208b4848d62f3faf86ffa15155966d63c", features = ["test-support"] }
+gpui = { git = "https://github.com/zed-industries/zed.git", features = ["test-support"] }
 serde_json = "1"
 
 [[example]]

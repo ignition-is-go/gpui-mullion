@@ -86,3 +86,26 @@ fn fallible_view_constructor_validates_tree_and_flat_catalog(
     });
     assert!(checked.get());
 }
+
+#[gpui_mullion::gpui::test]
+fn workspace_switcher_is_a_public_controlled_element(cx: &mut gpui_mullion::gpui::TestAppContext) {
+    let view = cx.new(|cx| {
+        MullionView::try_new_with_workspaces(
+            WorkspaceSet::try_new(
+                WorkspaceId::new("one"),
+                vec![Workspace::new(
+                    "one",
+                    "One",
+                    PaneNode::leaf(PaneId::new("pane"), String::new()),
+                )],
+            )
+            .unwrap(),
+            vec![],
+            cx,
+        )
+        .unwrap()
+        .with_workspace_switcher_visible(false)
+    });
+    fn accepts_element(_: impl gpui_mullion::gpui::IntoElement) {}
+    accepts_element(WorkspaceSwitcher::new(view));
+}

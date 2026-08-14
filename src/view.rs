@@ -4403,6 +4403,214 @@ impl<D: PaneData> MullionView<D> {
     }
 }
 
+/// Controlled workspace switcher for a caller-owned [`MullionView`].
+///
+/// This is the same accessible, rename-aware control rendered by Mullion's
+/// built-in workspace strip. Hosts can hide the built-in strip with
+/// [`MullionView::with_workspace_switcher_visible`] and place this element in
+/// their own chrome without duplicating workspace state or mutation paths.
+#[derive(IntoElement)]
+pub struct WorkspaceSwitcher<D: PaneData> {
+    mullion: gpui::Entity<MullionView<D>>,
+}
+
+impl<D: PaneData> WorkspaceSwitcher<D> {
+    /// Bind the switcher to the exact Mullion view it displays and controls.
+    pub fn new(mullion: gpui::Entity<MullionView<D>>) -> Self {
+        Self { mullion }
+    }
+}
+
+impl<D: PaneData> gpui::RenderOnce for WorkspaceSwitcher<D> {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.mullion_theme().clone();
+        let styles = theme.as_ref();
+        let mullion = self.mullion;
+        let (set, rename_editor, rename_enabled, add_workspace, rename_focus) = {
+            let view = mullion.read(cx);
+            (
+                view.workspaces.clone(),
+                view.workspace_rename_editor
+                    .as_ref()
+                    .map(|editor| (editor.id.clone(), editor.draft.clone())),
+                view.workspace_controls.rename_enabled(),
+                view.workspace_controls.add_callback().cloned(),
+                view.workspace_rename_focus.clone(),
+            )
+        };
+        let tabs = set.map(|set| {
+            let active = set.active;
+            let count = set.workspaces.len();
+            set.workspaces
+                .into_iter()
+                .enumerate()
+                .map(|(index, workspace)| {
+                    let id = workspace.id;
+                    let selected = id == active;
+                    let editing = rename_editor
+                        .as_ref()
+                        .is_some_and(|(editor_id, _)| editor_id == &id);
+                    let label = rename_editor
+                        .as_ref()
+                        .filter(|(editor_id, _)| editor_id == &id)
+                        .map_or_else(|| workspace.name.clone(), |(_, draft)| draft.clone());
+                    let accessibility = crate::MullionAccessibilityNode::workspace(
+                        &id,
+                        &workspace.name,
+                        index,
+                        count,
+                        selected,
+                    );
+                    let mouse_view = mullion.clone();
+                    let mouse_id = id.clone();
+                    let click_view = mullion.clone();
+                    let click_id = id.clone();
+                    let activate_view = mullion.clone();
+                    let activate_id = id.clone();
+                    let rename_view = mullion.clone();
+                    let rename_id = id.clone();
+                    let key_view = mullion.clone();
+                    let key_id = id.clone();
+                    let a11y_view = mullion.clone();
+                    let a11y_id = id.clone();
+                    div()
+                        .id(SharedString::from(format!("workspace:{}", id.0)))
+                        .debug_selector({
+                            let id = id.clone();
+                            move || format!("workspace:{}", id.0)
+                        })
+                        .role(gpui::Role::Tab)
+                        .accessibility_id(format!("mullion-workspace-{}", id.0))
+                        .aria_label(accessibility.label)
+                        .aria_description(accessibility.description)
+                        .aria_selected(selected)
+                        .focusable()
+                        .tab_stop(true)
+                        .px(styles.workspace_switcher.horizontal_padding)
+                        .py(styles.workspace_switcher.vertical_padding)
+                        .rounded(styles.workspace_switcher.border_radius)
+                        .cursor_pointer()
+                        .text_size(styles.workspace_switcher.font_size)
+                        .line_height(styles.workspace_switcher.line_height)
+                        .text_color(if selected {
+                            styles.workspace_switcher.active_text
+                        } else {
+                            styles.workspace_switcher.text
+                        })
+                        .bg(if selected {
+                            styles.workspace_switcher.active_background
+                        } else {
+                            styles.workspace_switcher.background
+                        })
+                        .when(editing, |element| {
+                            element
+                                .track_focus(&rename_focus)
+                                .border_1()
+                                .border_color(styles.focus_indicator)
+                        })
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            move |event: &gpui::MouseDownEvent, window, cx| {
+                                if rename_enabled && event.click_count >= 2 {
+                                    mouse_view.update(cx, |view, cx| {
+                                        view.begin_workspace_rename(&mouse_id, window, cx);
+                                    });
+                                    cx.stop_propagation();
+                                    window.prevent_default();
+                                }
+                            },
+                        )
+                        .on_click(move |_, _, cx| {
+                            if !editing {
+                                click_view.update(cx, |view, cx| {
+                                    let _ = view.try_switch_workspace(&click_id, cx);
+                                });
+                            }
+                        })
+                        .on_action(move |_: &ActivateControl, _, cx| {
+                            if !editing {
+                                activate_view.update(cx, |view, cx| {
+                                    let _ = view.try_switch_workspace(&activate_id, cx);
+                                });
+                            }
+                        })
+                        .on_action(move |_: &BeginWorkspaceRename, window, cx| {
+                            if rename_enabled && !editing {
+                                rename_view.update(cx, |view, cx| {
+                                    view.begin_workspace_rename(&rename_id, window, cx);
+                                });
+                            }
+                        })
+                        .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
+                            key_view.update(cx, |view, cx| {
+                                if editing {
+                                    view.edit_workspace_name_key(event, window, cx);
+                                } else if rename_enabled && event.keystroke.key == "f2" {
+                                    view.begin_workspace_rename(&key_id, window, cx);
+                                    cx.stop_propagation();
+                                    window.prevent_default();
+                                } else if matches!(
+                                    event.keystroke.key.as_str(),
+                                    "enter" | "space" | " "
+                                ) {
+                                    let _ = view.try_switch_workspace(&key_id, cx);
+                                    cx.stop_propagation();
+                                }
+                            });
+                        })
+                        .on_a11y_action(gpui::AccessibleAction::Click, move |_, _, cx| {
+                            a11y_view.update(cx, |view, cx| {
+                                let _ = view.try_switch_workspace(&a11y_id, cx);
+                            });
+                        })
+                        .child(label)
+                })
+                .collect::<Vec<_>>()
+        });
+        let add_control = add_workspace.map(|factory| {
+            let view = mullion.clone();
+            div()
+                .id("mullion-add-workspace")
+                .debug_selector(|| "mullion-add-workspace".to_owned())
+                .role(gpui::Role::Button)
+                .aria_label("Add workspace")
+                .focusable()
+                .tab_stop(true)
+                .px(styles.workspace_switcher.horizontal_padding)
+                .py(styles.workspace_switcher.vertical_padding)
+                .rounded(styles.workspace_switcher.border_radius)
+                .cursor_pointer()
+                .text_size(styles.workspace_switcher.font_size)
+                .line_height(styles.workspace_switcher.line_height)
+                .text_color(styles.workspace_switcher.text)
+                .bg(styles.workspace_switcher.background)
+                .on_click(move |_, window, cx| {
+                    let snapshot = view.read(cx).workspaces().cloned();
+                    if let Some(workspace) = snapshot
+                        .as_ref()
+                        .and_then(|snapshot| factory(snapshot, window, cx))
+                    {
+                        view.update(cx, |view, cx| {
+                            let _ = view.add_workspace(workspace, cx);
+                        });
+                    }
+                })
+                .child("+")
+        });
+        div()
+            .id("mullion-workspace-tabs")
+            .debug_selector(|| "mullion-workspace-tabs".to_owned())
+            .role(gpui::Role::TabList)
+            .aria_label("Mullion workspaces")
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap(styles.workspace_switcher.gap)
+            .children(tabs.into_iter().flatten())
+            .children(add_control)
+    }
+}
+
 impl<D: PaneData> Render for MullionView<D> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Snapshot the application-global theme exactly once so every child in this
@@ -4445,139 +4653,9 @@ impl<D: PaneData> Render for MullionView<D> {
             .and_then(|id| tree.find(id))
             .unwrap_or(tree.as_ref());
         let pane_ids = rendered_tree.leaf_ids();
-        let rename_editor = self
-            .workspace_rename_editor
-            .as_ref()
-            .map(|editor| (editor.id.clone(), editor.draft.clone()));
-        let rename_enabled = self.workspace_controls.rename_enabled();
-        let rename_focus = self.workspace_rename_focus.clone();
         let workspace_tabs = self
             .workspace_switcher_visible
-            .then_some(self.workspaces.as_ref())
-            .flatten()
-            .map(|set| {
-                let active = set.active.clone();
-                let count = set.workspaces.len();
-                set.workspaces
-                    .iter()
-                    .enumerate()
-                    .map(|(index, workspace)| {
-                        let id = workspace.id.clone();
-                        let action_activate_id = workspace.id.clone();
-                        let key_activate_id = workspace.id.clone();
-                        let action_rename_id = workspace.id.clone();
-                        let key_rename_id = workspace.id.clone();
-                        let a11y_id = workspace.id.clone();
-                        let selected = id == active;
-                        let editing = rename_editor
-                            .as_ref()
-                            .is_some_and(|(editor_id, _)| editor_id == &id);
-                        let label = rename_editor
-                            .as_ref()
-                            .filter(|(editor_id, _)| editor_id == &id)
-                            .map_or_else(|| workspace.name.clone(), |(_, draft)| draft.clone());
-                        let mouse_id = id.clone();
-                        let accessibility = crate::MullionAccessibilityNode::workspace(
-                            &workspace.id,
-                            &workspace.name,
-                            index,
-                            count,
-                            selected,
-                        );
-                        div()
-                            .id(SharedString::from(format!("workspace:{}", id.0)))
-                            .debug_selector({
-                                let id = id.clone();
-                                move || format!("workspace:{}", id.0)
-                            })
-                            .role(gpui::Role::Tab)
-                            .accessibility_id(format!("mullion-workspace-{}", workspace.id.0))
-                            .aria_label(accessibility.label)
-                            .aria_description(accessibility.description)
-                            .aria_selected(selected)
-                            .focusable()
-                            .tab_stop(true)
-                            .px(styles.workspace_switcher.horizontal_padding)
-                            .py(styles.workspace_switcher.vertical_padding)
-                            .rounded(styles.workspace_switcher.border_radius)
-                            .cursor_pointer()
-                            .text_size(styles.workspace_switcher.font_size)
-                            .line_height(styles.workspace_switcher.line_height)
-                            .text_color(if selected {
-                                styles.workspace_switcher.active_text
-                            } else {
-                                styles.workspace_switcher.text
-                            })
-                            .bg(if selected {
-                                styles.workspace_switcher.active_background
-                            } else {
-                                styles.workspace_switcher.background
-                            })
-                            .when(editing, |element| {
-                                element
-                                    .track_focus(&rename_focus)
-                                    .border_1()
-                                    .border_color(styles.focus_indicator)
-                            })
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(
-                                    move |this, event: &gpui::MouseDownEvent, window, cx| {
-                                        if rename_enabled && event.click_count >= 2 {
-                                            this.begin_workspace_rename(&mouse_id, window, cx);
-                                            cx.stop_propagation();
-                                            window.prevent_default();
-                                        }
-                                    },
-                                ),
-                            )
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if !editing {
-                                    let _ = this.try_switch_workspace(&id, cx);
-                                }
-                            }))
-                            .on_action(cx.listener(move |this, _: &ActivateControl, _, cx| {
-                                if !editing {
-                                    let _ = this.try_switch_workspace(&action_activate_id, cx);
-                                }
-                            }))
-                            .on_action(cx.listener(
-                                move |this, _: &BeginWorkspaceRename, window, cx| {
-                                    if rename_enabled && !editing {
-                                        this.begin_workspace_rename(&action_rename_id, window, cx);
-                                    }
-                                },
-                            ))
-                            .on_key_down(cx.listener(
-                                move |this, event: &gpui::KeyDownEvent, window, cx| {
-                                    if editing {
-                                        this.edit_workspace_name_key(event, window, cx);
-                                    } else if rename_enabled && event.keystroke.key == "f2" {
-                                        this.begin_workspace_rename(&key_rename_id, window, cx);
-                                        cx.stop_propagation();
-                                        window.prevent_default();
-                                    } else if matches!(
-                                        event.keystroke.key.as_str(),
-                                        "enter" | "space" | " "
-                                    ) {
-                                        let _ = this.try_switch_workspace(&key_activate_id, cx);
-                                        cx.stop_propagation();
-                                    }
-                                },
-                            ))
-                            .on_a11y_action(gpui::AccessibleAction::Click, {
-                                let view = cx.entity().downgrade();
-                                move |_, _, cx| {
-                                    view.update(cx, |this, cx| {
-                                        this.try_switch_workspace(&a11y_id, cx)
-                                    })
-                                    .ok();
-                                }
-                            })
-                            .child(label)
-                    })
-                    .collect::<Vec<_>>()
-            });
+            .then(|| WorkspaceSwitcher::new(cx.entity()));
         let overlays = self.render_overlays(window, cx);
         let active_split_on_drop = self.active_split.clone();
         div()
@@ -4765,20 +4843,7 @@ impl<D: PaneData> Render for MullionView<D> {
                     }
                 }),
             )
-            .when_some(workspace_tabs, |element, tabs| {
-                element.child(
-                    div()
-                        .id("mullion-workspace-tabs")
-                        .debug_selector(|| "mullion-workspace-tabs".to_owned())
-                        .role(gpui::Role::TabList)
-                        .aria_label("Mullion workspaces")
-                        .flex_shrink_0()
-                        .flex()
-                        .items_center()
-                        .gap(styles.workspace_switcher.gap)
-                        .children(tabs),
-                )
-            })
+            .children(workspace_tabs)
             .child(div().flex_1().min_w_0().min_h_0().child(self.render_node(
                 rendered_tree,
                 &pane_ids,
@@ -8340,6 +8405,45 @@ mod tests {
                 "Twox"
             );
         });
+    }
+
+    #[gpui::test]
+    fn application_factory_adds_workspace_and_publishes_complete_snapshot(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
+        let set = WorkspaceSet::try_new(
+            WorkspaceId::new("one"),
+            vec![crate::Workspace::new("one", "One", leaf("a"))],
+        )
+        .unwrap();
+        let snapshots = Rc::new(RefCell::new(Vec::new()));
+        let published = snapshots.clone();
+        let controls = WorkspaceControls::default()
+            .on_add_workspace(|snapshot, _, _| {
+                assert_eq!(snapshot.workspaces.len(), 1);
+                Some(crate::Workspace::new("two", "Two", leaf("b")))
+            })
+            .on_changed(move |snapshot, _| published.borrow_mut().push(snapshot));
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::try_new_with_workspaces(set, vec![], cx)
+                .unwrap()
+                .with_workspace_controls(controls)
+        });
+        cx.run_until_parked();
+
+        let add = cx.debug_bounds("mullion-add-workspace").unwrap().center();
+        cx.simulate_click(add, gpui::Modifiers::none());
+        cx.run_until_parked();
+
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.workspaces().unwrap().workspaces.len(), 2);
+            assert_eq!(
+                view.workspace(&WorkspaceId::new("two")).unwrap().name,
+                "Two"
+            );
+        });
+        let snapshots = snapshots.borrow();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].workspaces.len(), 2);
     }
 
     #[gpui::test]
