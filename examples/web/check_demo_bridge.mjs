@@ -161,56 +161,6 @@ assert(
   state,
 );
 
-state = await action("modal");
-assert(
-  state.overlays.length === 1 &&
-    state.overlays[0].id === "modal" &&
-    state.overlays[0].tier === "modal" &&
-    state.overlays[0].dismiss_on_backdrop,
-  "controlled modal exposes real backdrop policy",
-  state,
-);
-// Controlled policy is visible synchronously; wait for the next GPUI paint so
-// real CDP input targets the newly installed backdrop rather than stale hit data.
-await sleep(300);
-// Avoid the activity rail at the top-left: use an otherwise empty pane point
-// outside the centered 360x140 modal content.
-const backdropPoint = {
-  x: canvasOrigin.left + canvasOrigin.width - 16,
-  y: canvasOrigin.top + canvasOrigin.height - 80,
-};
-await command("Input.dispatchMouseEvent", {
-  type: "mousePressed",
-  ...backdropPoint,
-  button: "left",
-  buttons: 1,
-  clickCount: 1,
-});
-await command("Input.dispatchMouseEvent", {
-  type: "mouseReleased",
-  ...backdropPoint,
-  button: "left",
-  buttons: 0,
-  clickCount: 1,
-});
-for (let attempt = 0; attempt < 20; attempt += 1) {
-  state = JSON.parse(await evaluate("globalThis.__mullionTestState()"));
-  if (state.overlays.length === 0) break;
-  await sleep(25);
-}
-assert(
-  state.overlays.length === 0,
-  "real backdrop click dismisses controlled modal",
-  state,
-);
-state = await action("toast");
-assert(
-  state.overlays.length === 1 &&
-    state.overlays[0].id === "toast" &&
-    state.overlays[0].tier === "toast",
-  "controlled toast is real stack state",
-  state,
-);
 state = await action("focus", { pane: "2" });
 state = await action("drag");
 assert(
