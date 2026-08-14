@@ -1,0 +1,9 @@
+¦ditem©dbodyy™Replace direct Zed Git GPUI/platform/scheduler dependencies with an exact corrected crates.io `gpui-unofficial` package-family release after its command-palette dependency is migrated.
+
+Scope and acceptance:
+- Update root and browser manifests/locks, CI backend package-name probes, and docs.
+- Resolve exactly one registry-backed GPUI identity and no Zed GPUI Git source.
+- Preserve semantic event behavior while adapting only APIs absent from the selected release; avoid redundant focus transitions.
+- Keep application text fonts consumer-owned through `MullionTheme` proportional/monospace families, apply the proportional family at the Mullion root, and retain only the dedicated Lucide icon font.
+- Pass all native tests, strict Clippy, WASM checking, Trunk build, and browser smoke validation.
+- Wait for iamnbutler/gpui-unofficial#243 to be fixed and published; do not use a Git, path, or vendored GPUI workaround.gcreatedx2026-08-14T22:53:15.957391ZlcreatedByDevxtrevor.a.sargent@gmail.compcreatedByMachinegmalcolmbidx 6b4ff184a99b41d1b5a0822803cac62cflabelsƒdgpuiimigrationdwasmhprioritybP1iprojectIdx 8f87a08a995b47a691ed88d23f6caf1cetitlex,Migrate Mullion to crates.io gpui-unofficialjchangeTypecSEThitemTypedTaskicreatedAtx2026-08-14T22:53:15.957397Zbtxx$b59197fc-18b5-46b6-952e-515c5dd33ca1hsourceIdgmalcolm
