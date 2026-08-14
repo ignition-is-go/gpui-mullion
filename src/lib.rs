@@ -58,7 +58,7 @@ pub mod prelude {
         ActivityCatalog, ActivityCategory, ActivityFactoryRegistry, ActivityId, ActivityInstance,
         ActivityNode, CategoryId, FocusPresentation, MullionConfig, MullionModel, MullionSettings,
         MullionTheme, MullionView, PaneData, PaneEvent, PaneFocusBehavior, PaneId, PaneNode,
-        SplitDirection, Workspace, WorkspaceControls, WorkspaceId, WorkspaceSet,
+        SplitDirection, Workspace, WorkspaceControls, WorkspaceId, WorkspaceSet, WorkspaceSwitcher,
     };
 }
 pub use accessibility::{
@@ -145,7 +145,7 @@ pub use view::{
     register_key_bindings, register_keymap, try_register_key_bindings, ActivateControl,
     BalancePanes, BeginWorkspaceRename, CancelSplitResize, ClosePane, FocusDown, FocusLeft,
     FocusNext, FocusPrevious, FocusRight, FocusUp, MullionView, MullionViewConstructionError,
-    ResizeSplitDecrease, ResizeSplitIncrease, ToggleZoom,
+    ResizeSplitDecrease, ResizeSplitIncrease, ToggleZoom, WorkspaceSwitcher,
 };
 pub use workspace::{
     Workspace, WorkspaceChangedCallback, WorkspaceControls, WorkspaceId, WorkspaceSet,

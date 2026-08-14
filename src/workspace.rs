@@ -96,9 +96,20 @@ pub struct WorkspaceSet<D: PaneData> {
 pub type WorkspaceChangedCallback<D> =
     std::rc::Rc<dyn Fn(WorkspaceSet<D>, &mut gpui::Context<crate::MullionView<D>>)>;
 
+/// Consumer factory invoked by the workspace switcher's add control.
+///
+/// The application receives the latest complete snapshot and may return a new
+/// workspace built from its own IDs, pane defaults, and domain state. Returning
+/// `None` cancels the request. Accepted workspaces flow through the ordinary
+/// `on_changed` persistence callback.
+pub type WorkspaceAddCallback<D> = std::rc::Rc<
+    dyn Fn(&WorkspaceSet<D>, &mut gpui::Window, &mut gpui::App) -> Option<Workspace<D>>,
+>;
+
 /// Styled workspace-switcher behavior and consumer persistence integration.
 pub struct WorkspaceControls<D: PaneData> {
     rename_enabled: bool,
+    on_add: Option<WorkspaceAddCallback<D>>,
     on_changed: Option<WorkspaceChangedCallback<D>>,
 }
 
@@ -106,6 +117,7 @@ impl<D: PaneData> Clone for WorkspaceControls<D> {
     fn clone(&self) -> Self {
         Self {
             rename_enabled: self.rename_enabled,
+            on_add: self.on_add.clone(),
             on_changed: self.on_changed.clone(),
         }
     }
@@ -115,6 +127,7 @@ impl<D: PaneData> Default for WorkspaceControls<D> {
     fn default() -> Self {
         Self {
             rename_enabled: false,
+            on_add: None,
             on_changed: None,
         }
     }
@@ -125,6 +138,7 @@ impl<D: PaneData> WorkspaceControls<D> {
     pub fn editable() -> Self {
         Self {
             rename_enabled: true,
+            on_add: None,
             on_changed: None,
         }
     }
@@ -132,6 +146,16 @@ impl<D: PaneData> WorkspaceControls<D> {
     /// Enable or disable inline workspace renaming.
     pub fn with_rename_enabled(mut self, enabled: bool) -> Self {
         self.rename_enabled = enabled;
+        self
+    }
+
+    /// Show an add control and delegate new-workspace construction to the application.
+    pub fn on_add_workspace(
+        mut self,
+        callback: impl Fn(&WorkspaceSet<D>, &mut gpui::Window, &mut gpui::App) -> Option<Workspace<D>>
+            + 'static,
+    ) -> Self {
+        self.on_add = Some(std::rc::Rc::new(callback));
         self
     }
 
@@ -147,6 +171,10 @@ impl<D: PaneData> WorkspaceControls<D> {
     /// Return whether inline renaming is enabled.
     pub const fn rename_enabled(&self) -> bool {
         self.rename_enabled
+    }
+
+    pub(crate) fn add_callback(&self) -> Option<&WorkspaceAddCallback<D>> {
+        self.on_add.as_ref()
     }
 
     pub(crate) fn changed_callback(&self) -> Option<&WorkspaceChangedCallback<D>> {
