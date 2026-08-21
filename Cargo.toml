@@ -1,6 +1,5 @@
 [package]
 name = "gpui-mullion"
-publish = false
 version = "0.1.0"
 edition = "2021"
 autoexamples = false
@@ -11,6 +10,8 @@ repository = "https://github.com/ignition-is-go/gpui-mullion"
 keywords = ["gpui", "panes", "split-view"]
 categories = ["gui"]
 
+[package.metadata.flux]
+tasks = ["build", "publish"]
 
 [features]
 default = []
@@ -19,7 +20,7 @@ test-support = []
 
 [dependencies]
 gpui = { package = "gpui-unofficial", version = "=1.16.1" }
-gpui-command-palette = { git = "https://github.com/ignition-is-go/gpui-command-palette.git" }
+gpui-command-palette = { version = "0.1.0", git = "https://github.com/ignition-is-go/gpui-command-palette.git" }
 lucide-icons = "1.31"
 gpui_platform = { package = "gpui-platform-gpui-unofficial", version = "=1.16.1", features = ["wayland", "x11"] }
 serde = { version = "1", features = ["derive"] }
