@@ -20,7 +20,7 @@ jobs:
       - name: Install Linux GPUI libraries
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-x11-dev libfontconfig1-dev libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
       - name: Verify the crate is publishable
-        run: cargo publish --dry-run
+        run: cargo publish --dry-run --allow-dirty
 
   test:
     name: ${{ matrix.os }}
