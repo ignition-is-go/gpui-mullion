@@ -2036,6 +2036,8 @@ dependencies = [
 [[package]]
 name = "gpui-command-palette"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d776bf02f3fb49cd5d8d69ba73a66d6b5a4f6efb89fd7ffd531719ae10d63b32"
 dependencies = [
  "gpui-platform-gpui-unofficial",
  "gpui-unofficial",
@@ -7335,39 +7337,3 @@ dependencies = [
  "syn 3.0.3",
  "winnow 1.0.4",
 ]
-
-[[patch.unused]]
-name = "pulse-gpui"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "gpui-node-graph"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "hyphae-gpui"
-version = "3.1.1"
-
-[[patch.unused]]
-name = "myko-gpui"
-version = "6.1.0"
-
-[[patch.unused]]
-name = "autosocket"
-version = "6.1.0"
-
-[[patch.unused]]
-name = "myko"
-version = "6.1.0"
-
-[[patch.unused]]
-name = "myko-leptos"
-version = "6.1.0"
-
-[[patch.unused]]
-name = "myko-macros"
-version = "6.1.0"
-
-[[patch.unused]]
-name = "myko-server"
-version = "6.1.0"
