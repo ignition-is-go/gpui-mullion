@@ -46,8 +46,8 @@ jobs:
       - name: Verify Linux window backends
         if: runner.os == 'Linux'
         run: |
-          cargo tree -e features -i gpui_linux | grep -F 'gpui_linux feature "wayland"'
-          cargo tree -e features -i gpui_linux | grep -F 'gpui_linux feature "x11"'
+          cargo tree -e features -i gpui-linux-gpui-unofficial | grep -F 'gpui-linux-gpui-unofficial feature "wayland"'
+          cargo tree -e features -i gpui-linux-gpui-unofficial | grep -F 'gpui-linux-gpui-unofficial feature "x11"'
       - name: Test
         run: cargo test --all-targets
       - name: Clippy
