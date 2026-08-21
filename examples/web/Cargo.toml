@@ -12,8 +12,8 @@ path = "main.rs"
 
 [dependencies]
 gpui-mullion = { path = "../..", features = ["test-support"] }
-gpui = { git = "https://github.com/zed-industries/zed.git" }
-gpui_platform = { git = "https://github.com/zed-industries/zed.git" }
+gpui = { package = "gpui-unofficial", version = "=1.16.1" }
+gpui_platform = { package = "gpui-platform-gpui-unofficial", version = "=1.16.1" }
 serde = { version = "1", features = ["derive"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]

@@ -10,6 +10,18 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  publish-dry-run:
+    name: crates.io publish dry run
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux GPUI libraries
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-x11-dev libfontconfig1-dev libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+      - name: Verify the crate is publishable
+        run: cargo publish --dry-run --allow-dirty
+
   test:
     name: ${{ matrix.os }}
     strategy:
@@ -34,8 +46,8 @@ jobs:
       - name: Verify Linux window backends
         if: runner.os == 'Linux'
         run: |
-          cargo tree -e features -i gpui_linux | grep -F 'gpui_linux feature "wayland"'
-          cargo tree -e features -i gpui_linux | grep -F 'gpui_linux feature "x11"'
+          cargo tree -e features -i gpui-linux-gpui-unofficial | grep -F 'gpui-linux-gpui-unofficial feature "wayland"'
+          cargo tree -e features -i gpui-linux-gpui-unofficial | grep -F 'gpui-linux-gpui-unofficial feature "x11"'
       - name: Test
         run: cargo test --all-targets
       - name: Clippy
