@@ -5078,8 +5078,10 @@ mod tests {
 
         assert!(calls
             .borrow()
-            .chunks_exact(3)
-            .all(|chunk| chunk == ["modal", "toast", "drag"]));
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .all(|chunk| *chunk == ["modal", "toast", "drag"]));
         assert_eq!(
             cx.debug_bounds("mullion-overlay-layer"),
             cx.debug_bounds("pane:pane")
@@ -6082,7 +6084,7 @@ mod tests {
 
         let logged = events.borrow();
         assert_eq!(logged.len(), 2);
-        for pair in logged.chunks_exact(2) {
+        for pair in logged.as_chunks::<2>().0 {
             assert!(matches!(pair[0], PaneEvent::Resized { .. }));
             assert!(matches!(pair[1], PaneEvent::TreeChanged { .. }));
         }
