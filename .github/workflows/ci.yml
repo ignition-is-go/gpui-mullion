@@ -27,15 +27,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [linux, macos, windows]
-        include:
-          - os: linux
-            runner: ubuntu-24.04
-          - os: macos
-            runner: [self-hosted, macOS, ARM64, site-lucid-lab]
-          - os: windows
-            runner: windows-2025
-    runs-on: ${{ matrix.runner }}
+        os: [ubuntu-24.04, macos-14, windows-2025]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
