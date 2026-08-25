@@ -94,6 +94,9 @@ jobs:
         with:
           chrome-version: stable
           install-dependencies: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - name: Build browser demo
         run: cd examples/web && env -u NO_COLOR trunk build --release
       - name: Execute built WASM in Google Chrome under Xvfb
