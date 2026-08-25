@@ -18,7 +18,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.95.0
       - uses: Swatinem/rust-cache@v2
       - name: Install Linux GPUI libraries
-        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libxkbcommon-x11-dev libfontconfig1-dev libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+        run: sudo sed -i 's|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources && sudo apt-get update && sudo apt-get install -y build-essential pkg-config libxkbcommon-x11-dev libfontconfig1-dev libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
       - name: Verify the crate is publishable
         run: cargo publish --dry-run --allow-dirty
 
@@ -38,7 +38,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Linux dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libxkbcommon-x11-dev libfontconfig1-dev libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev weston xvfb mesa-vulkan-drivers
+        run: sudo sed -i 's|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources && sudo apt-get update && sudo apt-get install -y build-essential pkg-config libxkbcommon-x11-dev libfontconfig1-dev libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev weston xvfb mesa-vulkan-drivers
       - name: Format
         run: cargo fmt --all -- --check
       - name: Check
@@ -72,7 +72,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config xvfb
+      - run: sudo sed -i 's|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources && sudo apt-get update && sudo apt-get install -y build-essential pkg-config xvfb
       - uses: dtolnay/rust-toolchain@nightly
         with:
           targets: wasm32-unknown-unknown
@@ -94,7 +94,7 @@ jobs:
         with:
           chrome-version: stable
       - name: Install virtual browser display
-        run: sudo apt-get update && sudo apt-get install -y xvfb
+        run: sudo sed -i 's|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources && sudo apt-get update && sudo apt-get install -y xvfb
       - name: Build browser demo
         run: cd examples/web && env -u NO_COLOR trunk build --release
       - name: Execute built WASM in Google Chrome under Xvfb
