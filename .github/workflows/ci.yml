@@ -12,7 +12,7 @@ concurrency:
 jobs:
   publish-dry-run:
     name: crates.io publish dry run
-    runs-on: ubuntu-24.04
+    runs-on: public-ci
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.95.0
@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14, windows-2025]
+        os: [public-ci, macos-14, windows-2025]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -68,7 +68,7 @@ jobs:
 
   web:
     name: wasm32 and browser bundle
-    runs-on: ubuntu-24.04
+    runs-on: public-ci
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
