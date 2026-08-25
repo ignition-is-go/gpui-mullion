@@ -93,6 +93,7 @@ jobs:
         uses: browser-actions/setup-chrome@v1
         with:
           chrome-version: stable
+          install-dependencies: true
       - name: Install virtual browser display
         run: sudo sed -i 's|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources && sudo apt-get update && sudo apt-get install -y xvfb
       - name: Build browser demo
