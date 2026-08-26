@@ -23,12 +23,17 @@ jobs:
         run: cargo publish --dry-run --allow-dirty
 
   test:
-    name: ${{ matrix.os }}
+    name: ${{ matrix.runner.name }}
     strategy:
       fail-fast: false
       matrix:
-        os: [public-ci, macos-14, public-ci-windows]
-    runs-on: ${{ matrix.os }}
+        runner:
+          - {name: Linux, group: public-ci, labels: public-ci}
+          - {name: macOS, group: ephemeral-macos, labels: public-ci-macos}
+          - {name: Windows, group: ephemeral-windows, labels: public-ci-windows}
+    runs-on:
+      group: ${{ matrix.runner.group }}
+      labels: ${{ matrix.runner.labels }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
