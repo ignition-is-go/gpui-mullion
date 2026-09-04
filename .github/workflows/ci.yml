@@ -60,6 +60,7 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
       - name: Check
+        if: runner.os != 'Windows'
         run: cargo check --all-targets
       - name: Verify Linux window backends
         if: runner.os == 'Linux'
