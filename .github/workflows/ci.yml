@@ -60,7 +60,6 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
       - name: Check
-        if: runner.os != 'Windows'
         run: cargo check --all-targets
       - name: Verify Linux window backends
         if: runner.os == 'Linux'
@@ -69,6 +68,8 @@ jobs:
           cargo tree -e features -i gpui-linux-gpui-unofficial | grep -F 'gpui-linux-gpui-unofficial feature "x11"'
       - name: Test
         run: cargo test --all-targets
+      - name: Build
+        run: cargo build --all-targets
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
       - name: Execute native Mullion demo on Wayland
