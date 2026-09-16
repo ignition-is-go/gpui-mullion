@@ -12,7 +12,7 @@ concurrency:
 jobs:
   publish-dry-run:
     name: crates.io publish dry run
-    runs-on: ci-public-linux-ephemeral
+    runs-on: ["self-hosted", "Linux", "X64", "ram-ge-16g", "disk-ge-100g"]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ignition-is-go/pulse-actions/actions/report-resources@2c94ebf4fedd47f0c36d491e0dee5ad446a071b5 # v1.0.0
@@ -36,12 +36,10 @@ jobs:
       fail-fast: false
       matrix:
         runner:
-          - {name: Linux, group: ci-public-linux-ephemeral, labels: ci-public-linux-ephemeral}
-          - {name: macOS, group: ci-macos-ephemeral, labels: ci-macos-ephemeral}
-          - {name: Windows, group: ci-windows-ephemeral, labels: ci-windows-ephemeral}
-    runs-on:
-      group: ${{ matrix.runner.group }}
-      labels: ${{ matrix.runner.labels }}
+          - {name: Linux, labels: '["self-hosted","Linux","X64","ram-ge-16g","disk-ge-100g"]'}
+          - {name: macOS, labels: '["self-hosted","macOS","ARM64","site-lucid-lab","ram-ge-24g","disk-ge-100g"]'}
+          - {name: Windows, labels: '["self-hosted","Windows","X64","ram-ge-8g","disk-ge-100g"]'}
+    runs-on: ${{ fromJSON(matrix.runner.labels) }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -90,7 +88,7 @@ jobs:
 
   web:
     name: wasm32 and browser bundle
-    runs-on: ci-public-linux-ephemeral
+    runs-on: ["self-hosted", "Linux", "X64", "ram-ge-16g", "disk-ge-100g"]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
