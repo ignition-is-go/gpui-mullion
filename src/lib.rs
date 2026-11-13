@@ -34,6 +34,8 @@ pub mod model;
 pub mod overlay;
 /// Command-palette projection, search, and invocation adapters.
 pub mod palette;
+/// Stable ids for Mullion's chrome, for layout harnesses.
+pub mod part_tag;
 /// Optional host-owned platform capabilities such as detached windows.
 pub mod platform;
 /// Runtime settings, controlled values, and serializable configuration.
@@ -121,6 +123,7 @@ pub use palette::{
     MullionPaletteBinding, PaletteEntry, PaletteInvocation, PaletteInvocationError,
     PaletteSearchResult,
 };
+pub use part_tag::{set_part_tagger, PartTagger};
 #[cfg(not(target_family = "wasm"))]
 pub use platform::NativeDetachedWindowService;
 pub use platform::{

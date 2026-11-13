@@ -2027,12 +2027,12 @@ impl<D: PaneData> MullionView<D> {
                                 this.cancel_split_resize(window, cx);
                             }))
                             .on_key_down(cx.listener(
-                                move |_this, event: &gpui::KeyDownEvent, _, cx| {
+                                move |_this, event: &gpui::KeyDownEvent, window, cx| {
                                     match event.keystroke.key.as_str() {
-                                        "left" | "up" => cx.dispatch_action(&ResizeSplitDecrease),
-                                        "right" | "down" => {
-                                            cx.dispatch_action(&ResizeSplitIncrease)
-                                        }
+                                        "left" | "up" => window
+                                            .dispatch_action(Box::new(ResizeSplitDecrease), cx),
+                                        "right" | "down" => window
+                                            .dispatch_action(Box::new(ResizeSplitIncrease), cx),
                                         _ => return,
                                     }
                                     cx.stop_propagation();
@@ -2134,7 +2134,9 @@ impl<D: PaneData> MullionView<D> {
                             })
                             .child(second_el),
                     )
-                    .child(handle);
+                    .child(crate::part_tag::tag_part(cx, handle, || {
+                        format!("split-handle:{}", key.0)
+                    }));
 
                 SplitBoundsRecorder {
                     key,
@@ -2729,9 +2731,9 @@ impl<D: PaneData> MullionView<D> {
                             this.finish(cx);
                         }))
                         .on_key_down(cx.listener(
-                            move |_this, event: &gpui::KeyDownEvent, _, cx| {
+                            move |_this, event: &gpui::KeyDownEvent, window, cx| {
                                 if matches!(event.keystroke.key.as_str(), "enter" | "space" | " ") {
-                                    cx.dispatch_action(&ActivateControl);
+                                    window.dispatch_action(Box::new(ActivateControl), cx);
                                     cx.stop_propagation();
                                 }
                             },
@@ -2802,7 +2804,9 @@ impl<D: PaneData> MullionView<D> {
                                 ),
                         )
                         .child(activity_label);
-                    let item = item.into_any_element();
+                    let item = crate::part_tag::tag_part(cx, item, || {
+                        format!("activity:{}:{}", pane.0, activity.id.0)
+                    });
                     rendered.push(item);
                 }
                 VisibleActivityNode::Category(category) => {
@@ -2960,9 +2964,9 @@ impl<D: PaneData> MullionView<D> {
                             }
                         }))
                         .on_key_down(cx.listener(
-                            move |_this, event: &gpui::KeyDownEvent, _, cx| {
+                            move |_this, event: &gpui::KeyDownEvent, window, cx| {
                                 if matches!(event.keystroke.key.as_str(), "enter" | "space" | " ") {
-                                    cx.dispatch_action(&ActivateControl);
+                                    window.dispatch_action(Box::new(ActivateControl), cx);
                                     cx.stop_propagation();
                                 }
                             },
@@ -3039,7 +3043,9 @@ impl<D: PaneData> MullionView<D> {
                             chevron.into_any_element()
                         });
 
-                    let label = label.into_any_element();
+                    let label = crate::part_tag::tag_part(cx, label, || {
+                        format!("activity-category:{}:{}", pane.0, category.id.0)
+                    });
 
                     let mut wrapper = div()
                         .debug_selector({
@@ -3244,9 +3250,9 @@ impl<D: PaneData> MullionView<D> {
                         })
                         .ok();
                 })
-                .on_key_down(move |event: &gpui::KeyDownEvent, _, cx| {
+                .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
                     if matches!(event.keystroke.key.as_str(), "enter" | "space" | " ") {
-                        cx.dispatch_action(&ActivateControl);
+                        window.dispatch_action(Box::new(ActivateControl), cx);
                         cx.stop_propagation();
                     }
                 })
@@ -3329,9 +3335,9 @@ impl<D: PaneData> MullionView<D> {
                 })
                 .ok();
             })
-            .on_key_down(move |event: &gpui::KeyDownEvent, _, cx| {
+            .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
                 if matches!(event.keystroke.key.as_str(), "enter" | "space" | " ") {
-                    cx.dispatch_action(&ActivateControl);
+                    window.dispatch_action(Box::new(ActivateControl), cx);
                     cx.stop_propagation();
                 }
             })
@@ -4032,7 +4038,11 @@ impl<D: PaneData> MullionView<D> {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .when_some(header, |content, header| content.child(header))
+            .when_some(header, |content, header| {
+                content.child(crate::part_tag::tag_part(cx, header, || {
+                    format!("pane-header:{}", id.0)
+                }))
+            })
             .child(
                 div()
                     .debug_selector({
@@ -4170,9 +4180,13 @@ impl<D: PaneData> MullionView<D> {
                 visual.flex_row_reverse()
             })
             .child(content_region)
-            .when_some(bar, |visual, bar| visual.child(bar));
+            .when_some(bar, |visual, bar| {
+                visual.child(crate::part_tag::tag_part(cx, bar, || {
+                    format!("activity-bar:{}", id.0)
+                }))
+            });
 
-        div()
+        let pane = div()
             .id(SharedString::from(format!("pane:{}", id.0)))
             .debug_selector({
                 let id = id.clone();
@@ -4215,8 +4229,8 @@ impl<D: PaneData> MullionView<D> {
                     }
                 }),
             )
-            .child(visual)
-            .into_any_element()
+            .child(visual);
+        crate::part_tag::tag_part(cx, pane, || format!("pane:{}", id.0))
     }
 
     fn render_overlay(
@@ -4473,7 +4487,8 @@ impl<D: PaneData> gpui::RenderOnce for WorkspaceSwitcher<D> {
                     let key_id = id.clone();
                     let a11y_view = mullion.clone();
                     let a11y_id = id.clone();
-                    div()
+                    let part_id = id.clone();
+                    let tab = div()
                         .id(SharedString::from(format!("workspace:{}", id.0)))
                         .debug_selector({
                             let id = id.clone();
@@ -4563,7 +4578,8 @@ impl<D: PaneData> gpui::RenderOnce for WorkspaceSwitcher<D> {
                                 let _ = view.try_switch_workspace(&a11y_id, cx);
                             });
                         })
-                        .child(label)
+                        .child(label);
+                    crate::part_tag::tag_part(cx, tab, || format!("workspace:{}", part_id.0))
                 })
                 .collect::<Vec<_>>()
         });
@@ -5078,8 +5094,10 @@ mod tests {
 
         assert!(calls
             .borrow()
-            .chunks_exact(3)
-            .all(|chunk| chunk == ["modal", "toast", "drag"]));
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .all(|chunk| chunk == &["modal", "toast", "drag"]));
         assert_eq!(
             cx.debug_bounds("mullion-overlay-layer"),
             cx.debug_bounds("pane:pane")
@@ -6082,7 +6100,7 @@ mod tests {
 
         let logged = events.borrow();
         assert_eq!(logged.len(), 2);
-        for pair in logged.chunks_exact(2) {
+        for pair in logged.as_chunks::<2>().0 {
             assert!(matches!(pair[0], PaneEvent::Resized { .. }));
             assert!(matches!(pair[1], PaneEvent::TreeChanged { .. }));
         }
@@ -6116,6 +6134,92 @@ mod tests {
         });
         assert_eq!(PERF_FILTER_CALLS.load(Ordering::SeqCst), initial_filters);
         assert_eq!(view.read_with(cx, |view, _| view.activity_cache_syncs), 1);
+    }
+
+    #[gpui::test]
+    fn an_installed_part_tagger_sees_every_chrome_part(cx: &mut TestAppContext) {
+        thread_local! {
+            static SEEN: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+        }
+        fn record(element: AnyElement, id: SharedString) -> AnyElement {
+            SEEN.with_borrow_mut(|seen| seen.push(id.to_string()));
+            element
+        }
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
+        let tree = split(SplitDirection::Horizontal, 0.5, leaf("a"), leaf("b"));
+        let (_view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::new(tree, vec![ActivityNode::Activity(legacy_activity())], cx)
+        });
+        cx.run_until_parked();
+        assert!(SEEN.with_borrow(Vec::is_empty), "no tagger, no ids");
+
+        cx.update(|window, cx| {
+            crate::set_part_tagger(cx, record);
+            window.refresh();
+        });
+        cx.run_until_parked();
+        let seen = SEEN.with_borrow(|seen| seen.clone());
+        for id in [
+            "mullion.pane:a",
+            "mullion.pane:b",
+            "mullion.activity-bar:a",
+            "mullion.activity:a:legacy",
+            "mullion.split-handle:b",
+        ] {
+            assert!(seen.iter().any(|s| s == id), "{id} missing from {seen:?}");
+        }
+    }
+
+    #[gpui::test]
+    fn arrow_keys_on_a_focused_split_handle_resize_it(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
+        let tree = split(SplitDirection::Horizontal, 0.5, leaf("a"), leaf("b"));
+        let (view, cx) = cx.add_window_view(move |_, cx| MullionView::new(tree, vec![], cx));
+        cx.simulate_resize(gpui::size(px(1000.), px(700.)));
+        cx.run_until_parked();
+
+        let handle = cx.debug_bounds("split-hit-target:b").unwrap().center();
+        cx.simulate_click(handle, gpui::Modifiers::none());
+        cx.simulate_keystrokes("right");
+        assert_eq!(ratio(&view, "b", cx), 0.55);
+        cx.simulate_keystrokes("left left");
+        assert_eq!(ratio(&view, "b", cx), 0.45);
+    }
+
+    #[gpui::test]
+    fn enter_and_space_on_a_focused_activity_item_activate_it(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            MullionView::new(
+                leaf("pane"),
+                vec![ActivityNode::Activity(legacy_activity())],
+                cx,
+            )
+        });
+        cx.simulate_resize(gpui::size(px(500.), px(320.)));
+        cx.run_until_parked();
+        let active = |view: &gpui::Entity<MullionView<String>>,
+                      cx: &mut gpui::VisualTestContext| {
+            view.read_with(cx, |view, _| {
+                match view.model.tree().find(&PaneId::new("pane")) {
+                    Some(PaneNode::Leaf {
+                        active_activity, ..
+                    }) => active_activity.clone(),
+                    _ => None,
+                }
+            })
+        };
+
+        let item = cx.debug_bounds("activity:pane:legacy").unwrap().center();
+        cx.simulate_click(item, gpui::Modifiers::none());
+        for key in ["enter", "space"] {
+            view.update(cx, |view, _| {
+                view.model.set_activity(&PaneId::new("pane"), None);
+            });
+            assert_eq!(active(&view, cx), None);
+            cx.simulate_keystrokes(key);
+            assert_eq!(active(&view, cx), Some(ActivityId::new("legacy")), "{key}");
+        }
     }
 
     #[gpui::test]
