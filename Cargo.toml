@@ -37,3 +37,5 @@ path = "examples/demo.rs"
 [[example]]
 name = "detached-window"
 path = "examples/detached_window.rs"
+
+[workspace]
