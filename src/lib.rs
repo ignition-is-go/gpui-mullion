@@ -35,7 +35,7 @@ pub mod overlay;
 /// Command-palette projection, search, and invocation adapters.
 pub mod palette;
 /// Stable ids for Mullion's chrome, for layout harnesses.
-pub mod part_tag;
+mod part_tag;
 /// Optional host-owned platform capabilities such as detached windows.
 pub mod platform;
 /// Runtime settings, controlled values, and serializable configuration.
