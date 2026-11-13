@@ -2066,8 +2066,7 @@ dependencies = [
 [[package]]
 name = "gpui-command-palette"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d776bf02f3fb49cd5d8d69ba73a66d6b5a4f6efb89fd7ffd531719ae10d63b32"
+source = "git+https://github.com/ignition-is-go/gpui-command-palette.git?branch=gpui-parity#a4ecf3fa5aaed73569e1dfddf5c830bb12e1af57"
 dependencies = [
  "gpui-platform-gpui-unofficial",
  "gpui-unofficial",

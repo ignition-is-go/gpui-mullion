@@ -20,7 +20,7 @@ test-support = []
 
 [dependencies]
 gpui = { package = "gpui-unofficial", version = "=1.16.1" }
-gpui-command-palette = "0.1.0"
+gpui-command-palette = { git = "https://github.com/ignition-is-go/gpui-command-palette.git", branch = "gpui-parity" }
 lucide-icons = "1.31"
 gpui_platform = { package = "gpui-platform-gpui-unofficial", version = "=1.16.1", features = ["wayland", "x11"] }
 serde = { version = "1", features = ["derive"] }
