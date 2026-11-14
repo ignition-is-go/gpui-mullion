@@ -237,7 +237,7 @@ fn activity_motion_sample_with_geometry(
     let expanded_padding = f32::from(expanded_padding).max(0.0);
     ActivityMotionSample {
         progress,
-        vertical_extent: thickness + (expanded_extent + expanded_padding - thickness) * progress,
+        vertical_extent: thickness + (expanded_extent - thickness) * progress,
         edge_padding: expanded_padding * progress,
         row_extent: thickness + (expanded_extent - thickness) * progress,
         label_opacity: progress,
@@ -547,6 +547,9 @@ impl<D: PaneData> MullionView<D> {
             this.detach_command_palette(cx);
         })
         .detach();
+        cx.default_global::<crate::ActivityBarHolds>();
+        cx.observe_global::<crate::ActivityBarHolds>(|this, cx| this.sync_activity_bar_holds(cx))
+            .detach();
         let mut view = Self {
             model,
             dock_config: DockConfig::default(),
@@ -1424,6 +1427,7 @@ impl<D: PaneData> MullionView<D> {
             if !ratio_only {
                 self.activity_cache_dirty = true;
             }
+            self.prune_closed_pane_holds(cx);
             if let Some(workspaces) = &mut self.workspaces {
                 // Model mutations already preserve pane-tree invariants. Avoid
                 // revalidating every inactive workspace on each live resize frame.
@@ -2027,12 +2031,12 @@ impl<D: PaneData> MullionView<D> {
                                 this.cancel_split_resize(window, cx);
                             }))
                             .on_key_down(cx.listener(
-                                move |_this, event: &gpui::KeyDownEvent, _, cx| {
+                                move |_this, event: &gpui::KeyDownEvent, window, cx| {
                                     match event.keystroke.key.as_str() {
-                                        "left" | "up" => cx.dispatch_action(&ResizeSplitDecrease),
-                                        "right" | "down" => {
-                                            cx.dispatch_action(&ResizeSplitIncrease)
-                                        }
+                                        "left" | "up" => window
+                                            .dispatch_action(Box::new(ResizeSplitDecrease), cx),
+                                        "right" | "down" => window
+                                            .dispatch_action(Box::new(ResizeSplitIncrease), cx),
                                         _ => return,
                                     }
                                     cx.stop_propagation();
@@ -2134,7 +2138,9 @@ impl<D: PaneData> MullionView<D> {
                             })
                             .child(second_el),
                     )
-                    .child(handle);
+                    .child(crate::part_tag::tag_part(cx, handle, || {
+                        format!("split-handle:{}", key.0)
+                    }));
 
                 SplitBoundsRecorder {
                     key,
@@ -2408,6 +2414,31 @@ impl<D: PaneData> MullionView<D> {
                 .transition_duration_ms
                 .into(),
         )
+    }
+
+    fn sync_activity_bar_holds(&mut self, cx: &mut Context<Self>) {
+        for pane in self.model.tree().leaf_ids() {
+            let held = cx.global::<crate::ActivityBarHolds>().is_held(&pane);
+            self.handle_activity_bar_hover_region(&pane, "hold", held, cx);
+        }
+    }
+
+    /// Forgets rail state for panes that are no longer leaves, including any
+    /// unreleased slot hold, so a recreated `PaneId` starts released.
+    fn prune_closed_pane_holds(&mut self, cx: &mut Context<Self>) {
+        let leaves = self.model.tree().leaf_ids();
+        let gone: Vec<PaneId> = self
+            .hover_regions
+            .keys()
+            .filter(|pane| !leaves.contains(pane))
+            .cloned()
+            .collect();
+        for pane in gone {
+            self.hover_regions.remove(&pane);
+            if cx.global::<crate::ActivityBarHolds>().is_held(&pane) {
+                cx.update_global::<crate::ActivityBarHolds, _>(|holds, _| holds.release(&pane));
+            }
+        }
     }
 
     fn handle_activity_bar_hover_region(
@@ -2729,9 +2760,9 @@ impl<D: PaneData> MullionView<D> {
                             this.finish(cx);
                         }))
                         .on_key_down(cx.listener(
-                            move |_this, event: &gpui::KeyDownEvent, _, cx| {
+                            move |_this, event: &gpui::KeyDownEvent, window, cx| {
                                 if matches!(event.keystroke.key.as_str(), "enter" | "space" | " ") {
-                                    cx.dispatch_action(&ActivateControl);
+                                    window.dispatch_action(Box::new(ActivateControl), cx);
                                     cx.stop_propagation();
                                 }
                             },
@@ -2802,7 +2833,9 @@ impl<D: PaneData> MullionView<D> {
                                 ),
                         )
                         .child(activity_label);
-                    let item = item.into_any_element();
+                    let item = crate::part_tag::tag_part(cx, item, || {
+                        format!("activity:{}:{}", pane.0, activity.id.0)
+                    });
                     rendered.push(item);
                 }
                 VisibleActivityNode::Category(category) => {
@@ -2960,9 +2993,9 @@ impl<D: PaneData> MullionView<D> {
                             }
                         }))
                         .on_key_down(cx.listener(
-                            move |_this, event: &gpui::KeyDownEvent, _, cx| {
+                            move |_this, event: &gpui::KeyDownEvent, window, cx| {
                                 if matches!(event.keystroke.key.as_str(), "enter" | "space" | " ") {
-                                    cx.dispatch_action(&ActivateControl);
+                                    window.dispatch_action(Box::new(ActivateControl), cx);
                                     cx.stop_propagation();
                                 }
                             },
@@ -3039,7 +3072,9 @@ impl<D: PaneData> MullionView<D> {
                             chevron.into_any_element()
                         });
 
-                    let label = label.into_any_element();
+                    let label = crate::part_tag::tag_part(cx, label, || {
+                        format!("activity-category:{}:{}", pane.0, category.id.0)
+                    });
 
                     let mut wrapper = div()
                         .debug_selector({
@@ -3050,7 +3085,16 @@ impl<D: PaneData> MullionView<D> {
                         .relative()
                         .flex_shrink_0()
                         .when(horizontal, |wrapper| wrapper.flex().flex_row().h_full())
-                        .when(!horizontal, |wrapper| wrapper.flex().flex_col().w_full())
+                        .when(!horizontal, |wrapper| {
+                            // Like Leptos, cards bleed through the rail's expanded
+                            // padding: stretch to the content box plus that padding.
+                            let bleed = px(item_sample.edge_padding);
+                            wrapper
+                                .flex()
+                                .flex_col()
+                                .when(edge == ActivityBarEdge::Left, |w| w.mr(-bleed))
+                                .when(edge == ActivityBarEdge::Right, |w| w.ml(-bleed))
+                        })
                         .bg(if expanded {
                             styles.activity_bar.category_card_background
                         } else {
@@ -3244,9 +3288,9 @@ impl<D: PaneData> MullionView<D> {
                         })
                         .ok();
                 })
-                .on_key_down(move |event: &gpui::KeyDownEvent, _, cx| {
+                .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
                     if matches!(event.keystroke.key.as_str(), "enter" | "space" | " ") {
-                        cx.dispatch_action(&ActivateControl);
+                        window.dispatch_action(Box::new(ActivateControl), cx);
                         cx.stop_propagation();
                     }
                 })
@@ -3329,9 +3373,9 @@ impl<D: PaneData> MullionView<D> {
                 })
                 .ok();
             })
-            .on_key_down(move |event: &gpui::KeyDownEvent, _, cx| {
+            .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
                 if matches!(event.keystroke.key.as_str(), "enter" | "space" | " ") {
-                    cx.dispatch_action(&ActivateControl);
+                    window.dispatch_action(Box::new(ActivateControl), cx);
                     cx.stop_propagation();
                 }
             })
@@ -3604,6 +3648,23 @@ impl<D: PaneData> MullionView<D> {
                 styles.activity_bar.expanded_padding,
             )
         };
+        // Vertical rails pad the panel itself, so top-level rows are the content
+        // box (extent - border - padding) and carry no padding of their own.
+        let rail_border = f32::from(styles.activity_bar.border_width);
+        let rail_row_extent = |sample: &ActivityMotionSample| {
+            if horizontal {
+                px(sample.row_extent)
+            } else {
+                px(sample.row_extent - rail_border - sample.edge_padding)
+            }
+        };
+        let rail_row_padding = |sample: &ActivityMotionSample| {
+            if horizontal {
+                px(sample.edge_padding)
+            } else {
+                px(0.)
+            }
+        };
         let move_sample = row_sample("move", move_expanded);
         let split_h_sample = row_sample("split-h", split_h_expanded);
         let split_v_sample = row_sample("split-v", split_v_expanded);
@@ -3626,9 +3687,9 @@ impl<D: PaneData> MullionView<D> {
                 app_icon,
                 PaneMoveRenderStyle {
                     size: styles.pane_controls.compact_size,
-                    row_extent: px(move_sample.row_extent),
+                    row_extent: rail_row_extent(&move_sample),
                     icon_size: styles.pane_controls.compact_icon_size,
-                    end_padding: px(move_sample.edge_padding),
+                    end_padding: rail_row_padding(&move_sample),
                     focus_progress,
                     theme,
                     horizontal,
@@ -3644,12 +3705,12 @@ impl<D: PaneData> MullionView<D> {
                 can_split,
                 PaneControlRenderStyle {
                     size: styles.pane_controls.compact_size,
-                    row_extent: px(split_h_sample.row_extent),
+                    row_extent: rail_row_extent(&split_h_sample),
                     icon_size: styles.pane_controls.compact_icon_size,
                     label_size: styles.pane_controls.expanded_label_size,
                     show_label: true,
                     label_opacity: split_h_sample.label_opacity,
-                    end_padding: px(split_h_sample.edge_padding),
+                    end_padding: rail_row_padding(&split_h_sample),
                     theme,
                 },
                 horizontal,
@@ -3664,12 +3725,12 @@ impl<D: PaneData> MullionView<D> {
                 can_split,
                 PaneControlRenderStyle {
                     size: styles.pane_controls.compact_size,
-                    row_extent: px(split_v_sample.row_extent),
+                    row_extent: rail_row_extent(&split_v_sample),
                     icon_size: styles.pane_controls.compact_icon_size,
                     label_size: styles.pane_controls.expanded_label_size,
                     show_label: true,
                     label_opacity: split_v_sample.label_opacity,
-                    end_padding: px(split_v_sample.edge_padding),
+                    end_padding: rail_row_padding(&split_v_sample),
                     theme,
                 },
                 horizontal,
@@ -3684,12 +3745,12 @@ impl<D: PaneData> MullionView<D> {
                 can_close,
                 PaneControlRenderStyle {
                     size: styles.pane_controls.compact_size,
-                    row_extent: px(close_sample.row_extent),
+                    row_extent: rail_row_extent(&close_sample),
                     icon_size: styles.pane_controls.compact_icon_size,
                     label_size: styles.pane_controls.expanded_label_size,
                     show_label: true,
                     label_opacity: close_sample.label_opacity,
-                    end_padding: px(close_sample.edge_padding),
+                    end_padding: rail_row_padding(&close_sample),
                     theme,
                 },
                 horizontal,
@@ -3723,6 +3784,7 @@ impl<D: PaneData> MullionView<D> {
                 styles.activity_bar.expanded_padding,
             );
             let panel_extent = px(panel_sample.vertical_extent);
+            let panel_padding = px(panel_sample.edge_padding);
 
             let primary_group = div()
                 .debug_selector({
@@ -3784,11 +3846,13 @@ impl<D: PaneData> MullionView<D> {
                     panel
                         .left(-panel_extent * (1.0 - reveal_progress))
                         .border_r(styles.activity_bar.border_width)
+                        .pr(panel_padding)
                 })
                 .when(edge == ActivityBarEdge::Right, |panel| {
                     panel
                         .right(-panel_extent * (1.0 - reveal_progress))
                         .border_l(styles.activity_bar.border_width)
+                        .pl(panel_padding)
                 })
                 .when(edge == ActivityBarEdge::Top, |panel| {
                     panel
@@ -3805,7 +3869,7 @@ impl<D: PaneData> MullionView<D> {
                 }))
                 .child(primary_group)
                 .child(trailing_group);
-            let panel = panel.into_any_element();
+            let panel = crate::part_tag::tag_part(cx, panel, || format!("activity-bar:{}", id.0));
 
             let edge_trigger = auto_hide.then(|| {
                 let trigger_pane = id.clone();
@@ -4032,7 +4096,11 @@ impl<D: PaneData> MullionView<D> {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .when_some(header, |content, header| content.child(header))
+            .when_some(header, |content, header| {
+                content.child(crate::part_tag::tag_part(cx, header, || {
+                    format!("pane-header:{}", id.0)
+                }))
+            })
             .child(
                 div()
                     .debug_selector({
@@ -4170,9 +4238,13 @@ impl<D: PaneData> MullionView<D> {
                 visual.flex_row_reverse()
             })
             .child(content_region)
-            .when_some(bar, |visual, bar| visual.child(bar));
+            .when_some(bar, |visual, bar| {
+                visual.child(crate::part_tag::tag_part(cx, bar, || {
+                    format!("activity-bar-scope:{}", id.0)
+                }))
+            });
 
-        div()
+        let pane = div()
             .id(SharedString::from(format!("pane:{}", id.0)))
             .debug_selector({
                 let id = id.clone();
@@ -4215,8 +4287,8 @@ impl<D: PaneData> MullionView<D> {
                     }
                 }),
             )
-            .child(visual)
-            .into_any_element()
+            .child(visual);
+        crate::part_tag::tag_part(cx, pane, || format!("pane:{}", id.0))
     }
 
     fn render_overlay(
@@ -4473,7 +4545,8 @@ impl<D: PaneData> gpui::RenderOnce for WorkspaceSwitcher<D> {
                     let key_id = id.clone();
                     let a11y_view = mullion.clone();
                     let a11y_id = id.clone();
-                    div()
+                    let part_id = id.clone();
+                    let tab = div()
                         .id(SharedString::from(format!("workspace:{}", id.0)))
                         .debug_selector({
                             let id = id.clone();
@@ -4563,7 +4636,8 @@ impl<D: PaneData> gpui::RenderOnce for WorkspaceSwitcher<D> {
                                 let _ = view.try_switch_workspace(&a11y_id, cx);
                             });
                         })
-                        .child(label)
+                        .child(label);
+                    crate::part_tag::tag_part(cx, tab, || format!("workspace:{}", part_id.0))
                 })
                 .collect::<Vec<_>>()
         });
@@ -5078,8 +5152,10 @@ mod tests {
 
         assert!(calls
             .borrow()
-            .chunks_exact(3)
-            .all(|chunk| chunk == ["modal", "toast", "drag"]));
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .all(|chunk| chunk == &["modal", "toast", "drag"]));
         assert_eq!(
             cx.debug_bounds("mullion-overlay-layer"),
             cx.debug_bounds("pane:pane")
@@ -6082,7 +6158,7 @@ mod tests {
 
         let logged = events.borrow();
         assert_eq!(logged.len(), 2);
-        for pair in logged.chunks_exact(2) {
+        for pair in logged.as_chunks::<2>().0 {
             assert!(matches!(pair[0], PaneEvent::Resized { .. }));
             assert!(matches!(pair[1], PaneEvent::TreeChanged { .. }));
         }
@@ -6116,6 +6192,92 @@ mod tests {
         });
         assert_eq!(PERF_FILTER_CALLS.load(Ordering::SeqCst), initial_filters);
         assert_eq!(view.read_with(cx, |view, _| view.activity_cache_syncs), 1);
+    }
+
+    #[gpui::test]
+    fn an_installed_part_tagger_sees_every_chrome_part(cx: &mut TestAppContext) {
+        thread_local! {
+            static SEEN: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+        }
+        fn record(element: AnyElement, id: SharedString) -> AnyElement {
+            SEEN.with_borrow_mut(|seen| seen.push(id.to_string()));
+            element
+        }
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
+        let tree = split(SplitDirection::Horizontal, 0.5, leaf("a"), leaf("b"));
+        let (_view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::new(tree, vec![ActivityNode::Activity(legacy_activity())], cx)
+        });
+        cx.run_until_parked();
+        assert!(SEEN.with_borrow(Vec::is_empty), "no tagger, no ids");
+
+        cx.update(|window, cx| {
+            crate::set_part_tagger(cx, record);
+            window.refresh();
+        });
+        cx.run_until_parked();
+        let seen = SEEN.with_borrow(|seen| seen.clone());
+        for id in [
+            "mullion.pane:a",
+            "mullion.pane:b",
+            "mullion.activity-bar:a",
+            "mullion.activity:a:legacy",
+            "mullion.split-handle:b",
+        ] {
+            assert!(seen.iter().any(|s| s == id), "{id} missing from {seen:?}");
+        }
+    }
+
+    #[gpui::test]
+    fn arrow_keys_on_a_focused_split_handle_resize_it(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
+        let tree = split(SplitDirection::Horizontal, 0.5, leaf("a"), leaf("b"));
+        let (view, cx) = cx.add_window_view(move |_, cx| MullionView::new(tree, vec![], cx));
+        cx.simulate_resize(gpui::size(px(1000.), px(700.)));
+        cx.run_until_parked();
+
+        let handle = cx.debug_bounds("split-hit-target:b").unwrap().center();
+        cx.simulate_click(handle, gpui::Modifiers::none());
+        cx.simulate_keystrokes("right");
+        assert_eq!(ratio(&view, "b", cx), 0.55);
+        cx.simulate_keystrokes("left left");
+        assert_eq!(ratio(&view, "b", cx), 0.45);
+    }
+
+    #[gpui::test]
+    fn enter_and_space_on_a_focused_activity_item_activate_it(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            MullionView::new(
+                leaf("pane"),
+                vec![ActivityNode::Activity(legacy_activity())],
+                cx,
+            )
+        });
+        cx.simulate_resize(gpui::size(px(500.), px(320.)));
+        cx.run_until_parked();
+        let active = |view: &gpui::Entity<MullionView<String>>,
+                      cx: &mut gpui::VisualTestContext| {
+            view.read_with(cx, |view, _| {
+                match view.model.tree().find(&PaneId::new("pane")) {
+                    Some(PaneNode::Leaf {
+                        active_activity, ..
+                    }) => active_activity.clone(),
+                    _ => None,
+                }
+            })
+        };
+
+        let item = cx.debug_bounds("activity:pane:legacy").unwrap().center();
+        cx.simulate_click(item, gpui::Modifiers::none());
+        for key in ["enter", "space"] {
+            view.update(cx, |view, _| {
+                view.model.set_activity(&PaneId::new("pane"), None);
+            });
+            assert_eq!(active(&view, cx), None);
+            cx.simulate_keystrokes(key);
+            assert_eq!(active(&view, cx), Some(ActivityId::new("legacy")), "{key}");
+        }
     }
 
     #[gpui::test]
@@ -6948,9 +7110,10 @@ mod tests {
             "pane-control:split-v:pane",
             "pane-control:close:pane",
         ] {
+            // 28 rail - 1 border: top-level rows are the panel's content box.
             assert_eq!(
                 cx.debug_bounds(selector).unwrap().size,
-                gpui::size(px(28.), px(28.))
+                gpui::size(px(27.), px(28.))
             );
         }
 
@@ -7108,7 +7271,7 @@ mod tests {
             cx.debug_bounds("activity-bar:pane").unwrap().size.width,
             px(0.)
         );
-        assert_eq!(expanded.size.width, px(158.));
+        assert_eq!(expanded.size.width, px(150.));
         assert_eq!(
             expanded.left(),
             cx.debug_bounds("pane-visual:pane").unwrap().left()
@@ -7175,14 +7338,14 @@ mod tests {
         });
         cx.run_until_parked();
         let expanded_panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
-        assert_eq!(expanded_panel.size.width, px(158.));
+        assert_eq!(expanded_panel.size.width, px(150.));
         assert_eq!(
             cx.debug_bounds("activity:pane:activity")
                 .unwrap()
                 .size
                 .width,
-            expanded_panel.size.width - px(1.),
-            "vertical rows fill the flyout up to its one-pixel border",
+            expanded_panel.size.width - px(1.) - px(8.),
+            "top-level rows fill the content box inside border and padding",
         );
         assert_eq!(cx.debug_bounds("pane-content:pane").unwrap(), content);
         view.read_with(cx, |view, _| {
@@ -7839,7 +8002,7 @@ mod tests {
                 mid.row_extent,
                 mid.label_opacity
             ),
-            (93.0, 4.0, 89.0, 0.5)
+            (89.0, 4.0, 89.0, 0.5)
         );
         assert_eq!(
             (
@@ -7848,7 +8011,7 @@ mod tests {
                 end.row_extent,
                 end.label_opacity
             ),
-            (158.0, 8.0, 150.0, 1.0)
+            (150.0, 8.0, 150.0, 1.0)
         );
         assert_eq!(start.hidden_translation, 1.0);
         assert_eq!(mid.hidden_translation, 0.5);
@@ -7868,7 +8031,7 @@ mod tests {
                 forced.edge_padding,
                 forced.label_opacity
             ),
-            (158.0, 150.0, 8.0, 1.0)
+            (150.0, 150.0, 8.0, 1.0)
         );
         let restored = activity_motion_sample(ActivityMotion::endpoint(false));
         assert_eq!(
@@ -8018,8 +8181,8 @@ mod tests {
         });
         cx.run_until_parked();
         let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
-        assert_eq!(panel.size.width, px(93.));
-        assert_eq!(panel.left(), pane.left() - px(46.5));
+        assert_eq!(panel.size.width, px(89.));
+        assert_eq!(panel.left(), pane.left() - px(44.5));
         cx.executor().advance_clock(Duration::from_millis(150));
         cx.update(|window, cx| {
             window.simulate_next_frame(cx);
@@ -8041,8 +8204,8 @@ mod tests {
         });
         cx.run_until_parked();
         let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
-        assert_eq!(panel.size.width, px(93.));
-        assert_eq!(panel.left(), pane.left() - px(46.5));
+        assert_eq!(panel.size.width, px(89.));
+        assert_eq!(panel.left(), pane.left() - px(44.5));
         cx.executor().advance_clock(Duration::from_millis(150));
         cx.update(|window, cx| {
             window.simulate_next_frame(cx);
@@ -8082,9 +8245,9 @@ mod tests {
         cx.run_until_parked();
         let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
         let row = cx.debug_bounds("activity:pane:activity").unwrap();
-        assert_eq!(panel.size.width, px(93.));
-        assert_eq!(row.size.width, px(92.));
-        assert_eq!(panel.size.width - row.size.width, px(1.));
+        assert_eq!(panel.size.width, px(89.));
+        // 89 border-box - 1 border - 8 * 0.5 padding.
+        assert_eq!(row.size.width, px(84.));
         cx.executor().advance_clock(Duration::from_millis(75));
         cx.update(|window, cx| {
             window.simulate_next_frame(cx);
@@ -8092,9 +8255,9 @@ mod tests {
         cx.run_until_parked();
         let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
         let row = cx.debug_bounds("activity:pane:activity").unwrap();
-        assert_eq!(panel.size.width, px(158.));
-        assert_eq!(row.size.width, px(157.));
-        assert_eq!(panel.size.width - row.size.width, px(1.));
+        assert_eq!(panel.size.width, px(150.));
+        // A top-level row is the content box: 150 - 1 border - 8 padding.
+        assert_eq!(row.size.width, px(141.));
 
         view.update(cx, |view, cx| {
             view.host.activity_bar.edge = ActivityBarEdge::Top;
@@ -8542,5 +8705,322 @@ mod tests {
         assert_focusable::<MullionView<String>>();
         assert_pane_events::<MullionView<String>>();
         assert_workspace_events::<MullionView<String>>();
+    }
+    thread_local! {
+        static TAGGED: RefCell<HashMap<String, Bounds<Pixels>>> = RefCell::new(HashMap::new());
+    }
+
+    struct BoundsProbe {
+        id: SharedString,
+        child: AnyElement,
+    }
+
+    impl IntoElement for BoundsProbe {
+        type Element = Self;
+        fn into_element(self) -> Self {
+            self
+        }
+    }
+
+    impl gpui::Element for BoundsProbe {
+        type RequestLayoutState = ();
+        type PrepaintState = ();
+        fn id(&self) -> Option<ElementId> {
+            None
+        }
+        fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+            None
+        }
+        fn request_layout(
+            &mut self,
+            _: Option<&gpui::GlobalElementId>,
+            _: Option<&gpui::InspectorElementId>,
+            window: &mut Window,
+            cx: &mut App,
+        ) -> (gpui::LayoutId, ()) {
+            (self.child.request_layout(window, cx), ())
+        }
+        fn prepaint(
+            &mut self,
+            _: Option<&gpui::GlobalElementId>,
+            _: Option<&gpui::InspectorElementId>,
+            bounds: Bounds<Pixels>,
+            _: &mut (),
+            window: &mut Window,
+            cx: &mut App,
+        ) {
+            TAGGED.with_borrow_mut(|tagged| tagged.insert(self.id.to_string(), bounds));
+            self.child.prepaint(window, cx);
+        }
+        fn paint(
+            &mut self,
+            _: Option<&gpui::GlobalElementId>,
+            _: Option<&gpui::InspectorElementId>,
+            _: Bounds<Pixels>,
+            _: &mut (),
+            _: &mut (),
+            window: &mut Window,
+            cx: &mut App,
+        ) {
+            self.child.paint(window, cx);
+        }
+    }
+
+    fn probe_tagger(element: AnyElement, id: SharedString) -> AnyElement {
+        BoundsProbe { id, child: element }.into_any_element()
+    }
+
+    fn tagged(id: &str) -> Bounds<Pixels> {
+        TAGGED.with_borrow(|tagged| tagged[id])
+    }
+
+    fn rail_view(
+        slots: crate::ActivityBarSlots<String>,
+        cx: &mut TestAppContext,
+    ) -> (
+        gpui::Entity<MullionView<String>>,
+        &mut gpui::VisualTestContext,
+    ) {
+        cx.update(|cx| {
+            crate::set_mullion_theme(cx, MullionTheme::dark());
+            cx.set_reduce_motion(true);
+            crate::set_part_tagger(cx, probe_tagger);
+        });
+        let catalog = ActivityCatalog::new(vec![ActivityNode::Activity(rendered_activity(
+            "activity",
+            show_activity,
+        ))]);
+        let tree = PaneNode::leaf_with_activity(
+            PaneId::new("pane"),
+            ActivityId::new("activity"),
+            "data".to_owned(),
+        );
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::try_new_with_catalog(tree, catalog, cx)
+                .unwrap()
+                .with_activity_bar_host(ActivityBarHostConfig::new().with_slots(slots))
+        });
+        cx.simulate_resize(gpui::size(px(500.), px(320.)));
+        cx.run_until_parked();
+        (view, cx)
+    }
+
+    fn settle(cx: &mut gpui::VisualTestContext) {
+        cx.executor().advance_clock(Duration::from_millis(300));
+        cx.update(|window, cx| window.simulate_next_frame(cx));
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn the_tagged_activity_bar_is_the_flyout_that_grows_with_hover(cx: &mut TestAppContext) {
+        let (_view, cx) = rail_view(crate::ActivityBarSlots::new(), cx);
+        cx.simulate_mouse_move(
+            gpui::point(px(500.), px(300.)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        settle(cx);
+        assert_eq!(tagged("mullion.activity-bar:pane").size.width, px(28.));
+
+        let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
+        cx.simulate_mouse_move(panel.center(), None, gpui::Modifiers::none());
+        settle(cx);
+        let bar = tagged("mullion.activity-bar:pane");
+        assert_eq!(bar, cx.debug_bounds("activity-bar-panel:pane").unwrap());
+        assert_eq!(bar.size.width, px(150.));
+        assert_eq!(
+            tagged("mullion.activity-bar-scope:pane").size.width,
+            px(28.)
+        );
+    }
+
+    #[gpui::test]
+    fn the_expanded_rail_is_the_expanded_extent_wide_and_rows_fill_it(cx: &mut TestAppContext) {
+        let (_view, cx) = rail_view(crate::ActivityBarSlots::new(), cx);
+        let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
+        cx.simulate_mouse_move(panel.center(), None, gpui::Modifiers::none());
+        settle(cx);
+        assert_eq!(
+            cx.debug_bounds("activity-bar-panel:pane")
+                .unwrap()
+                .size
+                .width,
+            px(150.)
+        );
+        assert_eq!(
+            cx.debug_bounds("activity:pane:activity")
+                .unwrap()
+                .size
+                .width,
+            px(141.)
+        );
+    }
+
+    fn width_of(cx: &mut gpui::VisualTestContext, selector: &'static str) -> gpui::Pixels {
+        cx.debug_bounds(selector)
+            .unwrap_or_else(|| panic!("missing {selector}"))
+            .size
+            .width
+    }
+
+    fn assert_leptos_row_widths(padding: Option<f32>, cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let mut theme = MullionTheme::dark();
+            if let Some(padding) = padding {
+                theme.activity_bar.expanded_padding = px(padding);
+            }
+            crate::set_mullion_theme(cx, theme);
+            cx.set_reduce_motion(true);
+        });
+        let padding = padding.unwrap_or(8.);
+        let catalog = ActivityCatalog::new(vec![
+            ActivityNode::Category(crate::ActivityCategory {
+                id: crate::CategoryId::new("cat"),
+                name: "Cat".into(),
+                color: gpui::rgb(0x445566).into(),
+                children: vec![ActivityNode::Activity(rendered_activity(
+                    "nested",
+                    show_activity,
+                ))],
+            }),
+            ActivityNode::Activity(rendered_activity("settings", show_activity)),
+        ]);
+        let tree = PaneNode::leaf_with_activity(
+            PaneId::new("pane"),
+            ActivityId::new("settings"),
+            "data".to_owned(),
+        );
+        let (_view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::try_new_with_catalog(tree, catalog, cx).unwrap()
+        });
+        cx.simulate_resize(gpui::size(px(500.), px(320.)));
+        cx.run_until_parked();
+        let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
+        cx.simulate_mouse_move(panel.center(), None, gpui::Modifiers::none());
+        settle(cx);
+        let category = cx.debug_bounds("activity-category:pane:cat").unwrap();
+        cx.simulate_click(category.center(), gpui::Modifiers::none());
+        settle(cx);
+
+        let panel_width = 150.;
+        let content = px(panel_width - 1. - padding);
+        let bleed = px(panel_width - 1.);
+        assert_eq!(width_of(cx, "activity-bar-panel:pane"), px(panel_width));
+        assert_eq!(width_of(cx, "activity-category-card:pane:cat"), bleed);
+        assert_eq!(width_of(cx, "activity:pane:nested"), bleed);
+        assert_eq!(width_of(cx, "activity:pane:settings"), content);
+    }
+
+    #[gpui::test]
+    fn rows_match_leptos_widths_with_rship_padding(cx: &mut TestAppContext) {
+        assert_leptos_row_widths(Some(10.), cx);
+    }
+
+    #[gpui::test]
+    fn rows_match_leptos_widths_with_default_padding(cx: &mut TestAppContext) {
+        assert_leptos_row_widths(None, cx);
+    }
+
+    #[gpui::test]
+    fn closing_a_pane_releases_its_hold_so_a_reused_id_is_not_held(cx: &mut TestAppContext) {
+        let (view, cx) = rail_view(crate::ActivityBarSlots::new(), cx);
+        let pane = PaneId::new("pane");
+        let other = PaneId::new("other");
+        view.update(cx, |view, cx| {
+            view.update_model(cx, |model| {
+                model.split(
+                    &pane,
+                    SplitDirection::Horizontal,
+                    other.clone(),
+                    "data".to_owned(),
+                )
+            });
+        });
+        settle(cx);
+        cx.update(|_, cx| crate::hold_activity_bar_open(cx, &other, "menu", true));
+        settle(cx);
+        assert!(view.read_with(cx, |view, _| view.activity_bar_is_expanded(&other)));
+
+        view.update(cx, |view, cx| {
+            view.update_model(cx, |model| model.close(&other));
+        });
+        settle(cx);
+        view.update(cx, |view, cx| {
+            view.update_model(cx, |model| {
+                model.split(
+                    &pane,
+                    SplitDirection::Horizontal,
+                    other.clone(),
+                    "data".to_owned(),
+                )
+            });
+        });
+        settle(cx);
+        assert!(!cx.read(|cx| cx.global::<crate::ActivityBarHolds>().is_held(&other)));
+        assert!(!view.read_with(cx, |view, _| view.activity_bar_is_expanded(&other)));
+    }
+
+    #[gpui::test]
+    fn a_slot_holds_the_rail_open_until_it_releases(cx: &mut TestAppContext) {
+        let (view, cx) = rail_view(crate::ActivityBarSlots::new(), cx);
+        let pane = PaneId::new("pane");
+        let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
+        cx.simulate_mouse_move(panel.center(), None, gpui::Modifiers::none());
+        settle(cx);
+        assert!(view.read_with(cx, |view, _| view.activity_bar_is_expanded(&pane)));
+
+        cx.update(|_, cx| crate::hold_activity_bar_open(cx, &pane, "menu", true));
+        cx.simulate_mouse_move(
+            gpui::point(px(450.), px(300.)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        settle(cx);
+        assert!(view.read_with(cx, |view, _| view.activity_bar_is_expanded(&pane)));
+        assert_eq!(
+            cx.debug_bounds("activity-bar-panel:pane")
+                .unwrap()
+                .size
+                .width,
+            px(150.)
+        );
+
+        cx.update(|_, cx| crate::hold_activity_bar_open(cx, &pane, "menu", false));
+        settle(cx);
+        assert!(!view.read_with(cx, |view, _| view.activity_bar_is_expanded(&pane)));
+        assert_eq!(
+            cx.debug_bounds("activity-bar-panel:pane")
+                .unwrap()
+                .size
+                .width,
+            px(28.)
+        );
+    }
+
+    #[gpui::test]
+    fn a_hold_opens_a_collapsed_rail_and_holders_do_not_release_each_other(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = rail_view(crate::ActivityBarSlots::new(), cx);
+        let pane = PaneId::new("pane");
+        cx.simulate_mouse_move(
+            gpui::point(px(450.), px(300.)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        settle(cx);
+        assert!(!view.read_with(cx, |view, _| view.activity_bar_is_expanded(&pane)));
+        cx.update(|_, cx| {
+            crate::hold_activity_bar_open(cx, &pane, "a", true);
+            crate::hold_activity_bar_open(cx, &pane, "b", true);
+        });
+        settle(cx);
+        assert!(view.read_with(cx, |view, _| view.activity_bar_is_expanded(&pane)));
+        cx.update(|_, cx| crate::hold_activity_bar_open(cx, &pane, "a", false));
+        settle(cx);
+        assert!(view.read_with(cx, |view, _| view.activity_bar_is_expanded(&pane)));
+        cx.update(|_, cx| crate::hold_activity_bar_open(cx, &pane, "b", false));
+        settle(cx);
+        assert!(!view.read_with(cx, |view, _| view.activity_bar_is_expanded(&pane)));
     }
 }
