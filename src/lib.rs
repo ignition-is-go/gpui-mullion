@@ -70,11 +70,12 @@ pub use activity::{
     Activity, ActivityCacheKey, ActivityCategory, ActivityDispose, ActivityFactory,
     ActivityFactoryRegistry, ActivityInstance, ActivityNode, ActivityRenderer, ActivityUpdate,
 };
+pub(crate) use activity_bar::ActivityBarHolds;
 pub use activity_bar::{
-    ActivityBarAxis, ActivityBarBehavior, ActivityBarConfig, ActivityBarEdge,
-    ActivityBarHostConfig, ActivityBarHoverIntent, ActivityBarHoverState, ActivityBarMode,
-    ActivityBarModeResolver, ActivityBarSlots, ActivityExpansionState, HoverGeneration,
-    PaneBorderColor, PaneControl, PaneHeaderConfig,
+    hold_activity_bar_open, ActivityBarAxis, ActivityBarBehavior, ActivityBarConfig,
+    ActivityBarEdge, ActivityBarHostConfig, ActivityBarHoverIntent, ActivityBarHoverState,
+    ActivityBarMode, ActivityBarModeResolver, ActivityBarSlots, ActivityExpansionState,
+    HoverGeneration, PaneBorderColor, PaneControl, PaneHeaderConfig,
 };
 pub use activity_catalog::{
     ActivityCatalog, ActivityCatalogGroup, ActivityCatalogValidationError, ActivityChrome,

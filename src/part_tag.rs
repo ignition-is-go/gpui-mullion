@@ -12,7 +12,8 @@
 //! | --- | --- |
 //! | `mullion.pane:<pane>` | a pane, including its activity bar |
 //! | `mullion.pane-header:<pane>` | a pane's header row |
-//! | `mullion.activity-bar:<pane>` | a pane's activity rail |
+//! | `mullion.activity-bar:<pane>` | a pane's activity rail: the panel, which grows to the expanded width on hover, as Leptos's visible bar does |
+//! | `mullion.activity-bar-scope:<pane>` | the rail's reserved slot in the pane layout, which keeps the collapsed width |
 //! | `mullion.activity:<pane>:<activity>` | an activity rail item |
 //! | `mullion.activity-category:<pane>:<category>` | an activity category row |
 //! | `mullion.split-handle:<split>` | the visible bar between two panes |

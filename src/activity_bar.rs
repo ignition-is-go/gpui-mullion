@@ -1,7 +1,7 @@
 use crate::{ChromeRenderer, PaneData, PaneId};
-use gpui::{App, Hsla, Window};
+use gpui::{App, BorrowAppContext, Global, Hsla, SharedString, Window};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// Main/cross axis used by activity-bar layout code.
@@ -599,4 +599,46 @@ mod tests {
         hover.leave();
         assert!(!hover.is_expanded(), "leave is intentionally zero-delay");
     }
+}
+
+/// Slot content that has opened a popover or menu outside the rail's bounds.
+///
+/// GPUI hover stops at the rail's own bounds, so a menu opened from a slot would
+/// otherwise let the rail collapse the moment the pointer moves onto it. The
+/// Leptos rail stays open because the menu is a DOM descendant of the rail.
+#[derive(Default)]
+pub(crate) struct ActivityBarHolds(HashMap<PaneId, HashSet<SharedString>>);
+
+impl Global for ActivityBarHolds {}
+
+impl ActivityBarHolds {
+    pub(crate) fn is_held(&self, pane: &PaneId) -> bool {
+        self.0.get(pane).is_some_and(|holders| !holders.is_empty())
+    }
+}
+
+/// Keeps `pane`'s activity bar expanded on behalf of `holder`, or releases it.
+///
+/// Call this from slot content when it opens (`held = true`) and closes
+/// (`held = false`) a popover. The rail collapses only when the pointer has left
+/// it and no holder remains. `holder` names the caller, so several popovers do
+/// not release each other, and repeated calls are idempotent.
+pub fn hold_activity_bar_open(
+    cx: &mut App,
+    pane: &PaneId,
+    holder: impl Into<SharedString>,
+    held: bool,
+) {
+    let holder = holder.into();
+    cx.update_default_global::<ActivityBarHolds, _>(|holds, _| {
+        let holders = holds.0.entry(pane.clone()).or_default();
+        if held {
+            holders.insert(holder);
+        } else {
+            holders.remove(&holder);
+        }
+        if holders.is_empty() {
+            holds.0.remove(pane);
+        }
+    });
 }

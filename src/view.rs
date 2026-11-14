@@ -237,7 +237,7 @@ fn activity_motion_sample_with_geometry(
     let expanded_padding = f32::from(expanded_padding).max(0.0);
     ActivityMotionSample {
         progress,
-        vertical_extent: thickness + (expanded_extent + expanded_padding - thickness) * progress,
+        vertical_extent: thickness + (expanded_extent - thickness) * progress,
         edge_padding: expanded_padding * progress,
         row_extent: thickness + (expanded_extent - thickness) * progress,
         label_opacity: progress,
@@ -547,6 +547,9 @@ impl<D: PaneData> MullionView<D> {
             this.detach_command_palette(cx);
         })
         .detach();
+        cx.default_global::<crate::ActivityBarHolds>();
+        cx.observe_global::<crate::ActivityBarHolds>(|this, cx| this.sync_activity_bar_holds(cx))
+            .detach();
         let mut view = Self {
             model,
             dock_config: DockConfig::default(),
@@ -2412,6 +2415,13 @@ impl<D: PaneData> MullionView<D> {
         )
     }
 
+    fn sync_activity_bar_holds(&mut self, cx: &mut Context<Self>) {
+        for pane in self.model.tree().leaf_ids() {
+            let held = cx.global::<crate::ActivityBarHolds>().is_held(&pane);
+            self.handle_activity_bar_hover_region(&pane, "hold", held, cx);
+        }
+    }
+
     fn handle_activity_bar_hover_region(
         &mut self,
         pane: &PaneId,
@@ -3811,7 +3821,7 @@ impl<D: PaneData> MullionView<D> {
                 }))
                 .child(primary_group)
                 .child(trailing_group);
-            let panel = panel.into_any_element();
+            let panel = crate::part_tag::tag_part(cx, panel, || format!("activity-bar:{}", id.0));
 
             let edge_trigger = auto_hide.then(|| {
                 let trigger_pane = id.clone();
@@ -4182,7 +4192,7 @@ impl<D: PaneData> MullionView<D> {
             .child(content_region)
             .when_some(bar, |visual, bar| {
                 visual.child(crate::part_tag::tag_part(cx, bar, || {
-                    format!("activity-bar:{}", id.0)
+                    format!("activity-bar-scope:{}", id.0)
                 }))
             });
 
@@ -7212,7 +7222,7 @@ mod tests {
             cx.debug_bounds("activity-bar:pane").unwrap().size.width,
             px(0.)
         );
-        assert_eq!(expanded.size.width, px(158.));
+        assert_eq!(expanded.size.width, px(150.));
         assert_eq!(
             expanded.left(),
             cx.debug_bounds("pane-visual:pane").unwrap().left()
@@ -7279,7 +7289,7 @@ mod tests {
         });
         cx.run_until_parked();
         let expanded_panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
-        assert_eq!(expanded_panel.size.width, px(158.));
+        assert_eq!(expanded_panel.size.width, px(150.));
         assert_eq!(
             cx.debug_bounds("activity:pane:activity")
                 .unwrap()
@@ -7943,7 +7953,7 @@ mod tests {
                 mid.row_extent,
                 mid.label_opacity
             ),
-            (93.0, 4.0, 89.0, 0.5)
+            (89.0, 4.0, 89.0, 0.5)
         );
         assert_eq!(
             (
@@ -7952,7 +7962,7 @@ mod tests {
                 end.row_extent,
                 end.label_opacity
             ),
-            (158.0, 8.0, 150.0, 1.0)
+            (150.0, 8.0, 150.0, 1.0)
         );
         assert_eq!(start.hidden_translation, 1.0);
         assert_eq!(mid.hidden_translation, 0.5);
@@ -7972,7 +7982,7 @@ mod tests {
                 forced.edge_padding,
                 forced.label_opacity
             ),
-            (158.0, 150.0, 8.0, 1.0)
+            (150.0, 150.0, 8.0, 1.0)
         );
         let restored = activity_motion_sample(ActivityMotion::endpoint(false));
         assert_eq!(
@@ -8122,8 +8132,8 @@ mod tests {
         });
         cx.run_until_parked();
         let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
-        assert_eq!(panel.size.width, px(93.));
-        assert_eq!(panel.left(), pane.left() - px(46.5));
+        assert_eq!(panel.size.width, px(89.));
+        assert_eq!(panel.left(), pane.left() - px(44.5));
         cx.executor().advance_clock(Duration::from_millis(150));
         cx.update(|window, cx| {
             window.simulate_next_frame(cx);
@@ -8145,8 +8155,8 @@ mod tests {
         });
         cx.run_until_parked();
         let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
-        assert_eq!(panel.size.width, px(93.));
-        assert_eq!(panel.left(), pane.left() - px(46.5));
+        assert_eq!(panel.size.width, px(89.));
+        assert_eq!(panel.left(), pane.left() - px(44.5));
         cx.executor().advance_clock(Duration::from_millis(150));
         cx.update(|window, cx| {
             window.simulate_next_frame(cx);
@@ -8186,8 +8196,8 @@ mod tests {
         cx.run_until_parked();
         let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
         let row = cx.debug_bounds("activity:pane:activity").unwrap();
-        assert_eq!(panel.size.width, px(93.));
-        assert_eq!(row.size.width, px(92.));
+        assert_eq!(panel.size.width, px(89.));
+        assert_eq!(row.size.width, px(88.));
         assert_eq!(panel.size.width - row.size.width, px(1.));
         cx.executor().advance_clock(Duration::from_millis(75));
         cx.update(|window, cx| {
@@ -8196,8 +8206,8 @@ mod tests {
         cx.run_until_parked();
         let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
         let row = cx.debug_bounds("activity:pane:activity").unwrap();
-        assert_eq!(panel.size.width, px(158.));
-        assert_eq!(row.size.width, px(157.));
+        assert_eq!(panel.size.width, px(150.));
+        assert_eq!(row.size.width, px(149.));
         assert_eq!(panel.size.width - row.size.width, px(1.));
 
         view.update(cx, |view, cx| {
@@ -8646,5 +8656,218 @@ mod tests {
         assert_focusable::<MullionView<String>>();
         assert_pane_events::<MullionView<String>>();
         assert_workspace_events::<MullionView<String>>();
+    }
+    thread_local! {
+        static TAGGED: RefCell<HashMap<String, Bounds<Pixels>>> = RefCell::new(HashMap::new());
+    }
+
+    struct BoundsProbe {
+        id: SharedString,
+        child: AnyElement,
+    }
+
+    impl IntoElement for BoundsProbe {
+        type Element = Self;
+        fn into_element(self) -> Self {
+            self
+        }
+    }
+
+    impl gpui::Element for BoundsProbe {
+        type RequestLayoutState = ();
+        type PrepaintState = ();
+        fn id(&self) -> Option<ElementId> {
+            None
+        }
+        fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+            None
+        }
+        fn request_layout(
+            &mut self,
+            _: Option<&gpui::GlobalElementId>,
+            _: Option<&gpui::InspectorElementId>,
+            window: &mut Window,
+            cx: &mut App,
+        ) -> (gpui::LayoutId, ()) {
+            (self.child.request_layout(window, cx), ())
+        }
+        fn prepaint(
+            &mut self,
+            _: Option<&gpui::GlobalElementId>,
+            _: Option<&gpui::InspectorElementId>,
+            bounds: Bounds<Pixels>,
+            _: &mut (),
+            window: &mut Window,
+            cx: &mut App,
+        ) {
+            TAGGED.with_borrow_mut(|tagged| tagged.insert(self.id.to_string(), bounds));
+            self.child.prepaint(window, cx);
+        }
+        fn paint(
+            &mut self,
+            _: Option<&gpui::GlobalElementId>,
+            _: Option<&gpui::InspectorElementId>,
+            _: Bounds<Pixels>,
+            _: &mut (),
+            _: &mut (),
+            window: &mut Window,
+            cx: &mut App,
+        ) {
+            self.child.paint(window, cx);
+        }
+    }
+
+    fn probe_tagger(element: AnyElement, id: SharedString) -> AnyElement {
+        BoundsProbe { id, child: element }.into_any_element()
+    }
+
+    fn tagged(id: &str) -> Bounds<Pixels> {
+        TAGGED.with_borrow(|tagged| tagged[id])
+    }
+
+    fn rail_view(
+        slots: crate::ActivityBarSlots<String>,
+        cx: &mut TestAppContext,
+    ) -> (
+        gpui::Entity<MullionView<String>>,
+        &mut gpui::VisualTestContext,
+    ) {
+        cx.update(|cx| {
+            crate::set_mullion_theme(cx, MullionTheme::dark());
+            cx.set_reduce_motion(true);
+            crate::set_part_tagger(cx, probe_tagger);
+        });
+        let catalog = ActivityCatalog::new(vec![ActivityNode::Activity(rendered_activity(
+            "activity",
+            show_activity,
+        ))]);
+        let tree = PaneNode::leaf_with_activity(
+            PaneId::new("pane"),
+            ActivityId::new("activity"),
+            "data".to_owned(),
+        );
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            MullionView::try_new_with_catalog(tree, catalog, cx)
+                .unwrap()
+                .with_activity_bar_host(ActivityBarHostConfig::new().with_slots(slots))
+        });
+        cx.simulate_resize(gpui::size(px(500.), px(320.)));
+        cx.run_until_parked();
+        (view, cx)
+    }
+
+    fn settle(cx: &mut gpui::VisualTestContext) {
+        cx.executor().advance_clock(Duration::from_millis(300));
+        cx.update(|window, cx| window.simulate_next_frame(cx));
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn the_tagged_activity_bar_is_the_flyout_that_grows_with_hover(cx: &mut TestAppContext) {
+        let (_view, cx) = rail_view(crate::ActivityBarSlots::new(), cx);
+        cx.simulate_mouse_move(
+            gpui::point(px(500.), px(300.)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        settle(cx);
+        assert_eq!(tagged("mullion.activity-bar:pane").size.width, px(28.));
+
+        let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
+        cx.simulate_mouse_move(panel.center(), None, gpui::Modifiers::none());
+        settle(cx);
+        let bar = tagged("mullion.activity-bar:pane");
+        assert_eq!(bar, cx.debug_bounds("activity-bar-panel:pane").unwrap());
+        assert_eq!(bar.size.width, px(150.));
+        assert_eq!(
+            tagged("mullion.activity-bar-scope:pane").size.width,
+            px(28.)
+        );
+    }
+
+    #[gpui::test]
+    fn the_expanded_rail_is_the_expanded_extent_wide_and_rows_fill_it(cx: &mut TestAppContext) {
+        let (_view, cx) = rail_view(crate::ActivityBarSlots::new(), cx);
+        let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
+        cx.simulate_mouse_move(panel.center(), None, gpui::Modifiers::none());
+        settle(cx);
+        assert_eq!(
+            cx.debug_bounds("activity-bar-panel:pane")
+                .unwrap()
+                .size
+                .width,
+            px(150.)
+        );
+        assert_eq!(
+            cx.debug_bounds("activity:pane:activity")
+                .unwrap()
+                .size
+                .width,
+            px(149.)
+        );
+    }
+
+    #[gpui::test]
+    fn a_slot_holds_the_rail_open_until_it_releases(cx: &mut TestAppContext) {
+        let (view, cx) = rail_view(crate::ActivityBarSlots::new(), cx);
+        let pane = PaneId::new("pane");
+        let panel = cx.debug_bounds("activity-bar-panel:pane").unwrap();
+        cx.simulate_mouse_move(panel.center(), None, gpui::Modifiers::none());
+        settle(cx);
+        assert!(view.read_with(cx, |view, _| view.activity_bar_is_expanded(&pane)));
+
+        cx.update(|_, cx| crate::hold_activity_bar_open(cx, &pane, "menu", true));
+        cx.simulate_mouse_move(
+            gpui::point(px(450.), px(300.)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        settle(cx);
+        assert!(view.read_with(cx, |view, _| view.activity_bar_is_expanded(&pane)));
+        assert_eq!(
+            cx.debug_bounds("activity-bar-panel:pane")
+                .unwrap()
+                .size
+                .width,
+            px(150.)
+        );
+
+        cx.update(|_, cx| crate::hold_activity_bar_open(cx, &pane, "menu", false));
+        settle(cx);
+        assert!(!view.read_with(cx, |view, _| view.activity_bar_is_expanded(&pane)));
+        assert_eq!(
+            cx.debug_bounds("activity-bar-panel:pane")
+                .unwrap()
+                .size
+                .width,
+            px(28.)
+        );
+    }
+
+    #[gpui::test]
+    fn a_hold_opens_a_collapsed_rail_and_holders_do_not_release_each_other(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = rail_view(crate::ActivityBarSlots::new(), cx);
+        let pane = PaneId::new("pane");
+        cx.simulate_mouse_move(
+            gpui::point(px(450.), px(300.)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        settle(cx);
+        assert!(!view.read_with(cx, |view, _| view.activity_bar_is_expanded(&pane)));
+        cx.update(|_, cx| {
+            crate::hold_activity_bar_open(cx, &pane, "a", true);
+            crate::hold_activity_bar_open(cx, &pane, "b", true);
+        });
+        settle(cx);
+        assert!(view.read_with(cx, |view, _| view.activity_bar_is_expanded(&pane)));
+        cx.update(|_, cx| crate::hold_activity_bar_open(cx, &pane, "a", false));
+        settle(cx);
+        assert!(view.read_with(cx, |view, _| view.activity_bar_is_expanded(&pane)));
+        cx.update(|_, cx| crate::hold_activity_bar_open(cx, &pane, "b", false));
+        settle(cx);
+        assert!(!view.read_with(cx, |view, _| view.activity_bar_is_expanded(&pane)));
     }
 }
