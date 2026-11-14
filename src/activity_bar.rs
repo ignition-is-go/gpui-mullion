@@ -612,6 +612,10 @@ pub(crate) struct ActivityBarHolds(HashMap<PaneId, HashSet<SharedString>>);
 impl Global for ActivityBarHolds {}
 
 impl ActivityBarHolds {
+    pub(crate) fn release(&mut self, pane: &PaneId) {
+        self.0.remove(pane);
+    }
+
     pub(crate) fn is_held(&self, pane: &PaneId) -> bool {
         self.0.get(pane).is_some_and(|holders| !holders.is_empty())
     }
