@@ -4114,6 +4114,9 @@ impl<D: PaneData> MullionView<D> {
                     .child(body),
             );
 
+        let host_border_inset = host_pane_border
+            .is_some()
+            .then_some(styles.pane.host_border_width);
         let host_border = host_pane_border.map(|color| {
             div()
                 .debug_selector({
@@ -4158,7 +4161,6 @@ impl<D: PaneData> MullionView<D> {
             // Paint order mirrors the reference z bands: activity, wash (4),
             // focus (6), hidden controls (16), then drop feedback (20).
             .child(activity_column)
-            .when_some(host_border, |content, border| content.child(border))
             .child(wash)
             .children(focus_edges)
             .when_some(hidden_controls, |content, controls| content.child(controls))
@@ -4227,6 +4229,8 @@ impl<D: PaneData> MullionView<D> {
             .size_full()
             .relative()
             .flex()
+            // Like CSS `border-bottom` on the pane: the rail and content end above the rule.
+            .when_some(host_border_inset, |visual, inset| visual.pb(inset))
             // Keep the activity bar last in paint order so a leading flyout is not
             // hidden underneath the opaque pane body. Reverse flex direction retains
             // the leading left/top layout while content is painted first.
@@ -4287,6 +4291,7 @@ impl<D: PaneData> MullionView<D> {
                     }
                 }),
             )
+            .when_some(host_border, |pane, border| pane.child(border))
             .child(visual);
         crate::part_tag::tag_part(cx, pane, || format!("pane:{}", id.0))
     }
@@ -8479,9 +8484,16 @@ mod tests {
         assert_eq!(body.top(), header.bottom());
         assert_eq!(body.bottom(), content.bottom());
         assert_eq!(host_border.size.height, px(2.));
-        assert_eq!(host_border.left(), content.left());
-        assert_eq!(host_border.right(), content.right());
+        // The rule spans the whole pane and the rail and content end above it.
+        assert_eq!(host_border.left(), pane.left());
+        assert_eq!(host_border.right(), pane.right());
         assert_eq!(host_border.bottom(), pane.bottom());
+        assert_eq!(column.bottom(), host_border.top());
+        assert_eq!(content.bottom(), host_border.top());
+        assert_eq!(
+            pane.size.height - content.size.height,
+            host_border.size.height
+        );
         assert!(cx.debug_bounds("pane-header-title:pane").is_some());
         // A single root pane has no internal focus edges.
         assert!(cx.debug_bounds("focus-edge:pane:left").is_none());
