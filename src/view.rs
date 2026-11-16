@@ -4272,8 +4272,14 @@ impl<D: PaneData> MullionView<D> {
                     .split_focus_handles
                     .values()
                     .any(|handle| handle.is_focused(window));
+                // Hovering the pane that already holds focus must not pull focus off an
+                // element inside it: the pane becomes hovered again whenever a child that
+                // occluded the pointer moves away, as when its content zooms or scrolls.
+                let focus_within_pane = this.model.focused() == Some(&id_focus_hover)
+                    && hover_focus_handle.contains_focused(window, cx);
                 if *hovered
                     && !splitter_has_focus
+                    && !focus_within_pane
                     && this.settings.focus_behavior() == PaneFocusBehavior::Hover
                 {
                     hover_focus_handle.focus(window, cx);
@@ -7444,6 +7450,67 @@ mod tests {
                 .size
                 .width,
             px(150.)
+        );
+    }
+
+    #[gpui::test]
+    fn hovering_the_focused_pane_again_keeps_focus_on_its_content(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::set_mullion_theme(cx, MullionTheme::dark()));
+        let field = cx.update(|cx| cx.focus_handle());
+        let render_field = field.clone();
+        let activity = ActivityNode::Activity(Activity {
+            id: ActivityId::new("editor"),
+            name: "editor".into(),
+            filter: show_activity,
+            render: Arc::new(move |_, _| {
+                div()
+                    .id("content")
+                    .relative()
+                    .size_full()
+                    .track_focus(&render_field)
+                    .child(
+                        div()
+                            .id("occluder")
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .occlude()
+                            .debug_selector(|| "occluder".to_owned()),
+                    )
+                    .into_any_element()
+            }),
+        });
+        let tree = PaneNode::leaf_with_activity(
+            PaneId::new("pane"),
+            ActivityId::new("editor"),
+            "data".to_owned(),
+        );
+        let (_view, cx) =
+            cx.add_window_view(move |_, cx| MullionView::new(tree, vec![activity], cx));
+        cx.run_until_parked();
+        let pane = cx.debug_bounds("pane:pane").unwrap();
+        let occluded = cx.debug_bounds("occluder").unwrap().center();
+
+        // The pointer enters the pane on its chrome, which focuses the pane.
+        cx.simulate_mouse_move(
+            pane.origin + gpui::point(px(2.), px(2.)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        cx.update(|window, cx| field.focus(window, cx));
+        // Over the content the occluding child takes the pointer; when the child moves
+        // away the pane is hovered again without the pointer leaving it.
+        cx.simulate_mouse_move(occluded, None, gpui::Modifiers::none());
+        cx.simulate_mouse_move(
+            pane.origin + gpui::point(px(3.), px(3.)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        cx.run_until_parked();
+        assert!(
+            cx.update(|window, _| field.is_focused(window)),
+            "hovering the focused pane again keeps focus on its content"
         );
     }
 
